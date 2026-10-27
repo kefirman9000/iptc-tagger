@@ -399,6 +399,11 @@ class SettingsDialog(QDialog):
                             "-overwrite_original -P -m -charset iptc=utf8 -codedcharacterset=utf8 -tagsFromFile @ "
                             "-@ xmp2iptc.args")
         f_save.addRow("When saving", self.x2i)
+        self.confirm_save = QCheckBox("Ask before saving (the \"Save metadata\" question)")
+        self.confirm_save.setChecked(bool(settings.get("confirm_save", True)))
+        self.confirm_save.setToolTip("Untick to save straight away when you click Save metadata. Each file is still\n"
+                                     "checked afterwards to confirm the picture itself is unchanged.")
+        f_save.addRow("", self.confirm_save)
         self.x2i_path = QLineEdit(settings.get("xmp2iptc_args", ""))
         found = core.find_xmp2iptc_args(detected_exiftool or core.find_exiftool(settings.get("exiftool_path", "")))
         self.x2i_path.setPlaceholderText(found or "not found")
@@ -602,6 +607,7 @@ class SettingsDialog(QDialog):
                  ai_time_limit=self.tlimit.value(), ai_retries=int(self.tretry.currentData() or 0),
                  debug_log=self.debug.isChecked(), symbols=self.symbols.currentData() or "convert",
                  title_length=self.title_len.currentData() or "detailed",
+                 confirm_save=self.confirm_save.isChecked(),
                  read_label=self.read_label.isChecked(), tidy_keywords=self.tidy_kw.isChecked(),
                  check_updates=self.updates.isChecked(), auto_download=self.auto_update.isChecked())
         s["keyword_min"], s["keyword_max"] = core.keyword_range(self.kmin.value(), self.kmax.value())
@@ -2760,9 +2766,27 @@ class MainWindow(QMainWindow):
                "each file is checked afterwards to confirm the image data is identical."
                + ("\n\nAfter saving, XMP is copied to IPTC with xmp2iptc.args, so both match."
                   if self.settings.get("xmp2iptc_on_save", True) else ""))
-        if QMessageBox.question(self, "Save metadata", msg) != QMessageBox.Yes:
+        if self.settings.get("confirm_save", True) and not self._ask_save(msg):
             return
         self.save_photos(targets)
+
+    def _ask_save(self, msg) -> bool:
+        """The "Save metadata" question, with "Don't ask me again" (turned back on in Settings → Saving)."""
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Question)
+        box.setWindowTitle("Save metadata")
+        box.setText(msg)
+        yes = box.addButton(QMessageBox.Yes)
+        box.addButton(QMessageBox.No)
+        box.setDefaultButton(yes)
+        again = QCheckBox("Don't ask me again (you can turn this back on in Settings → Saving)")
+        box.setCheckBox(again)
+        box.exec()
+        ok = box.clickedButton() == yes
+        if ok and again.isChecked():
+            self.settings["confirm_save"] = False
+            core.save_settings(self.settings)
+        return ok
 
     def save_photos(self, photos):
         """Save these photos now (used by row buttons, the review panel and Save metadata)."""
