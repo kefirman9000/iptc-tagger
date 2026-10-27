@@ -95,6 +95,21 @@ def run_job(owner, job: Job, pool: QThreadPool, on_done, on_failed, on_progress=
     pool.start(job)
 
 
+class NoWheelComboBox(QComboBox):
+    """A dropdown that ignores the mouse wheel unless its list is open, so scrolling over the photo
+    list scrolls the list instead of changing a photo's Type by accident."""
+
+    def __init__(self, *args):
+        super().__init__(*args)
+        self.setFocusPolicy(Qt.StrongFocus)          # don't grab keyboard focus just because the wheel passed over
+
+    def wheelEvent(self, event):
+        if self.view().isVisible():                  # list open: the wheel scrolls through the choices
+            super().wheelEvent(event)
+        else:
+            event.ignore()                           # hand the wheel to the list behind it
+
+
 def make_image(path: str, size: int) -> QImage:
     """Upright preview, made from a reduced decode so big photos stay fast."""
     from PIL import Image, ImageOps
@@ -547,7 +562,7 @@ class ReviewPanel(QWidget):
         b.addWidget(self.preview, 3)
         b.addWidget(self.name)
         b.addWidget(self.state)
-        self.type = QComboBox()
+        self.type = NoWheelComboBox()
         self.type.setToolTip("What kind of photo this is. Helps the AI write the right kind of title")
         b.addWidget(lbl("Photo type"))
         b.addWidget(self.type)
@@ -1263,7 +1278,7 @@ class MainWindow(QMainWindow):
             cl.addWidget(btn)
             self.table.setCellWidget(row, COL_ACTION, cell)
             photo.row_button, photo.detect_button = btn, detect
-            combo = QComboBox()
+            combo = NoWheelComboBox()
             combo.setToolTip("Photo type: helps the AI write the right kind of title")
             self.fill_type_combo(combo, "")
             combo.currentIndexChanged.connect(lambda *_, ph=photo, c=combo: self._row_type_chosen(ph, c))
@@ -1688,23 +1703,25 @@ class MainWindow(QMainWindow):
                 s["title_location"], s["title_loc_sep"])
         self.title_preview_plain = core.compose_title(*args)
         whose = ("with your custom date" if custom else
-                 f"for {os.path.basename(ph.path)}" if ph is not None and ph.taken else "with a sample date")
+                 f"using the date of {os.path.basename(ph.path)}" if ph is not None and ph.taken else "with a sample date")
         html = "".join(self._preview_piece(kind, text) for kind, text in core.title_pieces(*args))
-        legend = " &nbsp; ".join(self._preview_piece(k, name) for k, name in
-                                 (("prefix", "your text"), ("location", "location"), ("date", "date"),
-                                  ("sep", "separator"), ("title", "AI's title")))
-        self.title_preview.setText(f"<span style='color:{GREY}'>Title preview ({whose}):</span>&nbsp; "
+        # calm and readable: the title on its own line, only two cues (bold = AI's title, blue = location
+        # and date), everything else in the normal text colour
+        key = (f"<b>bold</b> = the AI's title &nbsp;·&nbsp; "
+               f"<span style='color:{self.PREVIEW_BLUE}'>blue</span> = location and date")
+        self.title_preview.setText(f"<span style='color:{GREY};font-size:11px'>Title preview, {whose}:</span><br>"
                                    f"<span style='font-size:14px'>{html}</span><br>"
-                                   f"<span style='color:{GREY};font-size:11px'>Key: {legend}</span>")
+                                   f"<span style='color:{GREY};font-size:11px'>{key}</span>")
 
-    PREVIEW_STYLE = {"prefix": "color:#7c3aed", "location": "color:#0f7b55", "date": "color:#1d5fd1",
-                     "title": "font-weight:600",
-                     "sep": "color:#9a3412;background-color:#fde3c8;font-weight:700"}
+    PREVIEW_BLUE = "#2f6db3"
+    PREVIEW_STYLE = {"location": f"color:{PREVIEW_BLUE}", "date": f"color:{PREVIEW_BLUE}",
+                     "title": "font-weight:600"}            # your text and separators: plain text
 
     def _preview_piece(self, kind: str, text: str) -> str:
         import html as _html
-        shown = _html.escape(text).replace(" ", "&nbsp;")   # keep the spaces around a separator visible
-        return f"<span style='{self.PREVIEW_STYLE.get(kind, '')}'>{shown}</span>"
+        style = self.PREVIEW_STYLE.get(kind, "")
+        shown = _html.escape(text)
+        return f"<span style='{style}'>{shown}</span>" if style else shown
 
     def add_prefix_now(self):
         self._remember_options()

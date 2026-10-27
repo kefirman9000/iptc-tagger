@@ -33,7 +33,7 @@ No installation and no Python needed. ExifTool is included.
 - **Review and edit** in a table or a side panel with a large preview. Save one photo at a time or many at once.
 - **Instructions for the AI:** facts about the batch, title and keyword rules, and a note per photo.
 - **Photo types:** landscape, food, architecture, product on a shelf, company logo with a stock chart, editorial event and more, plus your own. A **Copyright-free** type keeps brand and personal names out.
-- **Title building:** text before titles, a location and the date taken, in editorial style, e.g. *Tokyo, Japan - October 26, 2026: Shibuya Crossing at Dusk*. A colour-coded preview shows the result, and a custom date can replace the camera's date.
+- **Title building:** text before titles, a location and the date taken, in editorial style, e.g. *Tokyo, Japan - October 26, 2026: Shibuya Crossing at Dusk*. A live preview shows the result, and a custom date can replace the camera's date.
 - **Keywords to put first:** e.g. place or client, with `{year}`, `{month}` and `{date}` filled in from each photo.
 - **Working with many photos:** check boxes, filters (no title, no keywords, unsaved, errors…), search, and copy and paste of titles, keywords and notes between photos.
 - **Reliable:** Stop at any time, a time limit with automatic retry, and an optional debug log.
