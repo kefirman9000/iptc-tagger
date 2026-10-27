@@ -827,14 +827,22 @@ class RedoDialog(QDialog):
             lab = QLabel(what)
             lab.setWordWrap(True)
             lay.addWidget(lab)
-        lay.addWidget(QLabel("What's wrong with the suggestion? Tick all that apply:"))
+        lay.addWidget(QLabel("Tick all that apply:"))
         self.boxes = {}
-        for key, label, _ in core.REDO_REASONS:
-            cb = QCheckBox(label)
-            self.boxes[key] = cb
-            lay.addWidget(cb)
+        cols = QGridLayout()
+        cols.setHorizontalSpacing(24)
+        for col, (heading, reasons) in enumerate((("What's wrong", core.REDO_PROBLEMS),
+                                                   ("What to focus on", core.REDO_FOCUS))):
+            cols.addWidget(QLabel(f"<b>{heading}</b>"), 0, col)
+            for r, (key, label, text) in enumerate(reasons, start=1):
+                cb = QCheckBox(label)
+                cb.setToolTip(text)                 # what the AI is told
+                self.boxes[key] = cb
+                cols.addWidget(cb, r, col)
+        cols.setRowStretch(len(core.REDO_PROBLEMS) + 1, 1)
+        lay.addLayout(cols)
         self.other = QLineEdit()
-        self.other.setPlaceholderText("Anything else, e.g. it's a heron, not a crane / mention the sunset")
+        self.other.setPlaceholderText("Anything else, e.g. it's a heron, not a crane / mention the cherry blossoms")
         lay.addWidget(QLabel("Anything else (optional):"))
         lay.addWidget(self.other)
         tip = QLabel("Tip: a photo note (e.g. the subject's name) helps the AI most when it got something wrong.")

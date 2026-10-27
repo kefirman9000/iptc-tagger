@@ -39,7 +39,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.10.27.6"
+APP_VERSION = "2026.10.27.7"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 
 # Free vision models (run locally with Ollama) offered for one-click download:
@@ -1405,15 +1405,15 @@ def build_prompt(keyword_min: int, keyword_max: int, context: str = "", existing
 
 
 # Redo with reasons: what the photographer didn't like about the last suggestion
-REDO_REASONS = [
-    ("generic", "Title is too generic",
+REDO_PROBLEMS = [   # "What's wrong"
+    ("generic", "Too generic",
      "The title was too generic. Be specific about what makes this photo distinctive: the exact subject, "
      "what is happening, the setting and the mood."),
-    ("wrong", "Wrong subject, or something is misidentified",
+    ("wrong", "Wrong subject, or something misidentified",
      "Something was identified wrongly. Look at the photo again carefully and describe only what is really there."),
-    ("long", "Title is too long",
+    ("long", "Too long",
      "The title was too long. Keep it short: about 6 to 10 words."),
-    ("short", "Title is too short or missing detail",
+    ("short", "Too short, or missing detail",
      "The title was too short. Add the important details: setting, action, time of day or mood."),
     ("notes", "Leaves out the place, event or names from my notes",
      "The title left out facts from the photographer's notes. Work the place, event and names they give into the title."),
@@ -1421,11 +1421,41 @@ REDO_REASONS = [
      "The suggestion mentioned things that aren't in the photo. Describe only what is visible or given in the notes."),
     ("names", "Shouldn't name brands, products or people",
      "Don't name any brands, products or people; describe them in generic words."),
-    ("keywords", "Keywords are off-topic or repetitive",
+    ("flowery", "Too flowery or salesy",
+     "Use simple, plain, descriptive words. No flowery or marketing language such as stunning, breathtaking or beautiful."),
+    ("editorial", "Not factual enough (editorial)",
+     "Write a factual, neutral editorial description: who, what, where and when, without opinion or marketing words."),
+    ("keywords", "Keywords off-topic or repetitive",
      "The keywords were off-topic or repetitive. Make every keyword clearly relevant to this photo, and varied."),
+    ("keywords_general", "Keywords too general",
+     "The keywords were too general. Use more specific ones (exact species, objects, materials, techniques, place "
+     "names) and fewer vague ones."),
     ("angle", "Just try a different angle",
      "Try a clearly different wording and angle for the title."),
 ]
+REDO_FOCUS = [      # "What to focus on"
+    ("focus_words", "The words and signs in the photo",
+     "Focus on any words, signs, labels or text visible in the photo: read them and use them in the title and keywords."),
+    ("focus_location", "The location and setting",
+     "Make the place and setting the focus of the title: where this is and what the surroundings are like."),
+    ("focus_mood", "The mood and feeling",
+     "Bring out the mood and atmosphere: the feeling, emotion and ambience of the scene."),
+    ("focus_subject", "The main subject only",
+     "Make the main subject the focus of the title and leave out background details."),
+    ("focus_action", "What's happening (the action)",
+     "Focus on what is happening: the action, activity or movement in the photo."),
+    ("focus_colours", "The colours, light and time of day",
+     "Focus on the main colours, the quality of the light and the time of day."),
+    ("focus_people", "The people (without names)",
+     "Describe the people: how many, approximate age, what they are doing and wearing, and their expressions, "
+     "without naming them."),
+    ("focus_concept", "The concept, for commercial buyers",
+     "Bring out the concept or idea this photo could illustrate for commercial buyers (for example teamwork, "
+     "freedom, success, healthy living) in the title and keywords."),
+    ("focus_season", "The season, weather or holiday",
+     "Mention the season, weather or holiday shown in the photo."),
+]
+REDO_REASONS = REDO_PROBLEMS + REDO_FOCUS
 
 
 def redo_feedback(reasons, other: str = "") -> str:
