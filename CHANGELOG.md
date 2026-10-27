@@ -1,5 +1,9 @@
 # What's new
 
+## 2026.10.27.15
+
+- **Don't ask again:** the *Save metadata* question now has a **Don't ask me again** box. Tick it to save straight away from then on. Turn the question back on in **Settings → Saving**. Every file is still checked after saving, as before.
+
 ## 2026.10.27.14
 
 - **Reads the label first:** before writing a title, the AI takes a quick first look that only copies the text it can read on the product, packaging or sign: brand, product, flavour or variety, size and parent company. The title and keywords then use those exact spellings. Turn it off in **Settings → Titles & keywords → Labels**.
