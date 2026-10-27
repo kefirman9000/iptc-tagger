@@ -35,7 +35,7 @@ No installation and no Python needed. ExifTool is included.
 - **Photo types:** landscape, food, architecture, product on a shelf, company logo with a stock chart, editorial event and more, plus your own. A **Copyright-free** type keeps brand and personal names out.
 - **Editorial:** one checkbox adds the location and the date taken to every title (before or after it) and to the keywords (sorted by relevance), e.g. *Tokyo, Japan - October 26, 2026: Shibuya Crossing at Dusk*. Text before titles, a live preview and a custom date (when the camera's date is wrong) round it off.
 - **Clean text:** symbols in the AI's titles and keywords are converted to words (& → and, % → percent) or removed, as you choose.
-- **Reads the label first:** for products and signs, the AI copies the brand, product, flavour and size from the packaging, then uses those exact spellings.
+- **Reads the label first:** for products and signs, the AI copies the brand, product and flavour from the packaging (weights and sizes are left out), then uses those exact spellings.
 - **Tidy keywords:** filler words like *photo* and *image* are removed, and the keywords that name what's in the title come first.
 - **Undo a save:** right-click → **Undo last save** restores the photo's previous metadata (the last 5 saves per photo, even after a restart).
 - **Keywords to put first:** e.g. place or client, with `{year}`, `{month}` and `{date}` filled in from each photo.

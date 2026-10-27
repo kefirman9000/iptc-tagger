@@ -1,5 +1,9 @@
 # What's new
 
+## 2026.10.27.17
+
+- **No weights or sizes:** titles and keywords no longer include the weight or volume from the packaging (grams, oz, fl oz, ml, liters, pounds…). The brand, product, flavour and parent company are still named.
+
 ## 2026.10.27.16
 
 - **Keywords by relevance:** with *Editorial* on, the location and date keywords no longer always come first. The keywords that name what's in the photo lead, the place (*tokyo*, *japan*) comes right after them, and the month and year go at the end. *Before / After the title* now only moves the place and date in the title. Your *Keywords to put first* still come first. **Add to titles now** re-sorts photos you've already done.

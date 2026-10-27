@@ -39,7 +39,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.10.27.16"
+APP_VERSION = "2026.10.27.17"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 
 # Free vision models (run locally with Ollama) offered for one-click download:
@@ -1555,21 +1555,49 @@ MORE_KEYWORDS_SCHEMA = {
 LABEL_SCHEMA = {
     "type": "object",
     "properties": {"brand": {"type": "string"}, "product": {"type": "string"},
-                   "variety": {"type": "string"}, "size": {"type": "string"},
+                   "variety": {"type": "string"},
                    "parent_company": {"type": "string"},
                    "other_text": {"type": "array", "items": {"type": "string"}}},
-    "required": ["brand", "product", "variety", "size", "parent_company", "other_text"],
+    "required": ["brand", "product", "variety", "parent_company", "other_text"],
 }
 
 LABEL_PROMPT = (
     "Look closely at this photo and copy the text you can actually read on the main product, packaging, sign, "
     "screen or storefront. Don't describe the photo. Fill in: brand (the brand or store name), product (the exact "
-    "product name or product line), variety (flavour, scent, style, colour or edition printed on it), size (weight, "
-    "volume or count printed on it), parent_company (the company that owns the brand, only if you are sure, "
+    "product name or product line), variety (flavour, scent, style, colour or edition printed on it), parent_company (the company that owns the brand, only if you are sure, "
     "otherwise empty) and other_text (up to 6 other short pieces of legible text, such as a slogan or a claim like "
-    "'gluten free'). Spell everything exactly as printed. Leave a field empty if it can't be read; never guess. "
-    'Output only JSON: {"brand": "", "product": "", "variety": "", "size": "", "parent_company": "", '
+    "'gluten free'; never the weight, volume or price). Spell everything exactly as printed. Leave a field empty if it can't be read; never guess. "
+    'Output only JSON: {"brand": "", "product": "", "variety": "", "parent_company": "", '
     '"other_text": []}')
+
+
+# weights and volumes are left out of titles and keywords: "9.25 oz", "500g", "16.9 fl oz", "2 liter"
+_SIZE = re.compile(r"(?<![\w.])\d+(?:[.,]\d+)?\s*-?\s*(?:fl\.?\s*oz|fluid\s+ounces?|oz|ounces?|g|grams?|grammes?|"
+                   r"kg|kilos?|kilograms?|mg|lbs?|pounds?|ml|millilit(?:er|re)s?|cl|l|lit(?:er|re)s?|gal(?:lons?)?)\.?(?!\w)",
+                   re.I)
+_SIZE_WORDS = {"oz", "ounce", "ounces", "fl oz", "g", "gram", "grams", "kg", "lb", "lbs", "pound", "pounds", "ml",
+               "liter", "liters", "litre", "litres", "net weight", "net wt"}
+
+
+def drop_sizes(text: str) -> str:
+    """Remove weights and volumes ('9.25 oz', '500g', '16.9 fl oz') from a title or keyword."""
+    if not text:
+        return text
+    t = _SIZE.sub(" ", text)
+    t = re.sub(r"\(\s*\)|\[\s*\]", " ", t)
+    t = re.sub(r"\s*,(\s*,)+", ",", t)
+    t = " ".join(t.split())
+    t = re.sub(r"\s+([,.;:)])", r"\1", t).strip(" ,;:-–")
+    return t
+
+
+def drop_size_keywords(keywords) -> list[str]:
+    out = []
+    for k in keywords or []:
+        k2 = drop_sizes(str(k))
+        if k2 and k2.casefold() not in _SIZE_WORDS:
+            out.append(k2)
+    return out
 
 
 def label_note(label: dict) -> str:
@@ -1578,7 +1606,7 @@ def label_note(label: dict) -> str:
         return ""
     parts = []
     for key, name in (("brand", "brand"), ("product", "product"), ("variety", "variety or flavour"),
-                      ("size", "size"), ("parent_company", "parent company")):
+                      ("parent_company", "parent company")):
         v = single_line(str(label.get(key) or "")).strip().strip(".")
         if v and v.casefold() not in ("none", "n/a", "unknown", "not visible", "unreadable", "-"):
             parts.append(f"{name}: {v}")
@@ -1602,7 +1630,7 @@ PHOTO_TYPES = [
      "screen showing a stock market or financial performance chart"),
     ("product_shelf", "Product on a store shelf",
      "a photo of a retail product sitting on a grocery or retail store shelf; name the brand, the exact product, "
-     "its variety, flavour, scent or size from the packaging, and the brand's parent company"),
+     "its variety, flavour or scent from the packaging, and the brand's parent company (not the weight or size)"),
     ("app_store", "App in the Play Store",
      "a photo of an app shown on a phone screen in the Google Play Store"),
     ("storefront", "Store or restaurant front",
@@ -1686,7 +1714,7 @@ def type_description(settings: dict, key: str) -> str:
 
 INPUT_RULES = """How to read the photographer's input:
 - If the input is only a company name, the photo is a stock photo of that company's logo displayed on a smartphone screen, held in front of a computer screen showing a stock market or financial performance chart.
-- If the input is only a retail product name, the photo shows that product sitting on a grocery or retail store shelf; name its variety, flavour or size from the packaging, and its parent company.
+- If the input is only a retail product name, the photo shows that product sitting on a grocery or retail store shelf; name its variety or flavour from the packaging, and its parent company.
 - If the input is a name followed by the word "app", the photo shows that app on a phone screen in the Google Play Store.
 - Otherwise, treat the input as accurate information about the photo.
 - If there is no input, describe what you see in the photo."""
@@ -1712,7 +1740,8 @@ def title_rules(length: str = "detailed") -> str:
             "materials, signs, surroundings, people or objects around it. Only mention the time of day, light or "
             "weather when it is a striking, defining part of the photo (a sunset sky, a city at night, snow); never "
             "add it just to fill out the title. Be specific, never vague: for a product, name the brand, the exact product "
-            "or product line and its variety, flavour, scent, style or size as read from the packaging (for example "
+            "or product line and its variety, flavour, scent or style as read from the packaging, but never the "
+            "weight, volume or size such as grams, oz or ml (for example "
             "'Doritos Cool Ranch Flavored Tortilla Chips' rather than 'Bag of Chips'); and for a brand, product, store, "
             "restaurant or company, name its well-known parent company too (for example 'Doritos, a Frito-Lay and "
             "PepsiCo Brand' or 'KFC Restaurant, Owned by Yum! Brands'), but only when you are sure of it. "
@@ -2326,9 +2355,9 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
             raise
         except ApiError:
             pass                                     # keep the short one
-    raw_title = tidy_symbols(drop_trailing_location(raw_title, title_location), symbols)
+    raw_title = drop_sizes(tidy_symbols(drop_trailing_location(raw_title, title_location), symbols))
     title = clean_title(raw_title) if title_case_overridden(direction) else title_case(raw_title)
-    raw_keywords = [tidy_symbols(str(k), symbols) for k in raw_keywords]
+    raw_keywords = drop_size_keywords([tidy_symbols(str(k), symbols) for k in raw_keywords])
     if copyright_free:
         raw_keywords = drop_brand_keywords(raw_keywords)
     keywords = seo_keywords(raw_keywords, keep=lead_keywords, lower=lower, protect=protect)
@@ -2345,7 +2374,7 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
                        "Output only JSON: {\"keywords\": [\"...\"]}")
         try:
             more = ask(more_prompt, MORE_KEYWORDS_SCHEMA, "more keywords")
-            extra = [tidy_symbols(str(k), symbols) for k in _as_list(more.get("keywords", []))]
+            extra = drop_size_keywords([tidy_symbols(str(k), symbols) for k in _as_list(more.get("keywords", []))])
             if copyright_free:
                 extra = drop_brand_keywords(extra)
             extra = seo_keywords(extra, keep=list(lead_keywords or []) + keywords, lower=lower, protect=protect)
