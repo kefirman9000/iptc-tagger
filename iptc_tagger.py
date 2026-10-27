@@ -797,11 +797,11 @@ class MainWindow(QMainWindow):
         for lbl in (about_lbl, dir_lbl):
             lbl.setWordWrap(True)
         self.context = QPlainTextEdit(self.settings.get("context", ""))
-        self.context.setPlaceholderText("e.g. Autumn wedding of Sarah and James at Sarah P. Duke Gardens, "
-                                        "Durham, North Carolina. The older couple are the bride's parents.")
+        self.context.setPlaceholderText("e.g. Autumn wedding of Sarah and James at Meiji Shrine, "
+                                        "Tokyo, Japan. The older couple are the bride's parents.")
         self.direction = QPlainTextEdit(self.settings.get("direction", ""))
         self.direction.setPlaceholderText("e.g. Titles in the form \"Subject, Location\", 6 words max.\n"
-                                          "Always include the keywords wedding, Durham and North Carolina.\n"
+                                          "Always include the keywords wedding, Tokyo and Japan.\n"
                                           "Avoid words like beautiful and stunning.")
         for box in (self.context, self.direction):
             box.setMaximumHeight(78)
@@ -827,7 +827,7 @@ class MainWindow(QMainWindow):
         g.addWidget(dir_lbl, 0, 1)
         g.addWidget(self.direction, 1, 1)
         self.lead = QLineEdit(self.settings.get("lead_keywords", ""))
-        self.lead.setPlaceholderText("e.g. Durham, North Carolina, Duke Gardens, {year}, {month} {year}")
+        self.lead.setPlaceholderText("e.g. Tokyo, Japan, Shibuya, {year}, {month} {year}")
         self.lead.setToolTip("Put first in every photo's keywords, exactly as typed, before the AI's suggestions.\n"
                              "{year}, {month} and {date} are filled in from each photo's capture date.")
         self.lead.setClearButtonEnabled(True)
@@ -842,7 +842,7 @@ class MainWindow(QMainWindow):
         lead_row.addWidget(self.btn_lead)
         g.addLayout(lead_row, 2, 0, 1, 2)
         self.prefix = QLineEdit(self.settings.get("title_prefix", ""))
-        self.prefix.setPlaceholderText("e.g. Editorial:   or   Durham, North Carolina, {year}:")
+        self.prefix.setPlaceholderText("e.g. Editorial:   or   Tokyo, Japan, {year}:")
         self.prefix.setToolTip("Put in front of every suggested title, exactly as typed.\n"
                                "{year}, {month} and {date} are filled in from each photo's capture date.")
         self.prefix.setClearButtonEnabled(True)
@@ -857,10 +857,10 @@ class MainWindow(QMainWindow):
         prefix_row.addWidget(self.btn_prefix)
         g.addLayout(prefix_row, 3, 0, 1, 2)
         self.location = QLineEdit()
-        self.location.setPlaceholderText("e.g. Durham, North Carolina, USA")
+        self.location.setPlaceholderText("e.g. Tokyo, Japan")
         self.location.setToolTip("Where the photos were taken. It goes into each title just before the date taken\n"
                                  "(or before the title if the date is off), editorial style:\n"
-                                 "Durham, North Carolina, USA - October 26, 2026: Description")
+                                 "Tokyo, Japan - October 26, 2026: Description")
         self.location.setClearButtonEnabled(True)
         # editable dropdown: type a new location, or pick one you've used before
         self.location_box = QComboBox()
@@ -916,7 +916,7 @@ class MainWindow(QMainWindow):
         self.custom_date.setEnabled(self.custom_date_on.isChecked())
         self.custom_date_on.toggled.connect(lambda *_: self._date_options_changed())
         self.custom_date.dateChanged.connect(lambda *_: self._date_options_changed())
-        self.loc_sep.setToolTip("The character between the location and the date, e.g. Durham, NC - October 26, 2026")
+        self.loc_sep.setToolTip("The character between the location and the date, e.g. Tokyo, Japan - October 26, 2026")
         self.title_preview = QLabel()
         self.title_preview.setWordWrap(True)
         self.title_preview.setTextFormat(Qt.RichText)
