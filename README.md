@@ -400,4 +400,4 @@ Both options can be switched off in **Settings → When saving**.
 
 ## Building it yourself
 
-The [release build](.github/workflows/release.yml) runs on GitHub. It builds the program with PyInstaller on GitHub's Windows and Mac machines, adds the latest ExifTool on Windows, and attaches the zips to a release when a version tag (like `v2026.10.27`) is pushed. To build on your own computer: `pip install -r requirements.txt pyinstaller`, then `python build_standalone.py --out build-output`. To run from the source without building: `python iptc_tagger.py`.
+The [release build](.github/workflows/release.yml) runs on GitHub. It builds the program with PyInstaller on GitHub's Windows and Mac machines, adds the latest ExifTool on Windows, and publishes them as a release named after the version in `tagger_core.py` (`APP_VERSION`) whenever code is pushed to `main`. A new version number makes a new release; the same number updates it. To build on your own computer: `pip install -r requirements.txt pyinstaller`, then `python build_standalone.py --out build-output`. To run from the source without building: `python iptc_tagger.py`.

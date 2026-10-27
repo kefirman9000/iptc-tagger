@@ -1,12 +1,12 @@
-# Builds the portable program on GitHub's own Windows and Mac machines.
-# - Every push: the zips are kept as downloadable "artifacts" of that run (Actions tab).
-# - A version tag (e.g. v2026.10.27): the zips are attached to a Release on the Releases page.
+# Builds the portable program on GitHub's own Windows and Mac machines, then publishes it on the
+# Releases page as "IPTC Tagger <version>" (the version comes from APP_VERSION in tagger_core.py).
+# Pushing a new version number makes a new release; pushing again with the same number updates it.
 name: Build portable app
 
 on:
   push:
     branches: [main]
-    tags: ["v*"]
+    paths-ignore: ["README.md"]
   workflow_dispatch:
 
 permissions:
@@ -52,12 +52,6 @@ jobs:
         with:
           name: IPTC-Tagger-Windows
           path: build-output/IPTC Tagger (Windows).zip
-      - name: Attach to the release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: build-output/IPTC Tagger (Windows).zip
-
   mac:
     runs-on: macos-latest
     steps:
@@ -73,8 +67,32 @@ jobs:
         with:
           name: IPTC-Tagger-Mac
           path: build-output/IPTC Tagger (Mac).zip
-      - name: Attach to the release
-        if: startsWith(github.ref, 'refs/tags/')
+
+  release:
+    # publish once both builds are done (or just Windows, if the Mac build had a problem)
+    needs: [windows, mac]
+    if: ${{ always() && needs.windows.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read the version number
+        run: |
+          VERSION=$(python3 -c "import re;print(re.search(r'APP_VERSION = \"(.+?)\"', open('tagger_core.py').read()).group(1))")
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "Version $VERSION"
+      - uses: actions/download-artifact@v4
+        with:
+          path: zips
+          merge-multiple: true
+      - name: Publish the release
         uses: softprops/action-gh-release@v2
         with:
-          files: build-output/IPTC Tagger (Mac).zip
+          tag_name: v${{ env.VERSION }}
+          name: IPTC Tagger ${{ env.VERSION }}
+          target_commitish: ${{ github.sha }}
+          make_latest: true
+          body: |
+            **Download IPTC Tagger (Windows).zip** below, unzip it anywhere and run **IPTC Tagger.exe**. Nothing to install; ExifTool is built in.
+            Mac: download IPTC Tagger (Mac).zip, open IPTC Tagger.app (the first time: right-click > Open), and install ExifTool from exiftool.org.
+            The AI needs [Ollama](https://ollama.com/download) (free) on your computer.
+          files: zips/*.zip
