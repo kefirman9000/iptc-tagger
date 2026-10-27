@@ -29,19 +29,19 @@ No installation and no Python needed. ExifTool is included.
 ## Features
 
 - **Drag and drop** JPEGs or whole folders, including subfolders.
-- **AI suggestions:** a descriptive, SEO-friendly title in Title Case and 30–40 lowercase keywords per photo.
+- **Detect:** the AI suggests a full, descriptive, SEO-friendly title in Title Case (short, standard or detailed, as you choose) and 30–40 lowercase keywords per photo.
 - **Review and edit** in a table or a side panel with a large preview. Save one photo at a time or many at once.
 - **Instructions for the AI:** facts about the batch, title and keyword rules, and a note per photo.
 - **Photo types:** landscape, food, architecture, product on a shelf, company logo with a stock chart, editorial event and more, plus your own. A **Copyright-free** type keeps brand and personal names out.
 - **Editorial:** one checkbox adds the location and the date taken to every title and to the keywords, before or after the AI's suggestion, e.g. *Tokyo, Japan - October 26, 2026: Shibuya Crossing at Dusk*. Text before titles, a live preview and a custom date (when the camera's date is wrong) round it off.
 - **Clean text:** symbols in the AI's titles and keywords are converted to words (& → and, % → percent) or removed, as you choose.
 - **Keywords to put first:** e.g. place or client, with `{year}`, `{month}` and `{date}` filled in from each photo.
-- **Redo with reasons:** tell the AI what's wrong with a suggestion (too generic, wrong subject, too long…) and it tries again with that in mind.
+- **Redo with reasons:** tell the AI what's wrong with a suggestion (too generic, wrong subject, too short…) or what to focus on, and it tries again with that in mind. Works on the selected photo, or on every checked photo with **Redo Checked**.
 - **CSV export:** Shutterstock or Adobe Stock upload format, or every detail for a spreadsheet.
 - **Working with many photos:** check boxes, filters (no title, no keywords, unsaved, errors…), search, and copy and paste of titles, keywords and notes between photos.
-- **Reliable:** Stop at any time, a time limit with automatic retry, and an optional debug log.
+- **Reliable:** Stop at any time, a time limit with automatic retry, and one log file for troubleshooting.
 - **What's new:** shown once after each update; see [CHANGELOG.md](CHANGELOG.md).
-- **Update check:** when a new release is published here, the app says so at startup, with a link to download it. You can turn this off in Settings.
+- **Automatic updates:** new releases published here are downloaded in the background and installed when you restart the app. You can turn this off in Settings.
 
 ## What gets written
 
@@ -66,7 +66,7 @@ After saving, XMP is optionally copied to IPTC with ExifTool's `xmp2iptc.args`, 
 
 ## Settings and logs
 
-Settings are stored in `%APPDATA%\IPTC Tagger` (Windows) or `~/Library/Application Support/IPTC Tagger` (Mac), so they carry over between versions. The optional debug log (**Settings → Troubleshooting**) is saved there as `debug_log.txt`.
+Settings are stored in `%APPDATA%\IPTC Tagger` (Windows) or `~/Library/Application Support/IPTC Tagger` (Mac), so they carry over between versions. The log, `debug_log.txt`, is saved there too. It always records errors; turn on **Debug mode** in **Settings → General** to record every AI request as well.
 
 ## Building from source
 

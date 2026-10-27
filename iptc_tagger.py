@@ -323,6 +323,14 @@ class SettingsDialog(QDialog):
         self.symbols.setToolTip("What happens to symbols like & + @ % in the AI's titles and keywords.\n"
                                 "Your own text (text before titles, location, keywords to put first) is never changed.")
         f_text.addRow("Symbols", self.symbols)
+        self.title_len = QComboBox()
+        for key, label, _lo, _hi in core.TITLE_LENGTHS:
+            self.title_len.addItem(label, key)
+        self.title_len.setCurrentIndex(max(0, self.title_len.findData(settings.get("title_length", "detailed"))))
+        self.title_len.setToolTip("How long the AI's titles are. Detailed titles say what the subject is or is known\n"
+                                  "for, the setting and the mood, e.g. 'McDonald's Restaurant Exterior, Major American\n"
+                                  "Fast Food Chain, at Dusk'. A title that comes back shorter is expanded once.")
+        f_text.insertRow(0, "Title length", self.title_len)
         self.et = QLineEdit(settings.get("exiftool_path", ""))
         self.et.setPlaceholderText(detected_exiftool or "not found: install ExifTool or choose it here")
         browse = QPushButton("Browse…")
@@ -392,7 +400,7 @@ class SettingsDialog(QDialog):
         x2i_hint.setStyleSheet(f"color:{GREY}")
         f_save.addRow("", x2i_hint)
         # troubleshooting: debug log
-        self.debug = QCheckBox("Debug mode: write a detailed log of every AI request")
+        self.debug = QCheckBox("Debug mode: also record every AI request in the log")
         self.debug.setChecked(bool(settings.get("debug_log")))
         self.debug.setToolTip("Records timings, what Ollama reports for each reply, and every error, stop,\n"
                               "time-out and retry, so a problem can be tracked down. Photos aren't included.")
@@ -407,10 +415,16 @@ class SettingsDialog(QDialog):
         drow.addWidget(open_log)
         drow.addWidget(clear_log)
         f_general.addRow("Troubleshooting", drow)
-        dhint = QLabel(f"The log is saved as {core.debug_log_path()}. Send that file when reporting a problem.")
+        dhint = QLabel(f"One log for everything: unexpected errors are always kept in it, and Debug mode adds the "
+                       f"details of every AI request. It's saved as {core.debug_log_path()}. "
+                       "Send that file when reporting a problem.")
         dhint.setStyleSheet(f"color:{GREY}")
         dhint.setWordWrap(True)
         f_general.addRow("", dhint)
+        self.auto_update = QCheckBox("Download and install updates automatically")
+        self.auto_update.setChecked(bool(settings.get("auto_update", True)))
+        self.auto_update.setToolTip("A new version is downloaded in the background. Restart when it suits you, or it\n"
+                                    "installs itself when you close the app. Your settings are kept.")
         self.updates = QCheckBox("Check for a new version when the app starts")
         self.updates.setChecked(bool(settings.get("check_updates", True)))
         self.updates.setToolTip("Asks GitHub whether a newer release exists. Nothing about you or your photos is sent,\n"
@@ -426,6 +440,7 @@ class SettingsDialog(QDialog):
         urow.addWidget(self.update_result)
         urow.addWidget(check_now)
         f_general.addRow("Updates", urow)
+        f_general.addRow("", self.auto_update)
         whats_new = QPushButton("What's new…")
         whats_new.setToolTip("What changed in this version and the ones before it")
         whats_new.clicked.connect(lambda *_: show_whats_new(self, "", full=True))
@@ -571,10 +586,10 @@ class SettingsDialog(QDialog):
                  custom_types=self.custom.toPlainText().strip(),
                  xmp2iptc_on_save=self.x2i.isChecked(), xmp2iptc_args=self.x2i_path.text().strip(),
                  meta_fields=[k for k, cb in self.field_boxes.items() if cb.isChecked()],
-                 title_as_description=self.field_boxes["description"].isChecked(),
                  ai_time_limit=self.tlimit.value(), ai_retries=int(self.tretry.currentData() or 0),
                  debug_log=self.debug.isChecked(), symbols=self.symbols.currentData() or "convert",
-                 check_updates=self.updates.isChecked())
+                 title_length=self.title_len.currentData() or "detailed",
+                 check_updates=self.updates.isChecked(), auto_update=self.auto_update.isChecked())
         s["keyword_min"], s["keyword_max"] = core.keyword_range(self.kmin.value(), self.kmax.value())
         return s
 
@@ -583,7 +598,7 @@ class SettingsDialog(QDialog):
 
 class ReviewPanel(QWidget):
     """Right-hand panel: look at one photo, edit its title and keywords, and save
-    or re-identify just that photo. Changes appear in the list straight away."""
+    or detect just that photo again. Changes appear in the list straight away."""
 
     def __init__(self, win: "MainWindow"):
         super().__init__()
@@ -626,7 +641,7 @@ class ReviewPanel(QWidget):
             l = QLabel(f"<b>{text}</b>")
             return l
 
-        self.b_identify = QPushButton("Get New AI Suggestion")
+        self.b_identify = QPushButton("Detect Again")
         self.b_identify.setToolTip("Run the AI on this photo again for a fresh title and keywords.\n"
                                    "Add or change the photo notes first to steer it.")
         self.b_revert = QPushButton("Revert")
@@ -704,7 +719,7 @@ class ReviewPanel(QWidget):
         if ph is None:
             self.body.hide()
             self.empty.setText("Select a photo in the list to review and edit it here." if selected == 0 else
-                               f"{selected} photos selected. Identify and Save metadata above work on all of "
+                               f"{selected} photos selected. Detect and Save metadata above work on all of "
                                "them. Select a single photo to review it here.")
             self.empty.show()
             return
@@ -932,7 +947,7 @@ class MainWindow(QMainWindow):
 
         self.btn_add = button("Add Photos…", self.add_photos_dialog, QStyle.SP_FileIcon)
         self.btn_folder = button("Add Folder…", self.add_folder_dialog, QStyle.SP_DirOpenIcon)
-        self.btn_identify = button("Identify", self.identify, primary=True)
+        self.btn_identify = button("Detect", self.identify, primary=True)
         self.btn_save = button("Save Metadata", self.save, QStyle.SP_DialogSaveButton, primary=True)
         self.btn_remove = button("Remove", self.remove_checked, QStyle.SP_TrashIcon)
         self.btn_remove.setToolTip("Remove the checked photos (or the selected ones) from this list. "
@@ -942,6 +957,9 @@ class MainWindow(QMainWindow):
         self.btn_check_all.setToolTip("Tick every photo shown in the list")
         self.btn_uncheck_all = button("Uncheck All", lambda: self.set_checked(self.photos, False))
         self.btn_uncheck_all.setToolTip("Clear all ticks; the buttons then work on the selected photos, or all")
+        self.btn_redo_checked = button("Redo Checked…", lambda: self.redo_photos(
+            [p for p in self.checked_photos() if not p.busy]))
+        self.btn_redo_checked.setToolTip("Redo the checked photos with reasons: tell the AI what's wrong and it tries again")
         self.btn_export = button("Export CSV…", self.export_csv)
         self.btn_export.setToolTip("Save the titles and keywords as a spreadsheet: Shutterstock or Adobe Stock upload\n"
                                    "format, or every detail. Uses the checked photos, else the selected, else all shown.")
@@ -952,7 +970,7 @@ class MainWindow(QMainWindow):
         for w in (self.btn_add, self.btn_folder):
             top.addWidget(w)
         top.addSpacing(16)
-        for w in (self.btn_identify, self.btn_save, self.btn_export):
+        for w in (self.btn_identify, self.btn_redo_checked, self.btn_save, self.btn_export):
             top.addWidget(w)
         top.addSpacing(16)
         for w in (self.btn_check_all, self.btn_uncheck_all):
@@ -965,7 +983,7 @@ class MainWindow(QMainWindow):
         top.addWidget(self.btn_settings)
 
         # ----- instructions for the AI
-        self.instructions = QGroupBox("Instructions for the AI (used every time you click Identify)")
+        self.instructions = QGroupBox("Instructions for the AI (used every time you click Detect)")
         g = QGridLayout(self.instructions)
         about_lbl = QLabel("<b>About these photos</b><br><span style='color:#8a8f98'>Clarify what the "
                            "photos show: place, event, client, people's roles, species…</span>")
@@ -1174,6 +1192,8 @@ class MainWindow(QMainWindow):
                                          "border-radius:8px;padding:8px 10px}")
         self.update_banner.linkActivated.connect(self._update_link)
         self.update_info: dict | None = None
+        self.update_ready = None                      # (new program folder, download folder) once downloaded
+        self.update_downloading = self.update_installing = self.restarting_for_update = False
         self.ai_banner.linkActivated.connect(self._banner_link)
 
         self.table = QTableWidget(0, 9)
@@ -1354,8 +1374,7 @@ class MainWindow(QMainWindow):
     # ---------- CSV export
     def is_editorial(self, ph: Photo) -> bool:
         """Editorial when the photo shows brands or a news event, or your text before titles says so."""
-        return (self.effective_type(ph) in core.EDITORIAL_TYPES
-                or "editorial" in self.settings.get("title_prefix", "").casefold())
+        return bool(self.settings.get("editorial_on"))
 
     def export_csv(self):
         photos, scope = self.targets()
@@ -1402,20 +1421,92 @@ class MainWindow(QMainWindow):
         if not info or info["version"] == self.settings.get("skipped_update"):
             return
         self.update_info = info
+        if self.update_ready or self.update_downloading:
+            return
+        if self.settings.get("auto_update", True) and self._can_install(info):
+            self.start_update_download()             # quietly, in the background
+            return
         self.update_banner.setText(
             f"<b>{core.APP_NAME} {info['version']} is available</b> (you have {core.APP_VERSION}). &nbsp;"
-            "<a href='download'>Download</a> &nbsp;·&nbsp; <a href='skip'>Skip this version</a>"
-            " &nbsp;·&nbsp; <a href='later'>Not now</a>")
+            + ("<a href='install'>Install it</a>" if self._can_install(info) else "<a href='download'>Download</a>")
+            + " &nbsp;·&nbsp; <a href='skip'>Skip this version</a> &nbsp;·&nbsp; <a href='later'>Not now</a>")
         self.update_banner.show()
+
+    def _can_install(self, info) -> bool:
+        """The packaged program can replace itself (not when running from the source code, or when its
+        folder can't be written to); and the release has a download for this computer."""
+        return core.can_self_update() and bool(core.update_asset((info or {}).get("assets", {})))
+
+    def start_update_download(self):
+        info = self.update_info or {}
+        url = core.update_asset(info.get("assets", {}))
+        if not url:
+            return
+        self.update_downloading = True
+        self.update_banner.setText(f"Downloading {core.APP_NAME} {info['version']}…")
+        self.update_banner.show()
+        run_job(self, Job("update-download", self._fetch_update, url, progress=True), self.io_pool,
+                lambda _k, res: self._update_downloaded(res), lambda _k, msg: self._update_download_failed(msg),
+                on_progress=lambda _k, p: self.update_banner.setText(
+                    f"Downloading {core.APP_NAME} {info['version']}… {p[1]}"
+                    + (f" ({p[0] * 100:.0f}%)" if p[0] is not None else "")))
+
+    @staticmethod
+    def _fetch_update(url, progress=None, cancel=None):
+        import tempfile
+        work = tempfile.mkdtemp(prefix="iptc_tagger_update_")
+        zip_path = core.download_update(url, work, progress, cancel)
+        return core.unpack_update(zip_path, work), work
+
+    def _update_downloaded(self, res):
+        self.update_downloading = False
+        self.update_ready = res                       # (new program, download folder)
+        v = (self.update_info or {}).get("version", "")
+        core.debug(f"update: {v} is downloaded and ready: {res[0]}")
+        self.update_banner.setText(
+            f"<b>{core.APP_NAME} {v} is ready to install.</b> &nbsp;<a href='restart'>Restart now</a>"
+            " &nbsp;·&nbsp; <a href='later'>Later</a> (it installs when you close the app)")
+        self.update_banner.show()
+
+    def _update_download_failed(self, msg):
+        self.update_downloading = False
+        core.debug(f"update: download failed: {msg}", always=True)
+        info = self.update_info or {}
+        self.update_banner.setText(
+            f"<b>{core.APP_NAME} {info.get('version', '')} is available</b>, but it couldn't be downloaded ({msg}). "
+            "&nbsp;<a href='download'>Download it yourself</a> &nbsp;·&nbsp; <a href='later'>Not now</a>")
+        self.update_banner.show()
+
+    def install_update(self, relaunch: bool) -> bool:
+        """Hand over to the updater: it waits for this window to close, then replaces the program."""
+        if not self.update_ready or self.update_installing:
+            return False
+        new_root, work = self.update_ready
+        try:
+            core.start_updater(core.updater_script(new_root, core.program_root(), work, os.getpid(), relaunch),
+                               work)
+        except OSError as e:
+            core.debug(f"update: couldn't start the updater: {e}", always=True)
+            QMessageBox.warning(self, "Update", f"The update couldn't be installed:\n{e}")
+            return False
+        self.update_installing = True
+        return True
 
     def _update_link(self, link):
         info = self.update_info or {}
         if link == "download":
             QDesktopServices.openUrl(QUrl(info.get("url") or core.RELEASES_PAGE))
+        elif link == "install":
+            self.start_update_download()
+            return
+        elif link == "restart":
+            self.restarting_for_update = True
+            self.close()                              # closeEvent asks about unsaved work, then installs
+            return
         elif link == "skip" and info:
             self.settings["skipped_update"] = info["version"]
             core.save_settings(self.settings)
-        self.update_banner.hide()
+        self.update_banner.hide()                     # (a downloaded update stays ready: it installs on close)
 
     def _banner_link(self, link):
         if link.startswith("settings"):
@@ -1764,12 +1855,18 @@ class MainWindow(QMainWindow):
         a = menu.addAction(f"Save {'this photo' if one else f'{n_changed} changed photo' + ('s' if n_changed != 1 else '')}")
         a.setEnabled(n_changed > 0 and self.exiftool is not None)
         a.triggered.connect(lambda *_: self.save_photos([p for p in idle if p.changed]))
-        a = menu.addAction("Get new AI suggestion" if one else f"Get new AI suggestions for {len(idle)} photos")
+        a = menu.addAction("Detect again" if one else f"Detect {len(idle)} photos")
         a.setEnabled(bool(idle))
         a.triggered.connect(lambda *_: self.identify_photos(idle))
-        a = menu.addAction("Redo with reasons…")
-        a.setEnabled(bool(idle))
-        a.triggered.connect(lambda *_: self.redo_photos(idle))
+        # Redo works on exactly the photo(s) you clicked or selected, never on all checked ones by surprise
+        picked_idle = [p for p in picked if not p.busy]
+        a = menu.addAction("Redo with reasons…" if len(picked_idle) <= 1 else f"Redo {len(picked_idle)} selected photos with reasons…")
+        a.setEnabled(bool(picked_idle))
+        a.triggered.connect(lambda *_: self.redo_photos(picked_idle))
+        checked_idle = [p for p in self.checked_photos() if not p.busy]
+        a = menu.addAction(f"Redo checked photos with reasons… ({len(checked_idle)})")
+        a.setEnabled(bool(checked_idle))
+        a.triggered.connect(lambda *_: self.redo_photos(checked_idle))
         a = menu.addAction("Revert unsaved changes")
         a.setEnabled(n_changed > 0)
         a.triggered.connect(lambda *_: self.revert_photos(idle))
@@ -2151,7 +2248,7 @@ class MainWindow(QMainWindow):
         n = len([p for p in photos if not p.busy])
         name = self._default_label() if not key else next((l for k, l in self.type_items() if k == key), key)
         self.status.setText(f"Photo type for {n} photo{'s' if n != 1 else ''}: {name}. "
-                            "Click Identify to write titles for that type.")
+                            "Click Detect to write titles for that type.")
 
     def _row_type_chosen(self, ph: Photo, combo: QComboBox):
         if not ph.busy:
@@ -2275,8 +2372,11 @@ class MainWindow(QMainWindow):
         targets, scope = self.targets()
         n_id = sum(1 for p in targets if not p.busy)
         n_save = sum(1 for p in targets if p.changed and not p.busy)
-        self.btn_identify.setText(f"Identify {scope} ({n_id})" if self.photos else "Identify")
+        self.btn_identify.setText(f"Detect {scope} ({n_id})" if self.photos else "Detect")
         self.btn_identify.setEnabled(n_id > 0)
+        n_redo = sum(1 for p in self.checked_photos() if not p.busy)
+        self.btn_redo_checked.setText(f"Redo Checked… ({n_redo})" if n_redo else "Redo Checked…")
+        self.btn_redo_checked.setEnabled(n_redo > 0)
         self.btn_save.setText((f"Save checked ({n_save})" if scope == "checked" else f"Save metadata ({n_save})")
                               if self.photos else "Save Metadata")
         self.btn_save.setToolTip("Confirm the edits on the checked photos and save them into the files"
@@ -2412,20 +2512,20 @@ class MainWindow(QMainWindow):
             self._ai_checked(None, {"version": None, "models": []})
             QMessageBox.information(self, "Ollama isn't running",
                                     "The free AI recognition runs on your computer with Ollama.\n\n"
-                                    "Install Ollama from ollama.com and open it, then click Identify again.")
+                                    "Install Ollama from ollama.com and open it, then click Detect again.")
             return
         if not any(same_model(model, n) for n in info.get("names", [])):
             self._release(targets, "The AI model isn't downloaded yet")
             QMessageBox.information(self, "Download a model",
-                                    "Download a free AI model in Settings (one click), then click Identify again.")
+                                    "Download a free AI model in Settings (one click), then click Detect again.")
             self.open_settings()
             return
         if not targets:
             return
         context, direction = self.settings["context"], self.settings["direction"]
         kmin, kmax = core.keyword_range(self.settings.get("keyword_min"), self.settings.get("keyword_max"))
-        self._begin_batch(len(targets), "Identifying")
-        self.status.setText(f"Identifying with {model}. The first photo takes longer while the model loads.")
+        self._begin_batch(len(targets), "Detecting")
+        self.status.setText(f"Detecting with {model}. The first photo takes longer while the model loads.")
         for ph in targets:
             ph.message = "Waiting in line…"
             self._show(ph)
@@ -2444,7 +2544,9 @@ class MainWindow(QMainWindow):
         redo = ph.redo or {}
         job = Job(ph.path, functools.partial(core.identify, cancel=ph.token,
                                              symbols=self.settings.get("symbols", "convert"),
-                                             feedback=redo.get("feedback", ""), rejected_title=redo.get("rejected", "")),
+                                             feedback=redo.get("feedback", ""), rejected_title=redo.get("rejected", ""),
+                                             title_length=self.settings.get("title_length", "detailed"),
+                                             expand_short=True),
                   ph.path, url, model, kmin, kmax,
                   context, self.bare_title(ph), list(ph.keywords), direction, ph.note,
                   core.type_description(self.settings, self.effective_type(ph)),
@@ -2526,7 +2628,7 @@ class MainWindow(QMainWindow):
                               + ("" if self.models_loaded else " (loading the model first, this one takes longer)"))
                 self._set_status_cell(ph)
                 waiting = sum(1 for p in working if not p.ai_started)
-                self.status.setText(f"Identifying with {self.settings['model']}: {secs} s on {os.path.basename(ph.path)}"
+                self.status.setText(f"Detecting with {self.settings['model']}: {secs} s on {os.path.basename(ph.path)}"
                                     + (f", {waiting} more waiting" if waiting else "")
                                     + ". You can keep working while it runs.")
 
@@ -2574,7 +2676,7 @@ class MainWindow(QMainWindow):
             self.stats["kept"] += 1 if keep_title else 0
             avg = self.stats["seconds"] / self.stats["photos"]
             kept = self.stats["kept"]
-            self.last_summary = (f"Identified {self.stats['photos']} photo{'s' if self.stats['photos'] != 1 else ''} "
+            self.last_summary = (f"Detected {self.stats['photos']} photo{'s' if self.stats['photos'] != 1 else ''} "
                                  f"this session, about {avg:.0f} s each."
                                  + (f" {kept} kept their existing title: untick Keep existing titles to get new ones."
                                     if kept else ""))
@@ -2612,7 +2714,7 @@ class MainWindow(QMainWindow):
         if not any(p.busy for p in self.photos):
             self.btn_stop.hide()
         if not any(p.busy and p.status == "identifying" for p in self.photos):
-            # the last photo of the batch failed: don't leave "Identifying… 12 s" in the status bar
+            # the last photo of the batch failed: don't leave "Detecting… 12 s" in the status bar
             errors = sum(1 for p in self.photos if p.status == "error")
             self.status.setText((getattr(self, "last_summary", "") + " " if getattr(self, "last_summary", "") else "")
                                 + (f"{errors} photo{'s' if errors != 1 else ''} had a problem: see the Status column."
@@ -2715,14 +2817,17 @@ class MainWindow(QMainWindow):
             self.ai_pool.waitForDone(5000)
         elif unsaved and QMessageBox.question(self, "Unsaved changes",
                                               f"{unsaved} photo(s) have titles or keywords that aren't saved. Quit anyway?") != QMessageBox.Yes:
+            self.restarting_for_update = False
             e.ignore()
             return
         self._remember_options()
+        if self.update_ready:                         # a downloaded update installs as the app closes
+            self.install_update(relaunch=self.restarting_for_update)
         e.accept()
 
 
 def install_error_reporting():
-    """Unexpected errors are written to error_log.txt (next to the settings) and shown in a message,
+    """Unexpected errors are written to the log (debug_log.txt, next to the settings) and shown in a message,
     instead of disappearing (there's no console when the app is started by double-clicking)."""
     import datetime
     import traceback
@@ -2730,14 +2835,8 @@ def install_error_reporting():
 
     def hook(kind, value, tb):
         text = "".join(traceback.format_exception(kind, value, tb))
-        core.debug("UNEXPECTED ERROR:\n" + text)
-        log = os.path.join(core.config_dir(), "error_log.txt")
-        try:
-            os.makedirs(os.path.dirname(log), exist_ok=True)
-            with open(log, "a", encoding="utf-8") as f:
-                f.write(f"--- {datetime.datetime.now():%Y-%m-%d %H:%M:%S}  IPTC Tagger\n{text}\n")
-        except OSError:
-            log = ""
+        core.debug(f"UNEXPECTED ERROR ({core.APP_NAME} {core.APP_VERSION}):\n" + text, always=True)
+        log = core.debug_log_path() if os.path.exists(core.debug_log_path()) else ""
         sys.__stderr__ and sys.__stderr__.write(text)
         try:
             if shown["busy"] or QApplication.instance() is None:
