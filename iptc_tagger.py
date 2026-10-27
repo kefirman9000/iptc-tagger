@@ -317,11 +317,11 @@ class SettingsDialog(QDialog):
         self.custom.setMaximumHeight(90)
         other.addRow("Your own photo types", self.custom)
 
-        self.x2i = QCheckBox("Copy XMP to IPTC after every save (your Shutterstock conversion)")
+        self.x2i = QCheckBox("Copy XMP to IPTC after every save (for sites that read IPTC)")
         self.x2i.setChecked(bool(settings.get("xmp2iptc_on_save", True)))
-        self.x2i.setToolTip("Runs ExifTool with xmp2iptc.args on each photo as it's saved, with the same options as "
-                            "Convert_Metadata_Exiftool_Shutterstock.bat:\n-overwrite_original -P -m -charset iptc=utf8 "
-                            "-codedcharacterset=utf8 -tagsFromFile @ -@ xmp2iptc.args")
+        self.x2i.setToolTip("Runs ExifTool with xmp2iptc.args on each photo as it's saved, so its IPTC fields match the XMP ones:\n"
+                            "-overwrite_original -P -m -charset iptc=utf8 -codedcharacterset=utf8 -tagsFromFile @ "
+                            "-@ xmp2iptc.args")
         other.addRow("When saving", self.x2i)
         self.x2i_path = QLineEdit(settings.get("xmp2iptc_args", ""))
         found = core.find_xmp2iptc_args(detected_exiftool or core.find_exiftool(settings.get("exiftool_path", "")))
@@ -355,7 +355,7 @@ class SettingsDialog(QDialog):
         dhint.setStyleSheet(f"color:{GREY}")
         dhint.setWordWrap(True)
         other.addRow("", dhint)
-        self.desc = QCheckBox("Also save the title as the Description (Caption): Shutterstock uses it as the title")
+        self.desc = QCheckBox("Also save the title as the Description (Caption): some stock sites use it as the title")
         self.desc.setChecked(bool(settings.get("title_as_description", True)))
         other.addRow("", self.desc)
 
@@ -2313,7 +2313,7 @@ class MainWindow(QMainWindow):
         msg = (f"Save title and keywords into {n} photo{'s' if n != 1 else ''}?\n\n"
                "Only metadata (IPTC and XMP) is changed. The pictures themselves are not re-saved, and "
                "each file is checked afterwards to confirm the image data is identical."
-               + ("\n\nAfter saving, XMP is copied to IPTC with xmp2iptc.args (your Shutterstock conversion)."
+               + ("\n\nAfter saving, XMP is copied to IPTC with xmp2iptc.args, so both match."
                   if self.settings.get("xmp2iptc_on_save", True) else ""))
         if QMessageBox.question(self, "Save metadata", msg) != QMessageBox.Yes:
             return
