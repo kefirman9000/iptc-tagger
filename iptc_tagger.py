@@ -306,7 +306,8 @@ class SettingsDialog(QDialog):
         self.tlimit.setSpecialValueText("No limit")
         self.tlimit.setValue(int(settings.get("ai_time_limit", 30) or 0))
         self.tlimit.setToolTip("If the AI takes longer than this on one photo, it's stopped.\n"
-                               "The first photo of a session gets 90 s extra while Ollama loads the model.")
+                               "The first photo of a session gets 90 s extra while Ollama loads the model.\n"
+                               "The retry choice is also used when the AI returns nothing for a photo.")
         self.tretry = QComboBox()
         for n, label in ((1, "then try once more"), (2, "then try twice more"), (0, "then skip the photo")):
             self.tretry.addItem(label, n)
@@ -2735,9 +2736,23 @@ class MainWindow(QMainWindow):
             ph.message = (f"The AI took longer than {limit} s" + (f" ({ph.retries + 1} tries)" if ph.retries else "")
                           + ". Click Detect to try again, pick a faster model in Settings, or raise the time limit.")
             self._show(ph)
+        elif ph and msg == core.EMPTY_REPLY and ph.retries < int(self.settings.get("ai_retries", 1) or 0):
+            # the model answered with nothing usable: a fresh try almost always works
+            tries = int(self.settings.get("ai_retries", 1) or 0)
+            ph.retries += 1
+            core.debug(f"{os.path.basename(ph.path)}: empty reply, retrying ({ph.retries} of {tries})")
+            ph.message = f"The AI returned nothing, trying again ({ph.retries} of {tries})…"
+            self._show(ph)
+            self.batch_total += 1
+            self.progress.setRange(0, self.batch_total)
+            self._queue_identify(ph)
+            self._tick()
+            return
         elif ph:
             if msg != core.STOPPED:
                 core.debug(f"{os.path.basename(ph.path)}: FAILED: {msg}")
+            if msg == core.EMPTY_REPLY and ph.retries:
+                msg = f"The AI returned nothing ({ph.retries + 1} tries). Click Detect to try again, or try another model."
             ph.busy, ph.redo = False, None
             ph.status, ph.message = ("ready", "Stopped") if msg == core.STOPPED else ("error", msg)
             self._show(ph)
