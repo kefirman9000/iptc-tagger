@@ -47,8 +47,8 @@ The AI runs on your own computer through Ollama:
 
 1. **Add photos:** drag JPEGs or folders onto the window (folders are searched including subfolders), or use **Add Photos… / Add Folder…**. Any titles and keywords already on the photos are shown.
 2. **Instructions for the AI:** the panel at the top. Everything in it is remembered between sessions.
-   - **About these photos:** facts about the photos. The AI can't know names, places or events from the picture alone. They're given to the AI first, and it's told to build the title and keywords around them. For example: *"Autumn wedding of Sarah and James at Sarah P. Duke Gardens, Durham, North Carolina. The older couple are the bride's parents."*
-   - **Title & keyword direction:** how titles and keywords should be written. These directions are the AI's top priority and override the built-in style. For example: *"Titles in the form 'Subject at Location', 10 words max. Always include the keyword durham. Avoid words like beautiful and stunning."*
+   - **About these photos:** facts about the photos. The AI can't know names, places or events from the picture alone. They're given to the AI first, and it's told to build the title and keywords around them. For example: *"Autumn wedding of Sarah and James at Meiji Shrine, Tokyo, Japan. The older couple are the bride's parents."*
+   - **Title & keyword direction:** how titles and keywords should be written. These directions are the AI's top priority and override the built-in style. For example: *"Titles in the form 'Subject at Location', 10 words max. Always include the keyword tokyo. Avoid words like beautiful and stunning."*
      - They're placed where the AI gives them the most weight (its system message) and repeated at the end of the request.
      - If your direction asks for different capitalization, e.g. *"Use sentence case for titles"* or *"Capitalize proper nouns in keywords"*, the app stops forcing Title Case or lowercase.
      - Keywords you name in your instructions are never removed by the repetition filter.
@@ -209,7 +209,7 @@ These tokens are filled in from each photo's own capture date (from the camera's
 | `{month}` | October |
 | `{date}` | 2026-10-26 |
 
-For example, `Durham, North Carolina, {year}, {month} {year}` gives *Durham, North Carolina, 2026, October 2026*. A photo with no capture date skips the keywords that contain a token.
+For example, `Tokyo, Japan, {year}, {month} {year}` gives *Tokyo, Japan, 2026, October 2026*. A photo with no capture date skips the keywords that contain a token.
 
 The keywords are added automatically when you click **Identify**. To add them without running the AI, for example to tag a folder with its location, click **Add to photos now**. It works on the checked photos, or else the selected photos, or else all photos. Nothing is written until you save.
 
@@ -218,7 +218,7 @@ The keywords are added automatically when you click **Identify**. To add them wi
 Type text in **Text before titles** and it's put in front of every title the AI suggests:
 
 - It's kept exactly as you typed it. For example, `Editorial:` turns *Tesla Logo on a Smartphone…* into *Editorial: Tesla Logo on a Smartphone…*.
-- `{year}`, `{month}` and `{date}` are filled in from each photo's capture date. `Durham, {year}:` gives *Durham, 2026: …*, or *Durham: …* for a photo with no capture date.
+- `{year}`, `{month}` and `{date}` are filled in from each photo's capture date. `Tokyo, {year}:` gives *Tokyo, 2026: …*, or *Tokyo: …* for a photo with no capture date.
 - The AI never sees this text. It writes a complete title for the photo on its own, and the app puts your text in front afterward. When you re-identify a photo, your text and the date are taken off its current title before the AI sees it. It's never added twice.
 - Titles kept because **Keep existing titles** is on are left alone.
 
@@ -230,9 +230,9 @@ With everything switched on, a title is built in this order (the editorial forma
 
 | Your text | | Location | between location and date | Date | between date and title | AI's title |
 |---|---|---|---|---|---|---|
-| Editorial: | *space* | Durham, North Carolina, USA | ` - ` | October 26, 2026 | `: ` | Pier at Sunset |
+| Editorial: | *space* | Tokyo, Japan | ` - ` | October 26, 2026 | `: ` | Shibuya Crossing at Dusk |
 
-= *Editorial: Durham, North Carolina, USA - October 26, 2026: Pier at Sunset*
+= *Editorial: Tokyo, Japan - October 26, 2026: Shibuya Crossing at Dusk*
 
 - Each piece is optional. Leave a box empty, or set the date to *Don't add the date*, and that piece and its separator are left out.
 - **Between location and date** (on the Location row) is the character between the place and the date: hyphen `-` (the default, as Shutterstock asks), dash `–`, comma, bar `|` or just a space. It's greyed out unless both a location and a date are used.
@@ -242,18 +242,18 @@ With everything switched on, a title is built in this order (the editorial forma
 
 ### Location in title
 
-Type where the photos were taken in **Location in title**, e.g. `Durham, North Carolina, USA`. The box sits to the left of the date settings because that's the order in the title: it goes in just before the date taken, the way editorial titles are written:
+Type where the photos were taken in **Location in title**, e.g. `Tokyo, Japan`. The box sits to the left of the date settings because that's the order in the title: it goes in just before the date taken, the way editorial titles are written:
 
-*Durham, North Carolina, USA - October 26, 2026: Pier at Sunset*
+*Tokyo, Japan - October 26, 2026: Shibuya Crossing at Dusk*
 
 - **Previously used locations:** the box is also a dropdown. Every location you use is remembered (up to 20, most recent first), so you can pick it again instead of retyping. The same place typed with different capitals or spacing is only listed once. Pick **Clear this list…** at the bottom to start over.
 - Click **Editorial style** to set that format in one go: hyphen between location and date, the date written *October 26, 2026* just before the AI's title, then a colon.
-- It works with **Text before titles**: `Editorial:` gives *Editorial: Durham, North Carolina, USA - October 26, 2026: Pier at Sunset*.
-- The location always stays just before the date, wherever you put the date. If the date is off, or a photo has no capture date, the location goes before the title: *Durham, North Carolina, USA: Pier at Sunset*.
+- It works with **Text before titles**: `Editorial:` gives *Editorial: Tokyo, Japan - October 26, 2026: Shibuya Crossing at Dusk*.
+- The location always stays just before the date, wherever you put the date. If the date is off, or a photo has no capture date, the location goes before the title: *Tokyo, Japan: Shibuya Crossing at Dusk*.
 - **AI uses it** (the checkbox next to the box, on by default) decides whether the AI is told the location:
   - On: the AI knows where the photo was taken and uses the place in the keywords. It's told not to put the place in its own title, so it isn't there twice.
   - Off: the AI isn't told the location, so the keywords come from the photo and your other notes only. The location is still put into the titles.
-  - Either way, a trailing *in Durham, North Carolina* is removed from the AI's title.
+  - Either way, a trailing *in Tokyo, Japan* is removed from the AI's title.
 - **Add to titles now** adds the location to existing titles too. A title that already has the date gets the location put in front of that date, not a second date.
 - The location, like your other text, is never added twice and is taken off before a photo is re-identified.
 
