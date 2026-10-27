@@ -1,5 +1,13 @@
 # What's new
 
+## 2026.10.27.10
+
+- **Automatic updates:** new versions now download by themselves in the background. Click **Restart now** to install, or it installs when you close the app. You can turn this off in **Settings → General**.
+- **Fuller titles:** titles now say what the subject is or is known for, the setting and the light or mood, e.g. *McDonald's Restaurant Exterior, Major American Fast Food Chain, with Glowing Sign at Dusk*. A title that comes back too short is sent back once to be filled out. Choose **Short**, **Standard** or **Detailed** in **Settings → Titles & keywords**.
+- **Redo the selected photo:** *Redo with reasons* now acts only on the photo you clicked. To redo every checked photo, use **Redo Checked…** in the toolbar or the right-click menu.
+- **Detect everywhere:** one name for the AI action, *Detect*, in the toolbar, the menus and the review panel.
+- **Simpler:** *General photo* is merged into **Automatic**; the CSV *Editorial* column follows the Editorial checkbox; errors and debug details go to one log file.
+
 ## 2026.10.27.9
 
 - **Editorial checkbox:** the *Editorial style* button is replaced by a checkbox, **Editorial (include location and date)**, at the start of the location row. Ticked, the location and the date taken are added to every title and to the keywords (e.g. tokyo, japan, october 2026, 2026). Unticked, neither is added anywhere.

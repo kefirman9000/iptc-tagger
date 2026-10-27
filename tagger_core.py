@@ -39,7 +39,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.10.27.9"
+APP_VERSION = "2026.10.27.10"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 
 # Free vision models (run locally with Ollama) offered for one-click download:
@@ -249,15 +249,16 @@ DEFAULT_SETTINGS = {
     "revise": True,           # double-check each draft against your instructions (one extra, text-only pass)
     "xmp2iptc_on_save": True, # after saving, copy XMP to IPTC with ExifTool's xmp2iptc.args (keeps IPTC in step with XMP)
     "xmp2iptc_args": "",      # path to xmp2iptc.args; blank = find it next to ExifTool, else the bundled copy
-    "title_as_description": True,   # (older setting, now part of meta_fields: "description")
     "meta_fields": None,      # which metadata fields are written (None = the usual set, see METADATA_FIELDS)
     "symbols": "convert",     # symbols in the AI's titles and keywords: convert (& -> and) / remove / keep
+    "title_length": "detailed",  # short / standard / detailed (see TITLE_LENGTHS)
     "ai_time_limit": 30,      # seconds per photo before it's stopped (0 = no limit); first photo gets extra
     "ai_retries": 1,          # how many times a photo that went over the limit is tried again
     "debug_log": False,       # write a detailed log of every AI request to debug_log.txt
     "check_updates": True,    # look for a newer release on GitHub when the app starts
     "last_seen_version": "",  # the version whose "What's new" was last shown
     "skipped_update": "",     # a version the user chose to skip
+    "auto_update": True,      # download new versions in the background and install them on restart
 }
 
 
@@ -283,9 +284,10 @@ def debugging() -> bool:
     return _debug["on"]
 
 
-def debug(msg: str):
-    """One line (or block) in debug_log.txt, with the time and thread. Never raises."""
-    if not _debug["on"]:
+def debug(msg: str, always: bool = False):
+    """One line (or block) in the log (debug_log.txt), with the time and thread. Never raises.
+    Only while Debug mode is on, except always=True (unexpected errors are always kept)."""
+    if not (_debug["on"] or always):
         return
     try:
         stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
@@ -314,7 +316,6 @@ def _clip(text, n=400) -> str:
 # CSV export ---------------------------------------------------------------------------------------
 CSV_FORMATS = [("shutterstock", "Shutterstock upload CSV"), ("adobe", "Adobe Stock upload CSV"),
                ("full", "All details (for Excel or your own records)")]
-EDITORIAL_TYPES = {"editorial_event", "logo_stock", "product_shelf", "app_store", "storefront"}
 
 
 def export_csv(path: str, rows: list[dict], fmt: str = "shutterstock") -> int:
@@ -382,7 +383,130 @@ def check_for_update(current: str = APP_VERSION, opener=None, timeout: float = 6
     debug(f"update check: running {current}, latest release {version or '?'}")
     if not version or info.get("draft") or info.get("prerelease") or not is_newer(version, current):
         return None
-    return {"version": version, "url": info.get("html_url") or RELEASES_PAGE, "notes": info.get("body") or ""}
+    assets = {a.get("name", ""): a.get("browser_download_url", "") for a in info.get("assets") or []
+              if a.get("name") and a.get("browser_download_url")}
+    return {"version": version, "url": info.get("html_url") or RELEASES_PAGE, "notes": info.get("body") or "",
+            "assets": assets}
+
+
+# Automatic updates ---------------------------------------------------------------------------------
+def update_asset(assets: dict, windows: bool = os.name == "nt", mac: bool = sys.platform == "darwin") -> str:
+    """The download for this computer from a release's files ('IPTC.Tagger.Windows.zip' / '...Mac.zip')."""
+    want = "windows" if windows else "mac" if mac else None
+    if not want:
+        return ""
+    return next((url for name, url in (assets or {}).items()
+                 if want in name.casefold() and name.casefold().endswith(".zip")), "")
+
+
+def program_root() -> str:
+    """The installed program to replace: the folder holding the .exe (Windows) or the .app bundle (Mac).
+    '' when running from the source code (nothing to replace)."""
+    if not FROZEN:
+        return ""
+    if sys.platform == "darwin":
+        d = APP_DIR
+        while d and not d.endswith(".app") and os.path.dirname(d) != d:
+            d = os.path.dirname(d)
+        return d if d.endswith(".app") else ""
+    return APP_DIR
+
+
+def can_self_update() -> bool:
+    root = program_root()
+    return bool(root) and os.access(os.path.dirname(root) if root.endswith(".app") else root, os.W_OK)
+
+
+def download_update(url: str, dest: str, progress=None, cancel=None, opener=None) -> str:
+    """Download the release zip into the folder `dest`. progress(fraction or None, text) while it goes."""
+    os.makedirs(dest, exist_ok=True)
+    path = os.path.join(dest, "update.zip")
+    req = urllib.request.Request(url, headers={"User-Agent": f"{APP_NAME}/{APP_VERSION}"})
+    with (opener or urllib.request.urlopen)(req, timeout=60) as resp, open(path, "wb") as f:
+        total = int(resp.headers.get("Content-Length") or 0) if hasattr(resp, "headers") else 0
+        done = 0
+        while True:
+            if cancel is not None and cancel.is_set():
+                raise ApiError("Download stopped.")
+            chunk = resp.read(256 * 1024)
+            if not chunk:
+                break
+            f.write(chunk)
+            done += len(chunk)
+            if progress:
+                progress(done / total if total else None, f"{done / 1048576:.0f} MB")
+    debug(f"update: downloaded {done} bytes from {url}")
+    return path
+
+
+def unpack_update(zip_path: str, dest: str, windows: bool = os.name == "nt") -> str:
+    """Unzip the download and return the new program inside it (the folder with IPTC Tagger.exe, or the
+    IPTC Tagger.app bundle). Raises ApiError if it doesn't look right, so nothing is installed."""
+    out = os.path.join(dest, "new")
+    if not windows and sys.platform == "darwin":
+        subprocess.run(["ditto", "-x", "-k", zip_path, out], check=True)   # keeps the app bundle intact
+    else:
+        import zipfile
+        with zipfile.ZipFile(zip_path) as z:
+            bad = z.testzip()
+            if bad:
+                raise ApiError(f"the download is damaged ({bad})")
+            z.extractall(out)
+    for root, dirs, files in os.walk(out):
+        if windows and f"{APP_NAME}.exe" in files:
+            return root
+        if not windows and f"{APP_NAME}.app" in dirs:
+            return os.path.join(root, f"{APP_NAME}.app")
+    raise ApiError("the download doesn't contain the program")
+
+
+def updater_script(new_root: str, app_root: str, work: str, pid: int, relaunch: bool,
+                   windows: bool = os.name == "nt") -> str:
+    """A small script that waits for this app to close, puts the new version in place of the old one and
+    (optionally) starts it again. Runs on its own after the app has quit."""
+    if windows:
+        exe = app_root.rstrip("\\/") + "\\" + f"{APP_NAME}.exe"     # always a Windows path
+        return "\r\n".join([
+            "@echo off", "chcp 65001 >nul",
+            ":wait",                                         # until the app has closed
+            f'tasklist /FI "PID eq {pid}" 2>nul | find "{pid}" >nul',
+            "if not errorlevel 1 ( ping -n 2 127.0.0.1 >nul & goto wait )",
+            f'robocopy "{new_root}" "{app_root}" /E /R:5 /W:1 /NFL /NDL /NJH /NJS /NP >nul',
+            f'if errorlevel 8 ( echo The update could not be copied into "{app_root}". > "{work}.failed.txt" )',
+            *([f'start "" "{exe}"'] if relaunch else []),
+            f'rd /s /q "{work}"',
+            '(goto) 2>nul & del "%~f0"', ""])
+    q = lambda p: "'" + p.replace("'", "'\\''") + "'"
+    return "\n".join([
+        "#!/bin/bash",
+        f"while kill -0 {pid} 2>/dev/null; do sleep 1; done",
+        f"rm -rf {q(app_root + '.old')}",
+        f"if mv {q(app_root)} {q(app_root + '.old')} && ditto {q(new_root)} {q(app_root)}; then",
+        f"  rm -rf {q(app_root + '.old')}",
+        "else",
+        f"  rm -rf {q(app_root)}; mv {q(app_root + '.old')} {q(app_root)}",   # put the old one back
+        "fi",
+        f"xattr -dr com.apple.quarantine {q(app_root)} 2>/dev/null",
+        *([f"open {q(app_root)}"] if relaunch else []),
+        f"rm -rf {q(work)}",
+        'rm -- "$0"', ""])
+
+
+def start_updater(script_text: str, work: str, windows: bool = os.name == "nt") -> str:
+    """Write the updater script next to the download and start it, detached from this app."""
+    path = os.path.join(os.path.dirname(work), f"iptc_tagger_update.{'cmd' if windows else 'sh'}")
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        f.write(script_text)
+    if windows:
+        subprocess.Popen(["cmd", "/c", path], creationflags=0x08000000 | 0x00000200,   # no window, own group
+                         close_fds=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL)
+    else:
+        os.chmod(path, 0o755)
+        subprocess.Popen(["/bin/bash", path], start_new_session=True, stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    debug(f"update: started the updater {path}")
+    return path
 
 
 # What's new ------------------------------------------------------------------------------------------
@@ -434,6 +558,11 @@ def load_settings() -> dict:
             s.update({k: v for k, v in raw.items() if k in DEFAULT_SETTINGS})
     except (OSError, ValueError, AttributeError):
         pass
+    if isinstance(raw, dict) and raw.get("title_as_description") is False and not isinstance(raw.get("meta_fields"), list):
+        # an older "don't save the title as the description" choice becomes a metadata field choice
+        s["meta_fields"] = [k for k in DEFAULT_META_FIELDS if k != "description"]
+    if s.get("default_type") == "general":    # "General photo" was merged into "Automatic"
+        s["default_type"] = "auto"
     if isinstance(raw, dict) and raw and "editorial_on" not in raw:
         # settings from before the Editorial checkbox: it's on if a location or date was being added
         s["editorial_on"] = s.get("title_date_pos", "off") != "off" or bool(str(s.get("title_location") or "").strip())
@@ -445,6 +574,8 @@ def load_settings() -> dict:
     if not str(s.get("ollama_url") or "").strip():
         s["ollama_url"] = DEFAULT_OLLAMA_URL
     s["keyword_min"], s["keyword_max"] = keyword_range(s.get("keyword_min"), s.get("keyword_max"))
+    if s.get("title_length") not in {k for k, _, _, _ in TITLE_LENGTHS}:
+        s["title_length"] = "detailed"
     if s.get("symbols") not in {k for k, _ in SYMBOL_MODES}:
         s["symbols"] = DEFAULT_SETTINGS["symbols"]
     if not isinstance(s.get("location_history"), list):
@@ -636,8 +767,6 @@ def meta_fields(settings: dict) -> list[str]:
     chosen = settings.get("meta_fields")
     if not isinstance(chosen, list):
         chosen = list(DEFAULT_META_FIELDS)
-        if not settings.get("title_as_description", True):
-            chosen.remove("description")
     known = {f["key"] for f in METADATA_FIELDS}
     return [k for k in chosen if k in known]
 
@@ -1209,6 +1338,12 @@ OUTPUT_SCHEMA = {
     "required": ["title", "keywords"],
 }
 
+TITLE_SCHEMA = {
+    "type": "object",
+    "properties": {"title": {"type": "string"}},
+    "required": ["title"],
+}
+
 MORE_KEYWORDS_SCHEMA = {
     "type": "object",
     "properties": {"keywords": {"type": "array", "items": {"type": "string"}}},
@@ -1219,9 +1354,7 @@ MORE_KEYWORDS_SCHEMA = {
 # (key, label shown in the app, what the photo shows - given to the AI as a fact)
 COPYRIGHT_FREE = "copyright_free"
 PHOTO_TYPES = [
-    ("auto", "Automatic (from your notes)", ""),
-    ("general", "General photo (no assumptions)",
-     "an ordinary photo; describe exactly what you see without assuming any particular setting"),
+    ("auto", "Automatic (from the photo and your notes)", ""),
     (COPYRIGHT_FREE, "Copyright-free (no brands or names)",
      "a commercial stock photo that must be described only in generic terms: no brand, company, product, "
      "model or app names, no logos or trademarks, no copyrighted characters or titles and no names of people"),
@@ -1319,7 +1452,31 @@ INPUT_RULES = """How to read the photographer's input:
 - Otherwise, treat the input as accurate information about the photo.
 - If there is no input, describe what you see in the photo."""
 
-TITLE_RULES = """Title: rewrite the input (or describe the photo) as one descriptive, SEO-friendly title in Title Case that briefly explains what the subject is, what it does, or what it is known for. The title must be complete and stand on its own, describing only what is in this photo. About 8 to 16 words. No quotation marks and no full stop at the end."""
+# How long titles should be: (key, label, fewest words, most words)
+TITLE_LENGTHS = [("short", "Short (6–10 words)", 6, 10),
+                 ("standard", "Standard (10–15 words)", 10, 15),
+                 ("detailed", "Detailed (14–22 words)", 14, 22)]
+
+
+def title_words(length: str = "detailed") -> tuple[int, int]:
+    return next(((lo, hi) for k, _, lo, hi in TITLE_LENGTHS if k == length), (14, 22))
+
+
+def title_rules(length: str = "detailed") -> str:
+    lo, hi = title_words(length)
+    return (f"Title: rewrite the input (or describe the photo) as one full, descriptive, SEO-friendly title in Title "
+            f"Case of {lo} to {hi} words. Build it from these parts, in a natural order: (1) the main subject, named as "
+            "specifically as possible; (2) what the subject is or is known for: for a company, brand, product, "
+            "landmark or building say what it is (for example 'Major American Fast Food Chain', 'Japanese Automaker', "
+            "'Gothic Cathedral'), and for a plant, animal, food or object give its kind or variety; (3) what is "
+            "happening, or the setting; (4) the time of day, season, light or mood when they can be seen. Join the parts "
+            "naturally with commas or words such as with, at, on and in. The title must be complete and stand on its "
+            "own, describing only what is in this photo. Not short and blunt: for example, instead of 'Coffee Shop "
+            "Exterior at Dusk' write 'Independent Coffee Shop Exterior, Cozy Neighborhood Cafe with Warm Window Light on "
+            "a Quiet City Street at Dusk'. No quotation marks and no full stop at the end.")
+
+
+TITLE_RULES = title_rules("standard")   # (kept for anything that still reads the old constant)
 
 COPYRIGHT_FREE_RULES = """Copyright-free (strict): the title and every keyword must contain NO brand names, trademarks, company names, product or model names, app or website names, logos, copyrighted characters, titles of films, books, songs, games or artworks, and no names of people. This applies even if they appear in the photo or in the photographer's notes: use the notes to understand the photo, but describe such things in generic words (for example "electric car" instead of a car brand, "smartphone" instead of a phone brand, "soda can" instead of a drink brand, "plastic building blocks" instead of a toy brand, "adhesive bandage" instead of a bandage brand). Plain place names such as cities, countries, regions and natural features are fine."""
 
@@ -1367,7 +1524,8 @@ def build_prompt(keyword_min: int, keyword_max: int, context: str = "", existing
                  existing_keywords=None, direction: str = "", photo_note: str = "",
                  photo_type: str = "", lead_keywords=None, title_prefix: str = "",
                  date_in_title: bool = False, title_location: str = "", copyright_free: bool = False,
-                 symbols: str = "keep", feedback: str = "", rejected_title: str = "") -> str:
+                 symbols: str = "keep", feedback: str = "", rejected_title: str = "",
+                 title_length: str = "detailed") -> str:
     """The instructions for one photo. Your notes come first and the title is built around them;
     your directions are repeated at the end. (title_prefix is never shown to the AI.)"""
     context, photo_note, direction = (context or "").strip(), (photo_note or "").strip(), (direction or "").strip()
@@ -1397,7 +1555,8 @@ def build_prompt(keyword_min: int, keyword_max: int, context: str = "", existing
         lines += ["", INPUT_RULES.replace("photographer's input", "photographer's notes above")
                   .replace("the input", "the notes")]
     lines += [
-        "", TITLE_RULES + (" Work the facts from the photographer's notes into the title." if context or photo_note else ""),
+        "", title_rules(title_length) + (" Work the facts from the photographer's notes into the title."
+                                         if context or photo_note else ""),
         "",
         f"Keywords: between {keyword_min} and {keyword_max} unique SEO keywords, most relevant first. All "
         "lowercase, letters and numbers only: no special characters, punctuation or hashtags. No duplicates "
@@ -1448,9 +1607,10 @@ REDO_PROBLEMS = [   # "What's wrong"
     ("wrong", "Wrong subject, or something misidentified",
      "Something was identified wrongly. Look at the photo again carefully and describe only what is really there."),
     ("long", "Too long",
-     "The title was too long. Keep it short: about 6 to 10 words."),
+     "The title was too long. Make it noticeably shorter, keeping only the most important details."),
     ("short", "Too short, or missing detail",
-     "The title was too short. Add the important details: setting, action, time of day or mood."),
+     "The title was too short and blunt. Make it noticeably fuller: say what the subject is or is known for, and add "
+     "the setting, action, time of day or mood."),
     ("notes", "Leaves out the place, event or names from my notes",
      "The title left out facts from the photographer's notes. Work the place, event and names they give into the title."),
     ("invented", "Mentions things that aren't in the photo",
@@ -1766,7 +1926,8 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
              photo_note: str = "", photo_type: str = "", lead_keywords=None, title_prefix: str = "",
              date_in_title: bool = False, revise: bool = True, title_location: str = "",
              copyright_free: bool = False, opener=None, cancel: CancelToken | None = None,
-             symbols: str = "keep", feedback: str = "", rejected_title: str = "") -> dict:
+             symbols: str = "keep", feedback: str = "", rejected_title: str = "",
+             title_length: str = "detailed", expand_short: bool = False) -> dict:
     """Ask the local vision model for an SEO title and keywords.
     With revise=True and any notes or directions given, a second (text-only) pass checks the draft
     against them. Returns {'title', 'keywords', 'seconds', 'revised'}."""
@@ -1790,7 +1951,7 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
               f"note={_clip(photo_note or '', 80)!r}, location={title_location!r}")
     prompt = build_prompt(keyword_min, keyword_max, context, existing_title, existing_keywords,
                           direction, photo_note, photo_type, lead_keywords, title_prefix, date_in_title,
-                          title_location, copyright_free, symbols, feedback, rejected_title)
+                          title_location, copyright_free, symbols, feedback, rejected_title, title_length)
     system = system_prompt(direction)
 
     def body(user_text, schema, with_image=True, temperature=0.2):
@@ -1809,7 +1970,7 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
     def ask(user_text, schema, step="draft", **kw):
         """One request to the model. A reply that comes back cut off or unreadable is asked again once,
         a little more freely (a re-roll almost always fixes a model that got stuck)."""
-        need = "title" if schema is OUTPUT_SCHEMA else "keywords"
+        need = "title" if schema in (OUTPUT_SCHEMA, TITLE_SCHEMA) else "keywords"   # what a usable reply must have
         for attempt in (1, 2):
             if cancel is not None and cancel.is_set():
                 debug(f"{name}: {step}: stopped before sending")
@@ -1877,6 +2038,27 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
     # in copyright-free mode names from your notes are not protected: they mustn't end up in the keywords
     protect = " ".join([direction or ""] if copyright_free else [direction or "", context or "", photo_note or ""])
     lower = not keyword_case_overridden(direction)
+    lo, hi = title_words(title_length)
+    if expand_short and raw_title and len(raw_title.split()) < lo and not title_case_overridden(direction) \
+            and not (feedback or "").strip().count("too long"):
+        # too short and blunt: ask once for a fuller version (looking at the photo again, so it can add
+        # visible detail such as the setting, light or mood)
+        expand = (f"This stock photo title is too short: {json.dumps(raw_title, ensure_ascii=False)}. Rewrite it as one "
+                  f"title of {lo} to {hi} words. Keep everything that is correct and add what the subject is or is known "
+                  "for, what is happening or the setting, and the time of day, light or mood that can be seen. "
+                  + ("Don't add a place name; it is added separately. " if (title_location or "").strip() else "")
+                  + (COPYRIGHT_FREE_RULES + " " if copyright_free else "")
+                  + "Title Case, no quotation marks and no full stop at the end. "
+                  'Output only JSON: {"title": "..."}')
+        try:
+            longer = str(ask(expand, TITLE_SCHEMA, "longer title").get("title", "") or "").strip()
+            if len(longer.split()) > len(raw_title.split()):
+                debug(f"{name}: title was {len(raw_title.split())} words, expanded to {len(longer.split())}")
+                raw_title = longer
+        except Stopped:
+            raise
+        except ApiError:
+            pass                                     # keep the short one
     raw_title = tidy_symbols(drop_trailing_location(raw_title, title_location), symbols)
     title = clean_title(raw_title) if title_case_overridden(direction) else title_case(raw_title)
     raw_keywords = [tidy_symbols(str(k), symbols) for k in raw_keywords]
