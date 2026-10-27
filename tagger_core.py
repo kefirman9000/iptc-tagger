@@ -39,7 +39,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.10.27.10"
+APP_VERSION = "2026.10.27.11"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 
 # Free vision models (run locally with Ollama) offered for one-click download:
@@ -1377,7 +1377,7 @@ PHOTO_TYPES = [
     ("seascape", "Beach, coast and seascape",
      "a photo of a beach, coastline, ocean or lake; describe the water, shore, sky, light and mood"),
     ("cityscape", "Cityscape and skyline",
-     "a photo of a city skyline, street or urban scene; describe the buildings, streets, light and time of day"),
+     "a photo of a city skyline, street or urban scene; describe the buildings, streets, landmarks and activity"),
     ("architecture", "Architecture and buildings",
      "a photo of a building or structure; describe its architectural style, materials, features and setting"),
     ("interior", "Interior and rooms",
@@ -1469,11 +1469,13 @@ def title_rules(length: str = "detailed") -> str:
             "specifically as possible; (2) what the subject is or is known for: for a company, brand, product, "
             "landmark or building say what it is (for example 'Major American Fast Food Chain', 'Japanese Automaker', "
             "'Gothic Cathedral'), and for a plant, animal, food or object give its kind or variety; (3) what is "
-            "happening, or the setting; (4) the time of day, season, light or mood when they can be seen. Join the parts "
-            "naturally with commas or words such as with, at, on and in. The title must be complete and stand on its "
-            "own, describing only what is in this photo. Not short and blunt: for example, instead of 'Coffee Shop "
-            "Exterior at Dusk' write 'Independent Coffee Shop Exterior, Cozy Neighborhood Cafe with Warm Window Light on "
-            "a Quiet City Street at Dusk'. No quotation marks and no full stop at the end.")
+            "happening, or the setting; (4) descriptive details of the scene that can be seen, such as the style, "
+            "materials, signs, surroundings, people or objects around it. Only mention the time of day, light or "
+            "weather when it is a striking, defining part of the photo (a sunset sky, a city at night, snow); never "
+            "add it just to fill out the title. Join the parts naturally with commas or words such as with, on and in. "
+            "The title must be complete and stand on its own, describing only what is in this photo. Not short and "
+            "blunt: for example, instead of 'Coffee Shop Exterior' write 'Independent Coffee Shop Exterior, Cozy "
+            "Neighborhood Cafe with Brick Facade, Outdoor Seating and Hanging Sign on a City Street'. No quotation marks and no full stop at the end.")
 
 
 TITLE_RULES = title_rules("standard")   # (kept for anything that still reads the old constant)
@@ -1610,7 +1612,7 @@ REDO_PROBLEMS = [   # "What's wrong"
      "The title was too long. Make it noticeably shorter, keeping only the most important details."),
     ("short", "Too short, or missing detail",
      "The title was too short and blunt. Make it noticeably fuller: say what the subject is or is known for, and add "
-     "the setting, action, time of day or mood."),
+     "the setting, the action and descriptive details of the scene."),
     ("notes", "Leaves out the place, event or names from my notes",
      "The title left out facts from the photographer's notes. Work the place, event and names they give into the title."),
     ("invented", "Mentions things that aren't in the photo",
@@ -2042,10 +2044,11 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
     if expand_short and raw_title and len(raw_title.split()) < lo and not title_case_overridden(direction) \
             and not (feedback or "").strip().count("too long"):
         # too short and blunt: ask once for a fuller version (looking at the photo again, so it can add
-        # visible detail such as the setting, light or mood)
+        # visible detail of the scene)
         expand = (f"This stock photo title is too short: {json.dumps(raw_title, ensure_ascii=False)}. Rewrite it as one "
                   f"title of {lo} to {hi} words. Keep everything that is correct and add what the subject is or is known "
-                  "for, what is happening or the setting, and the time of day, light or mood that can be seen. "
+                  "for, what is happening or the setting, and descriptive details of the scene that can be seen. Only mention the "
+                  "time of day or light if it is a striking part of the photo. "
                   + ("Don't add a place name; it is added separately. " if (title_location or "").strip() else "")
                   + (COPYRIGHT_FREE_RULES + " " if copyright_free else "")
                   + "Title Case, no quotation marks and no full stop at the end. "

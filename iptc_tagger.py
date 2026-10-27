@@ -328,8 +328,8 @@ class SettingsDialog(QDialog):
             self.title_len.addItem(label, key)
         self.title_len.setCurrentIndex(max(0, self.title_len.findData(settings.get("title_length", "detailed"))))
         self.title_len.setToolTip("How long the AI's titles are. Detailed titles say what the subject is or is known\n"
-                                  "for, the setting and the mood, e.g. 'McDonald's Restaurant Exterior, Major American\n"
-                                  "Fast Food Chain, at Dusk'. A title that comes back shorter is expanded once.")
+                                  "for, the setting and details of the scene, e.g. 'McDonald's Restaurant Exterior, Major\n"
+                                  "American Fast Food Chain, with Drive-Thru Lane and Parking Lot'. A title that comes back shorter is expanded once.")
         f_text.insertRow(0, "Title length", self.title_len)
         self.et = QLineEdit(settings.get("exiftool_path", ""))
         self.et.setPlaceholderText(detected_exiftool or "not found: install ExifTool or choose it here")
