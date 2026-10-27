@@ -39,7 +39,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.10.27.8"
+APP_VERSION = "2026.10.27.9"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 
 # Free vision models (run locally with Ollama) offered for one-click download:
@@ -237,8 +237,10 @@ DEFAULT_SETTINGS = {
     "title_prefix": "",       # text put before every suggested title; {year} {month} {date} allowed
     "title_date_pos": "off",  # date taken in the title: off / start / before_title / end
     "title_date_format": "long",
-    "title_date_sep": "dash",
+    "title_date_sep": "colon",  # "Tokyo, Japan - October 26, 2026: Title" (the editorial style)
     "title_location": "",     # location put just before the date in titles (editorial style)
+    "editorial_on": False,    # Editorial: include the location and date taken in titles and keywords
+    "editorial_pos": "before",  # where they go: before / after the AI's title and keywords
     "title_loc_sep": "dash",  # what goes between the location and the date
     "custom_date_on": False,  # use custom_date instead of each photo's own date taken
     "custom_date": "",        # YYYY-MM-DD
@@ -425,11 +427,19 @@ def whats_new(since: str = "", current: str = APP_VERSION, full: bool = False, t
 
 def load_settings() -> dict:
     s = dict(DEFAULT_SETTINGS)
+    raw = {}
     try:
         with open(os.path.join(config_dir(), "settings.json"), encoding="utf-8") as f:
-            s.update({k: v for k, v in json.load(f).items() if k in DEFAULT_SETTINGS})
-    except (OSError, ValueError):
+            raw = json.load(f)
+            s.update({k: v for k, v in raw.items() if k in DEFAULT_SETTINGS})
+    except (OSError, ValueError, AttributeError):
         pass
+    if isinstance(raw, dict) and raw and "editorial_on" not in raw:
+        # settings from before the Editorial checkbox: it's on if a location or date was being added
+        s["editorial_on"] = s.get("title_date_pos", "off") != "off" or bool(str(s.get("title_location") or "").strip())
+        s["editorial_pos"] = "after" if s.get("title_date_pos") == "end" else "before"
+    if s.get("editorial_pos") not in ("before", "after"):
+        s["editorial_pos"] = "before"
     if not str(s.get("model") or "").strip():
         s["model"] = DEFAULT_MODEL
     if not str(s.get("ollama_url") or "").strip():
@@ -1120,6 +1130,32 @@ def parse_pasted_text(text: str) -> tuple[str | None, list[str] | None]:
             kw_lines.append(ln)
     keywords = parse_keywords_text(", ".join(kw_lines)) if kw_lines else None
     return (clean_title(title) if title else None), (keywords if keywords else None)
+
+
+def editorial_keywords(location: str = "", taken: str = "") -> list[str]:
+    """Keywords for Editorial: the location's parts and the month and year taken,
+    e.g. 'Tokyo, Japan' + 2026-10-26 -> ['tokyo', 'japan', 'october 2026', '2026']."""
+    out = [p.strip().casefold() for p in (location or "").split(",") if p.strip()]
+    m = re.match(r"(\d{4})-(\d{2})-\d{2}$", taken or "")
+    if m:
+        y, mo = m.group(1), int(m.group(2))
+        if 1 <= mo <= 12:
+            out += [f"{MONTHS[mo - 1].casefold()} {y}", y]
+    return clean_keywords(out)
+
+
+def place_editorial_keywords(keywords, extra, pos: str = "before", after: int = 0) -> list[str]:
+    """Put the Editorial keywords at the start (after the first `after` keywords, i.e. your keywords to put
+    first) or at the end of the list. Ones already in the list aren't added twice."""
+    keywords = clean_keywords(keywords)
+    if pos == "after":
+        have = {k.casefold() for k in keywords}
+        return keywords + [k for k in clean_keywords(extra) if k.casefold() not in have]
+    head = keywords[:after]
+    head_set = {k.casefold() for k in head}
+    extra = [k for k in clean_keywords(extra) if k.casefold() not in head_set]
+    moved = {k.casefold() for k in extra}               # a suggestion like "tokyo" moves up with them
+    return head + extra + [k for k in keywords[after:] if k.casefold() not in moved]
 
 
 def expand_lead_keywords(text: str, taken: str = "") -> list[str]:

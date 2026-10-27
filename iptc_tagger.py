@@ -1051,10 +1051,20 @@ class MainWindow(QMainWindow):
         self.location.editingFinished.connect(self._location_entered)
         self.location.textChanged.connect(lambda *_: self._date_options_changed(save=False))
         self.location_box.activated.connect(lambda i: self._location_picked(i))
-        self.btn_editorial = QPushButton("Editorial style")
-        self.btn_editorial.setToolTip("Set everything to the editorial format:\n"
-                                      "Location - Month Day, Year: AI's title")
-        self.btn_editorial.clicked.connect(lambda *_: self.editorial_style())
+        # Editorial: one switch for the location and date, and where they go
+        self.editorial = QCheckBox("Editorial (include location and date)")
+        self.editorial.setChecked(bool(self.settings.get("editorial_on")))
+        self.editorial.setToolTip("On: the location and the date taken are added to every title and to the keywords,\n"
+                                  "e.g. Tokyo, Japan - October 26, 2026: Shibuya Crossing at Dusk.\n"
+                                  "Off: neither is added.")
+        self.editorial.toggled.connect(lambda *_: self._date_options_changed())
+        self.editorial_pos = QComboBox()
+        self.editorial_pos.addItem("Before the title and keywords", "before")
+        self.editorial_pos.addItem("After the title and keywords", "after")
+        self.editorial_pos.setCurrentIndex(max(0, self.editorial_pos.findData(self.settings.get("editorial_pos", "before"))))
+        self.editorial_pos.setToolTip("Before: Tokyo, Japan - October 26, 2026: Title, with tokyo, japan, october 2026, 2026 first\n"
+                                      "in the keywords.\nAfter: Title – Tokyo, Japan - October 26, 2026, with those keywords last.")
+        self.editorial_pos.currentIndexChanged.connect(lambda *_: self._date_options_changed())
         self.loc_ai = QCheckBox("AI uses it")
         self.loc_ai.setChecked(bool(self.settings.get("location_for_ai", True)))
         self.loc_ai.setToolTip("On: the AI is told where the photos were taken and uses the place in the keywords\n"
@@ -1075,6 +1085,7 @@ class MainWindow(QMainWindow):
                            (self.date_sep, "title_date_sep"), (self.loc_sep, "title_loc_sep")):
             combo.setCurrentIndex(max(0, combo.findData(self.settings.get(key))))
             combo.currentIndexChanged.connect(lambda *_: self._date_options_changed())
+        # (the date's position now follows the Editorial switch; this list isn't shown, it just holds the value)
         self.date_pos.setToolTip("Whether to add the date the photo was taken (from its EXIF data), and where")
         self.date_fmt.setToolTip("How the date is written (the examples use October 26, 2026)")
         self.date_sep.setToolTip("The character between the date (or location) and the AI's title")
@@ -1099,7 +1110,8 @@ class MainWindow(QMainWindow):
         self.title_preview.setTextFormat(Qt.RichText)
         self.title_preview_plain = ""                 # the example title as plain text
         self.prefix.textChanged.connect(lambda *_: self._update_title_preview())
-        for combo, chars in ((self.date_pos, 16), (self.date_fmt, 10), (self.date_sep, 8), (self.loc_sep, 8)):
+        for combo, chars in ((self.date_pos, 16), (self.date_fmt, 10), (self.date_sep, 8), (self.loc_sep, 8),
+                             (self.editorial_pos, 14)):
             # keep the rows narrow: long choices show in full when the list is open
             combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
             combo.setMinimumContentsLength(chars)
@@ -1111,20 +1123,21 @@ class MainWindow(QMainWindow):
 
         # one row per piece, in the order they appear in the title: location, then date
         loc_row = QHBoxLayout()
-        loc_row.addWidget(QLabel("<b>Location in title</b>"))
+        loc_row.addWidget(self.editorial)
+        loc_row.addWidget(self.editorial_pos, 1)
+        loc_row.addSpacing(12)
+        self.loc_label = QLabel("<b>Location</b>")
+        loc_row.addWidget(self.loc_label)
         loc_row.addWidget(self.location_box, 3)
         loc_row.addWidget(self.loc_ai)
         loc_row.addSpacing(12)
         self.loc_sep_label = small("Between location and date:")
         loc_row.addWidget(self.loc_sep_label)
         loc_row.addWidget(self.loc_sep, 1)
-        loc_row.addSpacing(12)
-        loc_row.addWidget(self.btn_editorial)
         g.addLayout(loc_row, 4, 0, 1, 2)
         date_row = QHBoxLayout()
-        date_row.addWidget(QLabel("<b>Date taken in title</b>"))
-        date_row.addWidget(small("Where:"))
-        date_row.addWidget(self.date_pos, 2)
+        self.date_label = QLabel("<b>Date taken</b>")
+        date_row.addWidget(self.date_label)
         date_row.addWidget(small("Format:"))
         date_row.addWidget(self.date_fmt, 1)
         date_row.addSpacing(8)
@@ -1420,6 +1433,8 @@ class MainWindow(QMainWindow):
                              lead_keywords=self.lead.text().strip(),
                              title_prefix=self.prefix.text().strip(),
                              title_location=" ".join(self.location.text().split()),
+                             editorial_on=self.editorial.isChecked(),
+                             editorial_pos=self.editorial_pos.currentData() or "before",
                              location_for_ai=self.loc_ai.isChecked(),
                              title_date_pos=self.date_pos.currentData() or "off",
                              title_date_format=self.date_fmt.currentData() or "long",
@@ -1854,7 +1869,7 @@ class MainWindow(QMainWindow):
         return core.compose_title(title, core.expand_title_prefix(s.get("title_prefix", ""), d),
                                   core.format_date(d, s.get("title_date_format", "long")),
                                   s.get("title_date_pos", "off"), s.get("title_date_sep", "dash"),
-                                  s.get("title_location", ""), s.get("title_loc_sep", "dash"))
+                                  self.editorial_location(), s.get("title_loc_sep", "dash"))
 
     # ---------- previously used locations
     CLEAR_LOCATIONS = "Clear this list…"
@@ -1899,29 +1914,37 @@ class MainWindow(QMainWindow):
         self.location.setText(self.location_box.itemText(index))
         self._location_entered()
 
-    def editorial_style(self):
-        """Editorial dateline: Location - October 26, 2026: Description."""
-        for combo, key in ((self.date_pos, "before_title"), (self.date_fmt, "long"), (self.date_sep, "colon"),
-                           (self.loc_sep, "dash")):
-            combo.setCurrentIndex(max(0, combo.findData(key)))
-        self._date_options_changed()
-        if not self.location.text().strip():
-            self.location.setFocus()
-            self.status.setText("Editorial style set. Type where the photos were taken in Location in title.")
-        else:
-            self.status.setText("Editorial style set: Location - Month Day, Year: Description.")
+    def editorial_location(self) -> str:
+        """The location to use: only when Editorial is on."""
+        return self.settings.get("title_location", "") if self.settings.get("editorial_on") else ""
+
+    def editorial_keywords(self, ph: Photo) -> list[str]:
+        if not self.settings.get("editorial_on"):
+            return []
+        return core.editorial_keywords(self.editorial_location(), self.photo_date(ph))
 
     def _date_options_changed(self, save: bool = True):
         if not self._ready:
             return
+        ed_on = self.editorial.isChecked()
+        before = (self.editorial_pos.currentData() or "before") == "before"
+        # the date goes where the Editorial switch says (the old "Where" list follows it)
+        self.date_pos.blockSignals(True)
+        self.date_pos.setCurrentIndex(max(0, self.date_pos.findData(
+            "off" if not ed_on else "before_title" if before else "end")))
+        self.date_pos.blockSignals(False)
         pos = self.date_pos.currentData() or "off"
+        # keep the settings in memory in step at once (they're written to disk by _remember_options)
+        self.settings.update(editorial_on=ed_on, editorial_pos="before" if before else "after", title_date_pos=pos)
         on, has_loc = pos != "off", bool(self.location.text().strip())
-        self.custom_date.setEnabled(self.custom_date_on.isChecked())
-        self.date_fmt.setEnabled(on)
+        for wdg in (self.editorial_pos, self.loc_label, self.location_box, self.loc_ai, self.date_label,
+                    self.date_fmt, self.custom_date_on):
+            wdg.setEnabled(ed_on)
+        self.custom_date.setEnabled(ed_on and self.custom_date_on.isChecked())
         self.loc_sep.setEnabled(on and has_loc)           # only used when there's both a location and a date
         self.loc_sep_label.setEnabled(on and has_loc)
-        self.date_sep.setEnabled(on or has_loc)
-        self.date_sep_label.setEnabled(on or has_loc)
+        self.date_sep.setEnabled(on)
+        self.date_sep_label.setEnabled(on)
         # say exactly what this separator sits between, for the current choices
         self.date_sep_label.setText("Between location and title:" if not on else
                                     "After the date:" if pos == "start" else
@@ -1936,7 +1959,8 @@ class MainWindow(QMainWindow):
             return
         s = dict(self.settings, title_prefix=self.prefix.text(), title_date_pos=self.date_pos.currentData() or "off",
                  title_date_format=self.date_fmt.currentData() or "long", title_date_sep=self.date_sep.currentData() or "dash",
-                 title_location=self.location.text().strip(), title_loc_sep=self.loc_sep.currentData() or "dash")
+                 title_location=self.location.text().strip() if self.editorial.isChecked() else "",
+                 title_loc_sep=self.loc_sep.currentData() or "dash")
         if not s["title_prefix"].strip() and s["title_date_pos"] == "off" and not s["title_location"]:
             self.title_preview_plain = "Suggested Title"
             self.title_preview.setText(f"<span style='color:{GREY}'>Title preview: titles are used as the AI "
@@ -1973,22 +1997,30 @@ class MainWindow(QMainWindow):
     def add_prefix_now(self):
         self._remember_options()
         text = self.settings.get("title_prefix", "")
-        if not text.strip() and self.settings.get("title_date_pos", "off") == "off" \
-                and not self.settings.get("title_location", "").strip():
-            self.status.setText("Type text to put before titles or a location, or choose where to add the date "
-                                "taken, then click Add to titles now.")
+        if not text.strip() and not self.settings.get("editorial_on"):
+            self.status.setText("Type text to put before titles, or tick Editorial to add the location and date, "
+                                "then click Add to titles now.")
             return
         changed = 0
         for ph in [p for p in self.targets()[0] if not p.busy and p.title.strip()]:
             base = ph.title
-            if self.settings.get("title_location", "").strip() or self.custom_date_value():
+            if self.editorial_location().strip() or self.custom_date_value():
                 # rebuild from the bare title, so a title that already has your text or a date (from before
                 # the location or custom date was set) gets them in the right place, never a second date
                 on = self.settings.get("title_date_pos", "off") != "off"
                 base = self.bare_title(ph, strip_date=on) or ph.title
             new = self.compose_title(ph, base)
-            if new != ph.title:
-                ph.title = new
+            lead = {k.casefold() for k in core.expand_lead_keywords(self.settings.get("lead_keywords", ""),
+                                                                     self.photo_date(ph))}
+            n_lead = 0                                # your keywords to put first that really are at the front
+            for k in ph.keywords:
+                if k.casefold() not in lead:
+                    break
+                n_lead += 1
+            new_kw = core.place_editorial_keywords(ph.keywords, self.editorial_keywords(ph),
+                                                   self.settings.get("editorial_pos", "before"), after=n_lead)
+            if new != ph.title or new_kw != core.clean_keywords(ph.keywords):
+                ph.title, ph.keywords = new, new_kw
                 changed += 1
                 if ph.status == "saved":
                     ph.status = "ready"
@@ -2420,7 +2452,7 @@ class MainWindow(QMainWindow):
                   core.expand_title_prefix(self.settings.get("title_prefix", ""), self.photo_date(ph)),
                   self.settings.get("title_date_pos", "off") != "off",
                   bool(self.settings.get("revise", True)),
-                  self.settings.get("title_location", "") if self.settings.get("location_for_ai", True) else "",
+                  self.editorial_location() if self.settings.get("location_for_ai", True) else "",
                   self.effective_type(ph) == core.COPYRIGHT_FREE, cancel=ph.token)
         run_job(self, job, self.ai_pool, self._identified, self._identify_failed,
                 on_started=self._identify_started)
@@ -2517,7 +2549,7 @@ class MainWindow(QMainWindow):
             if not keep_title:
                 # the location is added to the title for you, so a trailing "in <location>" from the AI goes
                 ph.title = self.compose_title(ph, core.drop_trailing_location(result["title"],
-                                                                               self.settings.get("title_location", "")))
+                                                                               self.editorial_location()))
             # order: your "keywords to put first", then existing keywords (if kept), then suggestions
             kmax = core.keyword_range(self.settings.get("keyword_min"), self.settings.get("keyword_max"))[1]
             lead = core.expand_lead_keywords(self.settings.get("lead_keywords", ""), self.photo_date(ph))
@@ -2528,7 +2560,9 @@ class MainWindow(QMainWindow):
             if self.effective_type(ph) == core.COPYRIGHT_FREE:
                 existing = core.drop_brand_keywords(existing)    # no brand names, even ones already on the file
                 suggested = core.drop_brand_keywords(suggested)
-            ph.keywords = core.combine_keywords(lead, existing, suggested, kmax)
+            ph.keywords = core.place_editorial_keywords(core.combine_keywords(lead, existing, suggested, kmax),
+                                                        self.editorial_keywords(ph),
+                                                        self.settings.get("editorial_pos", "before"), after=len(lead))
             ph.busy, ph.status = False, "suggested"
             ph.message = (("Redone with your reasons" if redo else "Suggested")
                           + (", checked against your instructions" if result.get("revised") else "")
@@ -2638,7 +2672,7 @@ class MainWindow(QMainWindow):
         args = None
         if s.get("xmp2iptc_on_save", True):
             args = core.find_xmp2iptc_args(self.exiftool.exe if self.exiftool else None, s.get("xmp2iptc_args", ""))
-        return {"fields": core.meta_fields(s), "location": s.get("title_location", ""), "xmp2iptc_args": args}
+        return {"fields": core.meta_fields(s), "location": self.editorial_location(), "xmp2iptc_args": args}
 
     def _write_one(self, path, title, keywords, opts):
         core.safe_write(self.exiftool, path, title, keywords, xmp2iptc_args=opts["xmp2iptc_args"],

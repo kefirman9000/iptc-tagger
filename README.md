@@ -33,7 +33,7 @@ No installation and no Python needed. ExifTool is included.
 - **Review and edit** in a table or a side panel with a large preview. Save one photo at a time or many at once.
 - **Instructions for the AI:** facts about the batch, title and keyword rules, and a note per photo.
 - **Photo types:** landscape, food, architecture, product on a shelf, company logo with a stock chart, editorial event and more, plus your own. A **Copyright-free** type keeps brand and personal names out.
-- **Title building:** text before titles, a location and the date taken, in editorial style, e.g. *Tokyo, Japan - October 26, 2026: Shibuya Crossing at Dusk*. A live preview shows the result, and a custom date can replace the camera's date.
+- **Editorial:** one checkbox adds the location and the date taken to every title and to the keywords, before or after the AI's suggestion, e.g. *Tokyo, Japan - October 26, 2026: Shibuya Crossing at Dusk*. Text before titles, a live preview and a custom date (when the camera's date is wrong) round it off.
 - **Clean text:** symbols in the AI's titles and keywords are converted to words (& → and, % → percent) or removed, as you choose.
 - **Keywords to put first:** e.g. place or client, with `{year}`, `{month}` and `{date}` filled in from each photo.
 - **Redo with reasons:** tell the AI what's wrong with a suggestion (too generic, wrong subject, too long…) and it tries again with that in mind.
@@ -53,7 +53,7 @@ The usual fields are written by default. Choose exactly which in **Settings → 
 | Headline | `XMP-photoshop:Headline`, `IPTC:Headline` | on |
 | Description / Caption (the title) | `XMP-dc:Description`, `IPTC:Caption-Abstract` | on |
 | Keywords | `XMP-dc:Subject`, `IPTC:Keywords` | on |
-| Location (from *Location in title*: City, State, Country) | `XMP-photoshop:City/State/Country`, `IPTC:City/Province-State/Country-PrimaryLocationName` | on |
+| Location (City, State, Country, when *Editorial* is on) | `XMP-photoshop:City/State/Country`, `IPTC:City/Province-State/Country-PrimaryLocationName` | on |
 | EXIF description | `EXIF:ImageDescription` | off |
 | Windows title and tags | `EXIF:XPTitle`, `EXIF:XPKeywords` | off |
 
