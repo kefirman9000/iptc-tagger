@@ -1097,11 +1097,12 @@ class MainWindow(QMainWindow):
                                   "Off: neither is added.")
         self.editorial.toggled.connect(lambda *_: self._date_options_changed())
         self.editorial_pos = QComboBox()
-        self.editorial_pos.addItem("Before the title and keywords", "before")
-        self.editorial_pos.addItem("After the title and keywords", "after")
+        self.editorial_pos.addItem("Before the title", "before")
+        self.editorial_pos.addItem("After the title", "after")
         self.editorial_pos.setCurrentIndex(max(0, self.editorial_pos.findData(self.settings.get("editorial_pos", "before"))))
-        self.editorial_pos.setToolTip("Before: Tokyo, Japan - October 26, 2026: Title, with tokyo, japan, october 2026, 2026 first\n"
-                                      "in the keywords.\nAfter: Title – Tokyo, Japan - October 26, 2026, with those keywords last.")
+        self.editorial_pos.setToolTip("Before: Tokyo, Japan - October 26, 2026: Title\nAfter: Title – Tokyo, Japan - October 26, 2026\n"
+                                      "In the keywords, the place goes right after the ones that name what's in the photo,\n"
+                                      "and the month and year go at the end.")
         self.editorial_pos.currentIndexChanged.connect(lambda *_: self._date_options_changed())
         self.loc_ai = QCheckBox("AI uses it")
         self.loc_ai.setChecked(bool(self.settings.get("location_for_ai", True)))
@@ -2140,7 +2141,8 @@ class MainWindow(QMainWindow):
                     break
                 n_lead += 1
             new_kw = core.place_editorial_keywords(ph.keywords, self.editorial_keywords(ph),
-                                                   self.settings.get("editorial_pos", "before"), after=n_lead)
+                                                   self.settings.get("editorial_pos", "before"), after=n_lead,
+                                                   title=self.bare_title(ph))
             if new != ph.title or new_kw != core.clean_keywords(ph.keywords):
                 ph.title, ph.keywords = new, new_kw
                 changed += 1
@@ -2691,7 +2693,8 @@ class MainWindow(QMainWindow):
                 suggested = core.drop_brand_keywords(suggested)
             ph.keywords = core.place_editorial_keywords(core.combine_keywords(lead, existing, suggested, kmax),
                                                         self.editorial_keywords(ph),
-                                                        self.settings.get("editorial_pos", "before"), after=len(lead))
+                                                        self.settings.get("editorial_pos", "before"), after=len(lead),
+                                                        title=result["title"])
             ph.busy, ph.status = False, "suggested"
             ph.message = (("Redone with your reasons" if redo else "Suggested")
                           + (", checked against your instructions" if result.get("revised") else "")

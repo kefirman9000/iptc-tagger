@@ -1,5 +1,9 @@
 # What's new
 
+## 2026.10.27.16
+
+- **Keywords by relevance:** with *Editorial* on, the location and date keywords no longer always come first. The keywords that name what's in the photo lead, the place (*tokyo*, *japan*) comes right after them, and the month and year go at the end. *Before / After the title* now only moves the place and date in the title. Your *Keywords to put first* still come first. **Add to titles now** re-sorts photos you've already done.
+
 ## 2026.10.27.15
 
 - **Don't ask again:** the *Save metadata* question now has a **Don't ask me again** box. Tick it to save straight away from then on. Turn the question back on in **Settings → Saving**. Every file is still checked after saving, as before.
