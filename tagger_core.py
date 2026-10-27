@@ -39,7 +39,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.10.27.12"
+APP_VERSION = "2026.10.27.13"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 
 # Free vision models (run locally with Ollama) offered for one-click download:
@@ -258,7 +258,7 @@ DEFAULT_SETTINGS = {
     "check_updates": True,    # look for a newer release on GitHub when the app starts
     "last_seen_version": "",  # the version whose "What's new" was last shown
     "skipped_update": "",     # a version the user chose to skip
-    "auto_update": True,      # download new versions in the background and install them on restart
+    "auto_download": False,   # download new versions without asking first (installed on restart)
 }
 
 

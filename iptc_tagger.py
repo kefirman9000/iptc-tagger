@@ -421,10 +421,11 @@ class SettingsDialog(QDialog):
         dhint.setStyleSheet(f"color:{GREY}")
         dhint.setWordWrap(True)
         f_general.addRow("", dhint)
-        self.auto_update = QCheckBox("Download and install updates automatically")
-        self.auto_update.setChecked(bool(settings.get("auto_update", True)))
-        self.auto_update.setToolTip("A new version is downloaded in the background. Restart when it suits you, or it\n"
-                                    "installs itself when you close the app. Your settings are kept.")
+        self.auto_update = QCheckBox("Download new versions without asking first")
+        self.auto_update.setChecked(bool(settings.get("auto_download", False)))
+        self.auto_update.setToolTip("Off: when a new version is published, the app asks whether to download and install it.\n"
+                                    "On: it is downloaded in the background straight away. Either way it is only\n"
+                                    "installed when you restart or close the app, and your settings are kept.")
         self.updates = QCheckBox("Check for a new version when the app starts")
         self.updates.setChecked(bool(settings.get("check_updates", True)))
         self.updates.setToolTip("Asks GitHub whether a newer release exists. Nothing about you or your photos is sent,\n"
@@ -589,7 +590,7 @@ class SettingsDialog(QDialog):
                  ai_time_limit=self.tlimit.value(), ai_retries=int(self.tretry.currentData() or 0),
                  debug_log=self.debug.isChecked(), symbols=self.symbols.currentData() or "convert",
                  title_length=self.title_len.currentData() or "detailed",
-                 check_updates=self.updates.isChecked(), auto_update=self.auto_update.isChecked())
+                 check_updates=self.updates.isChecked(), auto_download=self.auto_update.isChecked())
         s["keyword_min"], s["keyword_max"] = core.keyword_range(self.kmin.value(), self.kmax.value())
         return s
 
@@ -1423,12 +1424,13 @@ class MainWindow(QMainWindow):
         self.update_info = info
         if self.update_ready or self.update_downloading:
             return
-        if self.settings.get("auto_update", True) and self._can_install(info):
+        if self.settings.get("auto_download", False) and self._can_install(info):   # only if the user opted in
             self.start_update_download()             # quietly, in the background
             return
         self.update_banner.setText(
             f"<b>{core.APP_NAME} {info['version']} is available</b> (you have {core.APP_VERSION}). &nbsp;"
-            + ("<a href='install'>Install it</a>" if self._can_install(info) else "<a href='download'>Download</a>")
+            + ("Download and install it? &nbsp;<a href='install'>Yes, download it</a> &nbsp;·&nbsp; "
+               "<a href='download'>See what's new</a>" if self._can_install(info) else "<a href='download'>Download</a>")
             + " &nbsp;·&nbsp; <a href='skip'>Skip this version</a> &nbsp;·&nbsp; <a href='later'>Not now</a>")
         self.update_banner.show()
 
