@@ -89,6 +89,21 @@ jobs:
         with:
           path: zips
           merge-multiple: true
+      - name: Write the release notes (from CHANGELOG.md)
+        run: |
+          python3 - <<'PY'
+          import os, sys
+          sys.path.insert(0, ".")
+          import tagger_core as core
+          notes = dict(core.changelog_sections(open("CHANGELOG.md", encoding="utf-8").read())).get(os.environ["VERSION"], "")
+          with open("release_notes.md", "w", encoding="utf-8") as f:
+              f.write("**Windows:** download **IPTC.Tagger.Windows.zip**, unzip it and run **IPTC Tagger.exe**. ExifTool is included.  \n"
+                      "**Mac:** download **IPTC.Tagger.Mac.zip** and open **IPTC Tagger.app** (first time: right-click → Open). Requires [ExifTool](https://exiftool.org).  \n"
+                      "Requires [Ollama](https://ollama.com/download) (free) for the AI.\n")
+              if notes:
+                  f.write("\n## What's new\n\n" + notes + "\n")
+          PY
+          cat release_notes.md
       - name: Publish the release
         uses: softprops/action-gh-release@v2
         with:
@@ -96,8 +111,5 @@ jobs:
           name: IPTC Tagger ${{ env.VERSION }}
           target_commitish: ${{ github.sha }}
           make_latest: true
-          body: |
-            **Windows:** download **IPTC.Tagger.Windows.zip**, unzip it and run **IPTC Tagger.exe**. ExifTool is included.
-            **Mac:** download **IPTC.Tagger.Mac.zip** and open **IPTC Tagger.app** (first time: right-click → Open). Requires [ExifTool](https://exiftool.org).
-            Requires [Ollama](https://ollama.com/download) (free) for the AI.
+          body_path: release_notes.md
           files: zips/*.zip

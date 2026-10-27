@@ -36,17 +36,26 @@ No installation and no Python needed. ExifTool is included.
 - **Title building:** text before titles, a location and the date taken, in editorial style, e.g. *Tokyo, Japan - October 26, 2026: Shibuya Crossing at Dusk*. A live preview shows the result, and a custom date can replace the camera's date.
 - **Clean text:** symbols in the AI's titles and keywords are converted to words (& → and, % → percent) or removed, as you choose.
 - **Keywords to put first:** e.g. place or client, with `{year}`, `{month}` and `{date}` filled in from each photo.
+- **Redo with reasons:** tell the AI what's wrong with a suggestion (too generic, wrong subject, too long…) and it tries again with that in mind.
+- **CSV export:** Shutterstock or Adobe Stock upload format, or every detail for a spreadsheet.
 - **Working with many photos:** check boxes, filters (no title, no keywords, unsaved, errors…), search, and copy and paste of titles, keywords and notes between photos.
 - **Reliable:** Stop at any time, a time limit with automatic retry, and an optional debug log.
+- **What's new:** shown once after each update; see [CHANGELOG.md](CHANGELOG.md).
 - **Update check:** when a new release is published here, the app says so at startup, with a link to download it. You can turn this off in Settings.
 
 ## What gets written
 
-| Field | Tags |
-|---|---|
-| Title | `XMP-dc:Title`, `IPTC:ObjectName` |
-| Keywords | `XMP-dc:Subject`, `IPTC:Keywords` |
-| Description (optional, on by default) | `XMP-dc:Description`, `IPTC:Caption-Abstract` |
+The usual fields are written by default. Choose exactly which in **Settings → Saving**:
+
+| Field | Tags | Default |
+|---|---|---|
+| Title | `XMP-dc:Title`, `IPTC:ObjectName` | on |
+| Headline | `XMP-photoshop:Headline`, `IPTC:Headline` | on |
+| Description / Caption (the title) | `XMP-dc:Description`, `IPTC:Caption-Abstract` | on |
+| Keywords | `XMP-dc:Subject`, `IPTC:Keywords` | on |
+| Location (from *Location in title*: City, State, Country) | `XMP-photoshop:City/State/Country`, `IPTC:City/Province-State/Country-PrimaryLocationName` | on |
+| EXIF description | `EXIF:ImageDescription` | off |
+| Windows title and tags | `EXIF:XPTitle`, `EXIF:XPKeywords` | off |
 
 After saving, XMP is optionally copied to IPTC with ExifTool's `xmp2iptc.args`, so both match. This is on by default.
 

@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDateEdit, QDialog, QDialogButtonBox, QFileDialog,
     QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMainWindow,
     QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QSpinBox, QSplitter, QStackedWidget,
-    QStyle, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QStyle, QTableWidget, QTableWidgetItem, QTabWidget, QTextBrowser, QVBoxLayout, QWidget,
 )
 
 import tagger_core as core
@@ -207,6 +207,7 @@ class Photo:
         self.token: core.CancelToken | None = None    # stop switch for this photo's AI request
         self.retries = 0                              # automatic retries used after going over the time limit
         self.timed_out = False                        # stopped because it went over the time limit
+        self.redo: dict | None = None                 # "Redo with reasons": {'feedback', 'rejected'} until it's done
         self.checked = False                          # ticked in the check column: the buttons act on it
         self.title_date = ""                          # the date last put into this title (custom or own)
         self.type_combo: QComboBox | None = None      # the row's Type dropdown
@@ -283,8 +284,8 @@ class SettingsDialog(QDialog):
         adv.addRow("Ollama address", self.url)
         ai_lay.addLayout(adv)
 
-        # ----- keywords + ExifTool
-        other = QFormLayout()
+        # ----- the other settings, one form per page
+        f_ai, f_text, f_save, f_types, f_general = (QFormLayout() for _ in range(5))
         kmin, kmax = core.keyword_range(settings.get("keyword_min"), settings.get("keyword_max"))
         self.kmin, self.kmax = QSpinBox(), QSpinBox()
         for box, val in ((self.kmin, kmin), (self.kmax, kmax)):
@@ -296,7 +297,7 @@ class SettingsDialog(QDialog):
         krow.addWidget(QLabel("to"))
         krow.addWidget(self.kmax)
         krow.addStretch(1)
-        other.addRow("Keywords per photo", krow)
+        f_text.addRow("Keywords per photo", krow)
         self.tlimit = QSpinBox()
         self.tlimit.setRange(0, 900)
         self.tlimit.setSingleStep(10)
@@ -313,14 +314,14 @@ class SettingsDialog(QDialog):
         trow.addWidget(self.tlimit)
         trow.addWidget(self.tretry)
         trow.addStretch(1)
-        other.addRow("Time limit per photo", trow)
+        f_ai.addRow("Time limit per photo", trow)
         self.symbols = QComboBox()
         for key, label in core.SYMBOL_MODES:
             self.symbols.addItem(label, key)
         self.symbols.setCurrentIndex(max(0, self.symbols.findData(settings.get("symbols", "convert"))))
         self.symbols.setToolTip("What happens to symbols like & + @ % in the AI's titles and keywords.\n"
                                 "Your own text (text before titles, location, keywords to put first) is never changed.")
-        other.addRow("Symbols in titles and keywords", self.symbols)
+        f_text.addRow("Symbols", self.symbols)
         self.et = QLineEdit(settings.get("exiftool_path", ""))
         self.et.setPlaceholderText(detected_exiftool or "not found: install ExifTool or choose it here")
         browse = QPushButton("Browse…")
@@ -328,23 +329,55 @@ class SettingsDialog(QDialog):
         et_row = QHBoxLayout()
         et_row.addWidget(self.et, 1)
         et_row.addWidget(browse)
-        other.addRow("ExifTool", et_row)
+        f_save.addRow("ExifTool", et_row)
         hint = QLabel("Leave ExifTool blank to find it automatically.")
         hint.setStyleSheet(f"color:{GREY}")
-        other.addRow("", hint)
+        f_save.addRow("", hint)
+        # which metadata fields are written
+        chosen = set(core.meta_fields(settings))
+        self.field_boxes: dict[str, QCheckBox] = {}
+        fields_box = QGroupBox("Write the title and keywords into")
+        fgrid = QGridLayout(fields_box)
+        groups = []
+        for f in core.METADATA_FIELDS:
+            if f["group"] not in groups:
+                groups.append(f["group"])
+        for col, group in enumerate(groups):
+            head = QLabel(f"<b>{group}</b>")
+            fgrid.addWidget(head, 0, col)
+            for r, f in enumerate([f for f in core.METADATA_FIELDS if f["group"] == group], start=1):
+                cb = QCheckBox(f["label"])
+                cb.setChecked(f["key"] in chosen)
+                cb.setToolTip(f["tip"])
+                fgrid.addWidget(cb, r, col)
+                self.field_boxes[f["key"]] = cb
+        reset = QPushButton("Usual fields")
+        reset.setToolTip("Tick the fields that are normally expected, untick the rest")
+        reset.clicked.connect(lambda *_: [cb.setChecked(k in core.DEFAULT_META_FIELDS)
+                                          for k, cb in self.field_boxes.items()])
+        fgrid.addWidget(reset, 5, len(groups) - 1)
+        fhint = QLabel("The ticked fields are the ones normally expected by Lightroom, Bridge, Photo Mechanic and "
+                       "stock sites. Hover over a field to see who reads it.")
+        fhint.setStyleSheet(f"color:{GREY}")
+        fhint.setWordWrap(True)
+        fgrid.addWidget(fhint, 6, 0, 1, len(groups))
+        f_save.addRow(fields_box)
         self.custom = QPlainTextEdit(settings.get("custom_types", ""))
         self.custom.setPlaceholderText("One per line, as  Name: what the photo shows\n"
                                        "e.g. Restaurant storefront: the exterior of the restaurant with its sign "
                                        "visible from the street")
         self.custom.setMaximumHeight(90)
-        other.addRow("Your own photo types", self.custom)
+        self.custom.setMaximumHeight(16777215)
+        f_types.addRow(QLabel("Add your own photo types, one per line, as  <b>Name: what the photo shows</b>. "
+                              "They appear in every Type list."))
+        f_types.addRow(self.custom)
 
         self.x2i = QCheckBox("Copy XMP to IPTC after every save (for sites that read IPTC)")
         self.x2i.setChecked(bool(settings.get("xmp2iptc_on_save", True)))
         self.x2i.setToolTip("Runs ExifTool with xmp2iptc.args on each photo as it's saved, so its IPTC fields match the XMP ones:\n"
                             "-overwrite_original -P -m -charset iptc=utf8 -codedcharacterset=utf8 -tagsFromFile @ "
                             "-@ xmp2iptc.args")
-        other.addRow("When saving", self.x2i)
+        f_save.addRow("When saving", self.x2i)
         self.x2i_path = QLineEdit(settings.get("xmp2iptc_args", ""))
         found = core.find_xmp2iptc_args(detected_exiftool or core.find_exiftool(settings.get("exiftool_path", "")))
         self.x2i_path.setPlaceholderText(found or "not found")
@@ -353,10 +386,10 @@ class SettingsDialog(QDialog):
         x2i_row = QHBoxLayout()
         x2i_row.addWidget(self.x2i_path, 1)
         x2i_row.addWidget(x2i_browse)
-        other.addRow("xmp2iptc.args", x2i_row)
+        f_save.addRow("xmp2iptc.args", x2i_row)
         x2i_hint = QLabel("Leave blank to use the one next to ExifTool, or the copy that comes with this app.")
         x2i_hint.setStyleSheet(f"color:{GREY}")
-        other.addRow("", x2i_hint)
+        f_save.addRow("", x2i_hint)
         # troubleshooting: debug log
         self.debug = QCheckBox("Debug mode: write a detailed log of every AI request")
         self.debug.setChecked(bool(settings.get("debug_log")))
@@ -372,11 +405,11 @@ class SettingsDialog(QDialog):
         drow.addStretch(1)
         drow.addWidget(open_log)
         drow.addWidget(clear_log)
-        other.addRow("Troubleshooting", drow)
+        f_general.addRow("Troubleshooting", drow)
         dhint = QLabel(f"The log is saved as {core.debug_log_path()}. Send that file when reporting a problem.")
         dhint.setStyleSheet(f"color:{GREY}")
         dhint.setWordWrap(True)
-        other.addRow("", dhint)
+        f_general.addRow("", dhint)
         self.updates = QCheckBox("Check for a new version when the app starts")
         self.updates.setChecked(bool(settings.get("check_updates", True)))
         self.updates.setToolTip("Asks GitHub whether a newer release exists. Nothing about you or your photos is sent,\n"
@@ -391,17 +424,27 @@ class SettingsDialog(QDialog):
         urow.addStretch(1)
         urow.addWidget(self.update_result)
         urow.addWidget(check_now)
-        other.addRow("Updates", urow)
-        self.desc = QCheckBox("Also save the title as the Description (Caption): some stock sites use it as the title")
-        self.desc.setChecked(bool(settings.get("title_as_description", True)))
-        other.addRow("", self.desc)
+        f_general.addRow("Updates", urow)
+        whats_new = QPushButton("What's new…")
+        whats_new.setToolTip("What changed in this version and the ones before it")
+        whats_new.clicked.connect(lambda *_: show_whats_new(self, "", full=True))
+        f_general.addRow("", whats_new)
 
+        # ----- pages
+        self.pages = QTabWidget()
+        for title, widgets in (("AI", [ai, f_ai]), ("Titles && keywords", [f_text]), ("Saving", [f_save]),
+                               ("Photo types", [f_types]), ("General", [f_general])):
+            page = QWidget()
+            pl = QVBoxLayout(page)
+            for w in widgets:
+                (pl.addLayout if isinstance(w, QFormLayout) else pl.addWidget)(w)
+            pl.addStretch(1)
+            self.pages.addTab(page, title)
         self.buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         self.buttons.accepted.connect(self.accept)
         self.buttons.rejected.connect(self.reject)
         lay = QVBoxLayout(self)
-        lay.addWidget(ai)
-        lay.addLayout(other)
+        lay.addWidget(self.pages)
         lay.addWidget(self.buttons)
         self.refresh()
 
@@ -526,7 +569,8 @@ class SettingsDialog(QDialog):
                  exiftool_path=self.et.text().strip(),
                  custom_types=self.custom.toPlainText().strip(),
                  xmp2iptc_on_save=self.x2i.isChecked(), xmp2iptc_args=self.x2i_path.text().strip(),
-                 title_as_description=self.desc.isChecked(),
+                 meta_fields=[k for k, cb in self.field_boxes.items() if cb.isChecked()],
+                 title_as_description=self.field_boxes["description"].isChecked(),
                  ai_time_limit=self.tlimit.value(), ai_retries=int(self.tretry.currentData() or 0),
                  debug_log=self.debug.isChecked(), symbols=self.symbols.currentData() or "convert",
                  check_updates=self.updates.isChecked())
@@ -614,8 +658,12 @@ class ReviewPanel(QWidget):
         self.b_copy.setToolTip("Copy this photo's title and keywords (Ctrl/⌘+C), to paste onto other photos")
         self.b_paste = QPushButton("Paste")
         self.b_paste.setToolTip("Paste a copied title and keywords into this photo (Ctrl/⌘+V)")
+        self.b_redo = QPushButton("Redo with Reasons…")
+        self.b_redo.setToolTip("Tell the AI what's wrong with this suggestion (too generic, wrong subject, too long…)\n"
+                               "and it tries again with that in mind")
         r1 = QHBoxLayout()
         r1.addWidget(self.b_identify)
+        r1.addWidget(self.b_redo)
         r1.addWidget(self.b_revert)
         r1.addWidget(self.b_copy)
         r1.addWidget(self.b_paste)
@@ -639,6 +687,7 @@ class ReviewPanel(QWidget):
         self.title.textEdited.connect(self._edited)
         self.keywords.textChanged.connect(self._edited)
         self.b_identify.clicked.connect(lambda *_: self.photo and win.identify_photos([self.photo]))
+        self.b_redo.clicked.connect(lambda *_: self.photo and win.redo_photos([self.photo]))
         self.b_revert.clicked.connect(lambda *_: self.photo and win.revert_photos([self.photo]))
         self.b_save.clicked.connect(lambda *_: self.photo and win.save_photos([self.photo]))
         self.b_save_next.clicked.connect(lambda *_: win.save_and_next())
@@ -701,6 +750,7 @@ class ReviewPanel(QWidget):
         self.b_save.setEnabled(ph.changed and not busy and can_write)
         self.b_save_next.setEnabled(not busy and (can_write or not ph.changed))
         self.b_identify.setEnabled(not busy)
+        self.b_redo.setEnabled(not busy)
         self.b_revert.setEnabled(ph.changed and not busy)
         self.b_paste.setEnabled(not busy)
         row = self.win.rows.get(ph.path, 0)
@@ -739,6 +789,66 @@ class DropPage(QLabel):
                      f"<div style='margin-top:10px;color:{GREY}'>Folders are searched including subfolders.<br>"
                      "Or use Add Photos / Add Folder above.</div>")
         self.setStyleSheet("QLabel{border:2px dashed #9aa3ad;border-radius:14px;margin:18px;padding:40px}")
+
+
+def show_whats_new(parent, since: str = "", full: bool = False) -> bool:
+    """The 'What's new' window. Returns False if there was nothing to show."""
+    text = core.whats_new(since, full=full)
+    if not text:
+        if full:
+            QMessageBox.information(parent, "What's new", "There are no release notes in this copy of the app.")
+        return False
+    dlg = QDialog(parent)
+    dlg.setWindowTitle(f"What's new in {core.APP_NAME} {core.APP_VERSION}")
+    dlg.resize(560, 460)
+    view = QTextBrowser()
+    view.setOpenExternalLinks(True)
+    view.setMarkdown(text)
+    ok = QDialogButtonBox(QDialogButtonBox.Ok)
+    ok.accepted.connect(dlg.accept)
+    lay = QVBoxLayout(dlg)
+    lay.addWidget(view)
+    lay.addWidget(ok)
+    dlg.exec()
+    return True
+
+
+class RedoDialog(QDialog):
+    """Redo with reasons: tick what's wrong with the current suggestion, and the AI tries again with that
+    in mind (it also sees the title being rejected, so it won't just repeat it)."""
+
+    def __init__(self, parent, count: int, current_title: str = ""):
+        super().__init__(parent)
+        self.setWindowTitle("Redo with reasons")
+        lay = QVBoxLayout(self)
+        what = (f"<b>Current title:</b> {current_title}" if count == 1 and current_title else
+                f"<b>{count} photos</b>" if count > 1 else "")
+        if what:
+            lab = QLabel(what)
+            lab.setWordWrap(True)
+            lay.addWidget(lab)
+        lay.addWidget(QLabel("What's wrong with the suggestion? Tick all that apply:"))
+        self.boxes = {}
+        for key, label, _ in core.REDO_REASONS:
+            cb = QCheckBox(label)
+            self.boxes[key] = cb
+            lay.addWidget(cb)
+        self.other = QLineEdit()
+        self.other.setPlaceholderText("Anything else, e.g. it's a heron, not a crane / mention the sunset")
+        lay.addWidget(QLabel("Anything else (optional):"))
+        lay.addWidget(self.other)
+        tip = QLabel("Tip: a photo note (e.g. the subject's name) helps the AI most when it got something wrong.")
+        tip.setStyleSheet(f"color:{GREY}")
+        tip.setWordWrap(True)
+        lay.addWidget(tip)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.button(QDialogButtonBox.Ok).setText("Redo")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        lay.addWidget(buttons)
+
+    def feedback(self) -> str:
+        return core.redo_feedback([k for k, cb in self.boxes.items() if cb.isChecked()], self.other.text())
 
 
 def banner_label() -> QLabel:
@@ -791,6 +901,8 @@ class MainWindow(QMainWindow):
             self.status.setText(f"Debug mode is on: details are written to {core.debug_log_path()}")
         if self.settings.get("check_updates", True) and not os.environ.get("IPTC_TAGGER_OFFLINE"):
             self.check_updates()
+        if self.settings.get("last_seen_version") != core.APP_VERSION:
+            QTimer.singleShot(400, self._show_whats_new_once)   # once the window is on screen
         if self.custom_date_value():
             self.status.setText("Custom date is on: titles use "
                                 + core.format_date(self.custom_date_value(), "long")
@@ -821,6 +933,9 @@ class MainWindow(QMainWindow):
         self.btn_check_all.setToolTip("Tick every photo shown in the list")
         self.btn_uncheck_all = button("Uncheck All", lambda: self.set_checked(self.photos, False))
         self.btn_uncheck_all.setToolTip("Clear all ticks; the buttons then work on the selected photos, or all")
+        self.btn_export = button("Export CSV…", self.export_csv)
+        self.btn_export.setToolTip("Save the titles and keywords as a spreadsheet: Shutterstock or Adobe Stock upload\n"
+                                   "format, or every detail. Uses the checked photos, else the selected, else all shown.")
         self.btn_instr = button("Hide Instructions", self.toggle_instructions)
         self.btn_settings = button("Settings", self.open_settings, QStyle.SP_FileDialogDetailedView)
 
@@ -828,7 +943,7 @@ class MainWindow(QMainWindow):
         for w in (self.btn_add, self.btn_folder):
             top.addWidget(w)
         top.addSpacing(16)
-        for w in (self.btn_identify, self.btn_save):
+        for w in (self.btn_identify, self.btn_save, self.btn_export):
             top.addWidget(w)
         top.addSpacing(16)
         for w in (self.btn_check_all, self.btn_uncheck_all):
@@ -1203,6 +1318,52 @@ class MainWindow(QMainWindow):
             self.ai_banner.show()
         else:
             self.ai_banner.hide()
+
+    def _show_whats_new_once(self):
+        """After an update (or the first start), show what's new, once."""
+        since = self.settings.get("last_seen_version", "")
+        self.settings["last_seen_version"] = core.APP_VERSION
+        core.save_settings(self.settings)
+        if not os.environ.get("IPTC_TAGGER_OFFLINE"):
+            show_whats_new(self, since)
+
+    # ---------- CSV export
+    def is_editorial(self, ph: Photo) -> bool:
+        """Editorial when the photo shows brands or a news event, or your text before titles says so."""
+        return (self.effective_type(ph) in core.EDITORIAL_TYPES
+                or "editorial" in self.settings.get("title_prefix", "").casefold())
+
+    def export_csv(self):
+        photos, scope = self.targets()
+        photos = [p for p in photos if p.title.strip() or p.keywords]
+        if not photos:
+            self.status.setText("Nothing to export yet: the photos have no titles or keywords.")
+            return
+        folder = os.path.dirname(photos[0].path)
+        filters = [label + " (*.csv)" for _, label in core.CSV_FORMATS]
+        path, chosen = QFileDialog.getSaveFileName(self, f"Export {len(photos)} photo{'s' if len(photos) != 1 else ''} "
+                                                   "to CSV", os.path.join(folder, "metadata.csv"), ";;".join(filters))
+        if not path:
+            return
+        if not path.lower().endswith(".csv"):
+            path += ".csv"
+        fmt = next((k for (k, label), flt in zip(core.CSV_FORMATS, filters) if flt == chosen), "shutterstock")
+        labels = dict(self.type_items())
+        rows = [{"file": os.path.basename(p.path), "folder": os.path.dirname(p.path), "title": p.title,
+                 "keywords": list(p.keywords), "editorial": self.is_editorial(p),
+                 "type": labels.get(self.effective_type(p), ""), "note": p.note, "taken": p.taken,
+                 "saved": not p.changed} for p in photos]
+        try:
+            n = core.export_csv(path, rows, fmt)
+        except OSError as e:
+            QMessageBox.warning(self, "Export CSV", f"The CSV couldn't be saved:\n{e}")
+            return
+        unsaved = sum(1 for p in photos if p.changed)
+        self.status.setText(f"Exported {n} photo{'s' if n != 1 else ''} to {os.path.basename(path)} "
+                            f"({dict(core.CSV_FORMATS)[fmt]})."
+                            + (f" {unsaved} of them {'has' if unsaved == 1 else 'have'} changes that aren't saved "
+                               "into the files yet."
+                               if unsaved else ""))
 
     # ---------- update check
     def check_updates(self, on_done=None):
@@ -1580,6 +1741,9 @@ class MainWindow(QMainWindow):
         a = menu.addAction("Get new AI suggestion" if one else f"Get new AI suggestions for {len(idle)} photos")
         a.setEnabled(bool(idle))
         a.triggered.connect(lambda *_: self.identify_photos(idle))
+        a = menu.addAction("Redo with reasons…")
+        a.setEnabled(bool(idle))
+        a.triggered.connect(lambda *_: self.redo_photos(idle))
         a = menu.addAction("Revert unsaved changes")
         a.setEnabled(n_changed > 0)
         a.triggered.connect(lambda *_: self.revert_photos(idle))
@@ -2185,7 +2349,7 @@ class MainWindow(QMainWindow):
 
     def _release(self, photos, message: str):
         for ph in photos:
-            ph.busy, ph.status, ph.message = False, "ready", message
+            ph.busy, ph.status, ph.message, ph.redo = False, "ready", message, None
             self._show(ph)
         self._refresh_buttons()
 
@@ -2234,8 +2398,10 @@ class MainWindow(QMainWindow):
         if ph.token is None or ph.token.is_set():
             ph.token = core.CancelToken()
         ph.ai_started = 0.0
+        redo = ph.redo or {}
         job = Job(ph.path, functools.partial(core.identify, cancel=ph.token,
-                                             symbols=self.settings.get("symbols", "convert")),
+                                             symbols=self.settings.get("symbols", "convert"),
+                                             feedback=redo.get("feedback", ""), rejected_title=redo.get("rejected", "")),
                   ph.path, url, model, kmin, kmax,
                   context, self.bare_title(ph), list(ph.keywords), direction, ph.note,
                   core.type_description(self.settings, self.effective_type(ph)),
@@ -2247,6 +2413,22 @@ class MainWindow(QMainWindow):
                   self.effective_type(ph) == core.COPYRIGHT_FREE, cancel=ph.token)
         run_job(self, job, self.ai_pool, self._identified, self._identify_failed,
                 on_started=self._identify_started)
+
+    def redo_photos(self, photos):
+        """Ask what's wrong, then run the AI again on these photos with those reasons."""
+        photos = [p for p in photos if not p.busy]
+        if not photos:
+            return
+        dlg = RedoDialog(self, len(photos), self.bare_title(photos[0]) if len(photos) == 1 else "")
+        if not dlg.exec():
+            return
+        feedback = dlg.feedback()
+        if not feedback:
+            feedback = core.redo_feedback(["angle"])     # nothing ticked: at least ask for something different
+        for ph in photos:
+            ph.redo = {"feedback": feedback, "rejected": self.bare_title(ph)}
+        core.debug(f"redo with reasons for {len(photos)} photo(s):\n{feedback}")
+        self.identify_photos(photos)
 
     # ---------- stopping
     def _detect_clicked(self, ph):
@@ -2319,7 +2501,8 @@ class MainWindow(QMainWindow):
         self.models_loaded = True
         ph = self._photo(path)
         if ph:
-            keep_title = self.keep_titles.isChecked() and ph.title.strip()
+            redo, ph.redo = ph.redo, None
+            keep_title = self.keep_titles.isChecked() and ph.title.strip() and not redo   # a redo always replaces it
             if not keep_title:
                 # the location is added to the title for you, so a trailing "in <location>" from the AI goes
                 ph.title = self.compose_title(ph, core.drop_trailing_location(result["title"],
@@ -2328,13 +2511,16 @@ class MainWindow(QMainWindow):
             kmax = core.keyword_range(self.settings.get("keyword_min"), self.settings.get("keyword_max"))[1]
             lead = core.expand_lead_keywords(self.settings.get("lead_keywords", ""), self.photo_date(ph))
             existing = ph.keywords if self.keep_kw.isChecked() else []
+            if redo:   # replace the rejected suggestions; keep only the keywords that were in the file before
+                existing = list(ph.file_keywords) if self.keep_kw.isChecked() else []
             suggested = result["keywords"]
             if self.effective_type(ph) == core.COPYRIGHT_FREE:
                 existing = core.drop_brand_keywords(existing)    # no brand names, even ones already on the file
                 suggested = core.drop_brand_keywords(suggested)
             ph.keywords = core.combine_keywords(lead, existing, suggested, kmax)
             ph.busy, ph.status = False, "suggested"
-            ph.message = ("Suggested" + (", checked against your instructions" if result.get("revised") else "")
+            ph.message = (("Redone with your reasons" if redo else "Suggested")
+                          + (", checked against your instructions" if result.get("revised") else "")
                           + ", not saved yet" + (" (kept existing title)" if keep_title else "")
                           + (f". Note: {result['warning']}" if result.get("warning") else ""))
             self._show(ph)
@@ -2367,7 +2553,7 @@ class MainWindow(QMainWindow):
                 self._tick()
                 return
             core.debug(f"{os.path.basename(ph.path)}: GAVE UP after {ph.retries + 1} tries over the time limit")
-            ph.busy = False
+            ph.busy, ph.redo = False, None
             ph.status = "error"
             ph.message = (f"The AI took longer than {limit} s" + (f" ({ph.retries + 1} tries)" if ph.retries else "")
                           + ". Click Detect to try again, pick a faster model in Settings, or raise the time limit.")
@@ -2375,7 +2561,7 @@ class MainWindow(QMainWindow):
         elif ph:
             if msg != core.STOPPED:
                 core.debug(f"{os.path.basename(ph.path)}: FAILED: {msg}")
-            ph.busy = False
+            ph.busy, ph.redo = False, None
             ph.status, ph.message = ("ready", "Stopped") if msg == core.STOPPED else ("error", msg)
             self._show(ph)
         if not any(p.busy for p in self.photos):
@@ -2441,11 +2627,11 @@ class MainWindow(QMainWindow):
         args = None
         if s.get("xmp2iptc_on_save", True):
             args = core.find_xmp2iptc_args(self.exiftool.exe if self.exiftool else None, s.get("xmp2iptc_args", ""))
-        return {"description": bool(s.get("title_as_description", True)), "xmp2iptc_args": args}
+        return {"fields": core.meta_fields(s), "location": s.get("title_location", ""), "xmp2iptc_args": args}
 
     def _write_one(self, path, title, keywords, opts):
-        core.safe_write(self.exiftool, path, title, keywords,
-                        description=title if opts["description"] else None, xmp2iptc_args=opts["xmp2iptc_args"])
+        core.safe_write(self.exiftool, path, title, keywords, xmp2iptc_args=opts["xmp2iptc_args"],
+                        fields=opts["fields"], location=opts["location"])
         return self.exiftool.read([path])[path]   # confirm what is now in the file
 
     def _saved(self, path, meta):
