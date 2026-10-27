@@ -39,7 +39,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.10.27.5"
+APP_VERSION = "2026.10.27.6"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 
 # Free vision models (run locally with Ollama) offered for one-click download:
@@ -247,12 +247,14 @@ DEFAULT_SETTINGS = {
     "revise": True,           # double-check each draft against your instructions (one extra, text-only pass)
     "xmp2iptc_on_save": True, # after saving, copy XMP to IPTC with ExifTool's xmp2iptc.args (keeps IPTC in step with XMP)
     "xmp2iptc_args": "",      # path to xmp2iptc.args; blank = find it next to ExifTool, else the bundled copy
-    "title_as_description": True,   # also save the title as the Description/Caption (some stock sites read it)
+    "title_as_description": True,   # (older setting, now part of meta_fields: "description")
+    "meta_fields": None,      # which metadata fields are written (None = the usual set, see METADATA_FIELDS)
     "symbols": "convert",     # symbols in the AI's titles and keywords: convert (& -> and) / remove / keep
     "ai_time_limit": 30,      # seconds per photo before it's stopped (0 = no limit); first photo gets extra
     "ai_retries": 1,          # how many times a photo that went over the limit is tried again
     "debug_log": False,       # write a detailed log of every AI request to debug_log.txt
     "check_updates": True,    # look for a newer release on GitHub when the app starts
+    "last_seen_version": "",  # the version whose "What's new" was last shown
     "skipped_update": "",     # a version the user chose to skip
 }
 
@@ -307,6 +309,44 @@ def _clip(text, n=400) -> str:
     return text if len(text) <= n else text[:n] + f"… [{len(text) - n} more characters]"
 
 
+# CSV export ---------------------------------------------------------------------------------------
+CSV_FORMATS = [("shutterstock", "Shutterstock upload CSV"), ("adobe", "Adobe Stock upload CSV"),
+               ("full", "All details (for Excel or your own records)")]
+EDITORIAL_TYPES = {"editorial_event", "logo_stock", "product_shelf", "app_store", "storefront"}
+
+
+def export_csv(path: str, rows: list[dict], fmt: str = "shutterstock") -> int:
+    """Write the photos to a CSV file. rows: dicts with file, folder, title, keywords, editorial (bool),
+    and for 'full' also type, note, taken, saved. Returns how many photos were written.
+    The upload formats match what Shutterstock and Adobe Stock accept: one row per file, the keywords
+    comma-separated in one cell. Columns they need that the app doesn't know (categories) are left
+    empty to fill in on the site."""
+    import csv
+    # one keyword may never contain a comma: on upload it would split into two keywords
+    rows = [dict(r, keywords=[" ".join(str(k).replace(",", " ").split()) for k in r["keywords"]]) for r in rows]
+    if fmt == "shutterstock":
+        head = ["Filename", "Description", "Keywords", "Categories", "Illustration", "Mature Content", "Editorial"]
+        body = [[r["file"], r["title"], ",".join(r["keywords"]), "", "no", "no",
+                 "yes" if r.get("editorial") else "no"] for r in rows]
+        enc = "utf-8"
+    elif fmt == "adobe":
+        head = ["Filename", "Title", "Keywords", "Category", "Releases"]
+        body = [[r["file"], r["title"], ",".join(r["keywords"]), "", ""] for r in rows]
+        enc = "utf-8"
+    else:
+        head = ["File", "Folder", "Title", "Title length", "Keywords", "Keyword count", "Photo type",
+                "Photo notes", "Date taken", "Editorial", "Saved"]
+        body = [[r["file"], r["folder"], r["title"], len(r["title"]), ", ".join(r["keywords"]), len(r["keywords"]),
+                 r.get("type", ""), r.get("note", ""), r.get("taken", ""), "yes" if r.get("editorial") else "no",
+                 "yes" if r.get("saved") else "no"] for r in rows]
+        enc = "utf-8-sig"                            # so Excel shows accents and other characters correctly
+    with open(path, "w", newline="", encoding=enc) as f:   # (the save dialog already asked before replacing)
+        w = csv.writer(f)
+        w.writerow(head)
+        w.writerows(body)
+    return len(rows)
+
+
 # Update check ------------------------------------------------------------------------------------
 UPDATE_REPO = "kefirman9000/iptc-tagger"
 UPDATE_API = f"https://api.github.com/repos/{UPDATE_REPO}/releases/latest"
@@ -341,6 +381,46 @@ def check_for_update(current: str = APP_VERSION, opener=None, timeout: float = 6
     if not version or info.get("draft") or info.get("prerelease") or not is_newer(version, current):
         return None
     return {"version": version, "url": info.get("html_url") or RELEASES_PAGE, "notes": info.get("body") or ""}
+
+
+# What's new ------------------------------------------------------------------------------------------
+CHANGELOG = os.path.join(RESOURCE_DIR, "CHANGELOG.md")
+
+
+def changelog_sections(text: str) -> list[tuple[str, str]]:
+    """[(version, markdown)] from CHANGELOG.md, newest first ('## 2026.10.27.6' headings)."""
+    out, version, lines = [], None, []
+    for line in (text or "").splitlines():
+        m = re.match(r"^##\s+v?(\d[\w.]*)\s*$", line)
+        if m:
+            if version:
+                out.append((version, "\n".join(lines).strip()))
+            version, lines = m.group(1), []
+        elif version:
+            lines.append(line)
+    if version:
+        out.append((version, "\n".join(lines).strip()))
+    return out
+
+
+def whats_new(since: str = "", current: str = APP_VERSION, full: bool = False, text: str | None = None) -> str:
+    """Markdown for the versions after `since` up to `current` (all of them with full=True)."""
+    if text is None:
+        try:
+            with open(CHANGELOG, encoding="utf-8") as f:
+                text = f.read()
+        except OSError:
+            return ""
+    parts = []
+    for version, body in changelog_sections(text):
+        if version_tuple(version) > version_tuple(current):
+            continue
+        if not full and since and version_tuple(version) <= version_tuple(since):
+            continue
+        if not full and not since and parts:
+            break                                    # first run: just the current version
+        parts.append(f"### {version}\n\n{body}")
+    return "\n\n".join(parts)
 
 
 def load_settings() -> dict:
@@ -467,6 +547,91 @@ def _norm(p: str) -> str:
     return os.path.normcase(os.path.normpath(os.path.abspath(p)))
 
 
+# Metadata fields ---------------------------------------------------------------------------------
+def parse_location(location: str) -> dict:
+    """'City, State, Country' -> parts. 'Tokyo, Japan' -> city + country; one part -> city."""
+    parts = [p.strip() for p in (location or "").split(",") if p.strip()]
+    if not parts:
+        return {"city": "", "state": "", "country": ""}
+    if len(parts) == 1:
+        return {"city": parts[0], "state": "", "country": ""}
+    if len(parts) == 2:
+        return {"city": parts[0], "state": "", "country": parts[1]}
+    return {"city": parts[0], "state": ", ".join(parts[1:-1]), "country": parts[-1]}
+
+
+def _set(tag: str, value: str) -> list[str]:
+    return [f"-{tag}={value}"]
+
+
+def _kw_args(tag: str, keywords, limit: int | None = None) -> list[str]:
+    if not keywords:
+        return [f"-{tag}="]
+    ks = clean_keywords(truncate_utf8(k, limit) for k in keywords) if limit else keywords
+    return [f"-{tag}={k}" for k in ks]
+
+
+def _location_args(location: str) -> list[str]:
+    loc = parse_location(location)
+    if not any(loc.values()):
+        return []                                   # no location set: leave the photo's own fields alone
+    args = []
+    for xmp, iptc, value in (("XMP-photoshop:City", "IPTC:City", loc["city"]),
+                             ("XMP-photoshop:State", "IPTC:Province-State", loc["state"]),
+                             ("XMP-photoshop:Country", "IPTC:Country-PrimaryLocationName", loc["country"])):
+        if value:
+            args += _set(xmp, value) + _set(iptc, truncate_utf8(value, 64 if "Country" not in iptc else 64))
+    return args
+
+
+# Each field: what it is, where it's written, and whether it's on unless you change it in Settings.
+METADATA_FIELDS = [
+    {"key": "title_xmp", "group": "Title", "label": "XMP Title (dc:title)", "default": True,
+     "tip": "The standard title field. Read by Lightroom, Bridge, Adobe Stock, Windows and most stock sites.",
+     "args": lambda t, k, d, l: _set("XMP-dc:Title", t)},
+    {"key": "title_iptc", "group": "Title", "label": "IPTC Object Name", "default": True,
+     "tip": "The older IPTC title field (up to 64 bytes). Still read by many sites and tools.",
+     "args": lambda t, k, d, l: _set("IPTC:ObjectName", truncate_utf8(t, IPTC_TITLE_MAX))},
+    {"key": "headline", "group": "Title", "label": "Headline (XMP and IPTC)", "default": True,
+     "tip": "A short headline. Editorial agencies and Photo Mechanic use it as the title.",
+     "args": lambda t, k, d, l: _set("XMP-photoshop:Headline", t) + _set("IPTC:Headline", truncate_utf8(t, 256))},
+    {"key": "title_windows", "group": "Title", "label": "Windows Title (XPTitle)", "default": False,
+     "tip": "The title Windows File Explorer shows in some older versions. Usually not needed.",
+     "args": lambda t, k, d, l: _set("EXIF:XPTitle", t)},
+    {"key": "description", "group": "Description", "label": "Description / Caption (XMP and IPTC)", "default": True,
+     "tip": "The title is also saved as the description. Shutterstock and other stock sites use it as the title.",
+     "args": lambda t, k, d, l: _set("XMP-dc:Description", d) + _set("IPTC:Caption-Abstract", truncate_utf8(d, 2000))},
+    {"key": "description_exif", "group": "Description", "label": "EXIF Image Description", "default": False,
+     "tip": "The camera-style description field. Some older programs read only this one.",
+     "args": lambda t, k, d, l: _set("EXIF:ImageDescription", d)},
+    {"key": "keywords_xmp", "group": "Keywords", "label": "XMP Keywords (dc:subject)", "default": True,
+     "tip": "The standard keyword field. Read by Lightroom, Bridge, Adobe Stock, Windows and most stock sites.",
+     "args": lambda t, k, d, l: _kw_args("XMP-dc:Subject", k)},
+    {"key": "keywords_iptc", "group": "Keywords", "label": "IPTC Keywords", "default": True,
+     "tip": "The older IPTC keyword field (each up to 64 bytes). Still read by many sites and tools.",
+     "args": lambda t, k, d, l: _kw_args("IPTC:Keywords", k, IPTC_KEYWORD_MAX)},
+    {"key": "keywords_windows", "group": "Keywords", "label": "Windows Tags (XPKeywords)", "default": False,
+     "tip": "The tags Windows File Explorer shows in some older versions. Usually not needed.",
+     "args": lambda t, k, d, l: _set("EXIF:XPKeywords", "; ".join(k))},
+    {"key": "location", "group": "Location", "label": "City, State and Country (XMP and IPTC)", "default": True,
+     "tip": "From 'Location in title', read as City, State, Country (e.g. Tokyo, Japan). Editorial reviewers\n"
+            "check these. Only written when a location is set; the photo's own fields are left alone otherwise.",
+     "args": lambda t, k, d, l: _location_args(l)},
+]
+DEFAULT_META_FIELDS = [f["key"] for f in METADATA_FIELDS if f["default"]]
+
+
+def meta_fields(settings: dict) -> list[str]:
+    """The fields to write, from Settings (older settings files are converted)."""
+    chosen = settings.get("meta_fields")
+    if not isinstance(chosen, list):
+        chosen = list(DEFAULT_META_FIELDS)
+        if not settings.get("title_as_description", True):
+            chosen.remove("description")
+    known = {f["key"] for f in METADATA_FIELDS}
+    return [k for k in chosen if k in known]
+
+
 class ExifTool:
     """Runs ExifTool with an argument file, so any file name or Unicode text is safe."""
 
@@ -561,34 +726,31 @@ class ExifTool:
         if "1 image files updated" not in out and "1 image files unchanged" not in out:
             raise ExifToolError("the XMP to IPTC conversion didn't update the file: " + (out.strip() or "no output"))
 
-    def write(self, path: str, title: str, keywords: list[str], description: str | None = None) -> None:
-        """Replace title and keywords. Only metadata segments are rewritten; the
-        image data is copied unchanged. -P keeps the file's modified date, and
-        -overwrite_original stops ExifTool leaving a '_original' copy behind."""
+    def write(self, path: str, title: str, keywords: list[str], description: str | None = None,
+              fields=None, location: str = "") -> None:
+        """Replace title and keywords (and the other chosen fields, see METADATA_FIELDS). Only metadata
+        segments are rewritten; the image data is copied unchanged. -P keeps the file's modified date, and
+        -overwrite_original stops ExifTool leaving a '_original' copy behind.
+        fields=None keeps the original behaviour: title + keywords in XMP and IPTC, plus the description
+        only if one is given."""
         title = clean_title(title)
         keywords = clean_keywords(keywords)
+        if fields is None:
+            fields = {"title_xmp", "title_iptc", "keywords_xmp", "keywords_iptc"} | (
+                {"description"} if description is not None else set())
+        fields = set(fields)
+        desc = clean_title(description if description is not None else title)
         args = ["-P", "-overwrite_original", "-charset", "iptc=UTF8", "-IPTC:CodedCharacterSet=UTF8"]
-        if title:
-            args += [f"-XMP-dc:Title={title}", f"-IPTC:ObjectName={truncate_utf8(title, IPTC_TITLE_MAX)}"]
-        else:
-            args += ["-XMP-dc:Title=", "-IPTC:ObjectName="]
-        if description is not None:              # the title saved as the Description / Caption too
-            d = clean_title(description)
-            args += [f"-XMP-dc:Description={d}", f"-IPTC:Caption-Abstract={truncate_utf8(d, 2000)}"]
-        if keywords:
-            for k in keywords:
-                args.append(f"-XMP-dc:Subject={k}")
-            for k in clean_keywords(truncate_utf8(k, IPTC_KEYWORD_MAX) for k in keywords):
-                args.append(f"-IPTC:Keywords={k}")
-        else:
-            args += ["-XMP-dc:Subject=", "-IPTC:Keywords="]
+        for f in METADATA_FIELDS:
+            if f["key"] in fields:
+                args += f["args"](title, keywords, desc, location)
         out = self._run(args + [path])
         if "1 image files updated" not in out and "1 image files unchanged" not in out:
             raise ExifToolError(out.strip() or "ExifTool did not update the file")
 
 
 def safe_write(et: "ExifTool", path: str, title: str, keywords: list[str], description: str | None = None,
-               xmp2iptc_args: str | None = None) -> None:
+               xmp2iptc_args: str | None = None, fields=None, location: str = "") -> None:
     """Write metadata, then prove the picture itself is untouched. If the image
     data ever differs, the original file is restored exactly and an error raised."""
     before = jpeg_image_data_hash(path)
@@ -603,7 +765,10 @@ def safe_write(et: "ExifTool", path: str, title: str, keywords: list[str], descr
         raise ExifToolError(reason + " (original file restored)")
 
     try:
-        et.write(path, title, keywords, description)
+        if fields is None:
+            et.write(path, title, keywords, description)
+        else:
+            et.write(path, title, keywords, description, fields=fields, location=location)
         if xmp2iptc_args:
             et.xmp_to_iptc(path, xmp2iptc_args)   # make IPTC match XMP
     except ExifToolError:
@@ -1166,7 +1331,7 @@ def build_prompt(keyword_min: int, keyword_max: int, context: str = "", existing
                  existing_keywords=None, direction: str = "", photo_note: str = "",
                  photo_type: str = "", lead_keywords=None, title_prefix: str = "",
                  date_in_title: bool = False, title_location: str = "", copyright_free: bool = False,
-                 symbols: str = "keep") -> str:
+                 symbols: str = "keep", feedback: str = "", rejected_title: str = "") -> str:
     """The instructions for one photo. Your notes come first and the title is built around them;
     your directions are repeated at the end. (title_prefix is never shown to the AI.)"""
     context, photo_note, direction = (context or "").strip(), (photo_note or "").strip(), (direction or "").strip()
@@ -1205,6 +1370,11 @@ def build_prompt(keyword_min: int, keyword_max: int, context: str = "", existing
         "objects, colours, concepts and likely search terms.",
         "", COPYRIGHT_FREE_RULES if copyright_free else BRAND_RULES,
     ]
+    if (feedback or "").strip():
+        lines += ["", "REDO: the photographer rejected the previous suggestion"
+                  + (f" ({json.dumps(rejected_title, ensure_ascii=False)})" if rejected_title else "")
+                  + ". Write a clearly better, different title and keywords that fix these problems:",
+                  feedback.strip()]
     if symbols in ("convert", "remove"):
         lines += ["", "No symbols: write words instead of symbols in the title and keywords (\"and\" instead of "
                   "\"&\", \"plus\" instead of \"+\", \"percent\" instead of \"%\") and don't use symbols such as "
@@ -1234,11 +1404,46 @@ def build_prompt(keyword_min: int, keyword_max: int, context: str = "", existing
     return "\n".join(lines)
 
 
+# Redo with reasons: what the photographer didn't like about the last suggestion
+REDO_REASONS = [
+    ("generic", "Title is too generic",
+     "The title was too generic. Be specific about what makes this photo distinctive: the exact subject, "
+     "what is happening, the setting and the mood."),
+    ("wrong", "Wrong subject, or something is misidentified",
+     "Something was identified wrongly. Look at the photo again carefully and describe only what is really there."),
+    ("long", "Title is too long",
+     "The title was too long. Keep it short: about 6 to 10 words."),
+    ("short", "Title is too short or missing detail",
+     "The title was too short. Add the important details: setting, action, time of day or mood."),
+    ("notes", "Leaves out the place, event or names from my notes",
+     "The title left out facts from the photographer's notes. Work the place, event and names they give into the title."),
+    ("invented", "Mentions things that aren't in the photo",
+     "The suggestion mentioned things that aren't in the photo. Describe only what is visible or given in the notes."),
+    ("names", "Shouldn't name brands, products or people",
+     "Don't name any brands, products or people; describe them in generic words."),
+    ("keywords", "Keywords are off-topic or repetitive",
+     "The keywords were off-topic or repetitive. Make every keyword clearly relevant to this photo, and varied."),
+    ("angle", "Just try a different angle",
+     "Try a clearly different wording and angle for the title."),
+]
+
+
+def redo_feedback(reasons, other: str = "") -> str:
+    """The instruction text for the chosen reasons (keys from REDO_REASONS) plus anything typed."""
+    lines = [text for key, _, text in REDO_REASONS if key in set(reasons or [])]
+    if (other or "").strip():
+        lines.append("The photographer also says: " + single_line(other))
+    return "\n".join("- " + l for l in lines)
+
+
 def build_revision_prompt(draft_title: str, draft_keywords, keyword_min: int, keyword_max: int,
                           context: str = "", photo_note: str = "", direction: str = "",
-                          title_location: str = "", copyright_free: bool = False) -> str:
+                          title_location: str = "", copyright_free: bool = False, feedback: str = "") -> str:
     """Second pass (text only): bring a draft in line with your notes and directions."""
     lines = ["Check this draft title and keyword list for a stock photo against the photographer's instructions."]
+    if (feedback or "").strip():
+        lines += ["", "The photographer rejected an earlier suggestion for these reasons; make sure the draft fixes them:",
+                  feedback.strip()]
     if copyright_free:
         lines += ["", COPYRIGHT_FREE_RULES, "Replace every brand, trademark, product, character or person's name in "
                   "the draft with generic words, and remove any keyword that is such a name."]
@@ -1495,7 +1700,7 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
              photo_note: str = "", photo_type: str = "", lead_keywords=None, title_prefix: str = "",
              date_in_title: bool = False, revise: bool = True, title_location: str = "",
              copyright_free: bool = False, opener=None, cancel: CancelToken | None = None,
-             symbols: str = "keep") -> dict:
+             symbols: str = "keep", feedback: str = "", rejected_title: str = "") -> dict:
     """Ask the local vision model for an SEO title and keywords.
     With revise=True and any notes or directions given, a second (text-only) pass checks the draft
     against them. Returns {'title', 'keywords', 'seconds', 'revised'}."""
@@ -1519,7 +1724,7 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
               f"note={_clip(photo_note or '', 80)!r}, location={title_location!r}")
     prompt = build_prompt(keyword_min, keyword_max, context, existing_title, existing_keywords,
                           direction, photo_note, photo_type, lead_keywords, title_prefix, date_in_title,
-                          title_location, copyright_free, symbols)
+                          title_location, copyright_free, symbols, feedback, rejected_title)
     system = system_prompt(direction)
 
     def body(user_text, schema, with_image=True, temperature=0.2):
@@ -1577,16 +1782,19 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
         return parsed
 
     started = time.monotonic()
-    draft = ask(prompt, OUTPUT_SCHEMA, "draft")
+    # a redo is asked a little more freely, so it doesn't come back with the same words
+    draft = ask(prompt, OUTPUT_SCHEMA, "draft", temperature=0.5 if (feedback or "").strip() else 0.2)
     raw_title = str(draft.get("title", "") or "").strip()
     raw_keywords = _as_list(draft.get("keywords", []))
 
     revised = False
-    if revise and raw_title and (copyright_free or any((t or "").strip() for t in (direction, context, photo_note))):
+    if revise and raw_title and (copyright_free or any((t or "").strip()
+                                                       for t in (direction, context, photo_note, feedback))):
         # second pass: make the draft follow your notes and directions (fast: text only, no image)
         try:
             fixed = ask(build_revision_prompt(raw_title, raw_keywords, keyword_min, keyword_max,
-                                              context, photo_note, direction, title_location, copyright_free),
+                                              context, photo_note, direction, title_location, copyright_free,
+                                              feedback),
                         OUTPUT_SCHEMA, "double-check", with_image=False, temperature=0.1)
             new_title = str(fixed.get("title", "") or "").strip()
             new_keywords = _as_list(fixed.get("keywords", []))
