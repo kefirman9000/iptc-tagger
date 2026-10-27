@@ -1,5 +1,9 @@
 # What's new
 
+## 2026.10.27.8
+
+- **New column order:** in the photo list, **Status** now comes before **Type**, and the **Detect** and **Save** buttons come before **Photo notes**. The text you edit (notes, title, keywords) now sits together on the right.
+
 ## 2026.10.27.7
 
 - **More redo reasons:** *Redo with reasons* now has a second column, **What to focus on**: the words and signs in the photo, the location, the mood, the main subject, the action, the colours and light, the people, the concept for commercial buyers, or the season. There are new problems to pick too: too flowery, not factual enough, and keywords too general. Hover over a reason to see exactly what the AI is told.

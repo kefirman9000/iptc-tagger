@@ -28,7 +28,8 @@ from PySide6.QtWidgets import (
 import tagger_core as core
 
 THUMB = 72
-COL_CHECK, COL_THUMB, COL_FILE, COL_TYPE, COL_NOTE, COL_TITLE, COL_KEYWORDS, COL_STATUS, COL_ACTION = range(9)
+# column order in the list: status, type and the Detect/Save buttons sit before the text you edit
+COL_CHECK, COL_THUMB, COL_FILE, COL_STATUS, COL_TYPE, COL_ACTION, COL_NOTE, COL_TITLE, COL_KEYWORDS = range(9)
 PREVIEW = 520   # long edge of the large preview in the review panel
 GREY = "#8a8f98"
 STATUS_COLORS = {
@@ -1163,8 +1164,10 @@ class MainWindow(QMainWindow):
         self.ai_banner.linkActivated.connect(self._banner_link)
 
         self.table = QTableWidget(0, 9)
-        self.table.setHorizontalHeaderLabels(["✓", "", "File", "Type", "Photo notes (optional)", "Title",
-                                              "Keywords (comma separated)", "Status", ""])
+        headers = {COL_CHECK: "✓", COL_THUMB: "", COL_FILE: "File", COL_STATUS: "Status", COL_TYPE: "Type",
+                   COL_ACTION: "", COL_NOTE: "Photo notes (optional)", COL_TITLE: "Title",
+                   COL_KEYWORDS: "Keywords (comma separated)"}
+        self.table.setHorizontalHeaderLabels([headers[c] for c in range(len(headers))])
         self.table.setIconSize(QSize(THUMB, THUMB))
         self.table.verticalHeader().setVisible(False)
         self.table.verticalHeader().setDefaultSectionSize(THUMB + 12)
