@@ -1,5 +1,9 @@
 # What's new
 
+## 2026.10.27.12
+
+- **More specific titles:** for products, titles name the brand, the exact product and its variety, flavour, scent or size from the packaging, e.g. *Doritos Cool Ranch Flavored Tortilla Chips* rather than *Bag of Chips*. Brands, stores and restaurants get their well-known parent company too (*a Frito-Lay and PepsiCo Brand*, *Owned by Yum! Brands*), and these go into the keywords as well. *Copyright-free* photos still leave all names out.
+
 ## 2026.10.27.11
 
 - **Descriptive titles, without filler:** titles describe more of the scene itself (the style, signs, surroundings, people and objects) instead of adding the time of day. The time of day, light or weather is only mentioned when it really stands out, such as a sunset sky or a city at night.
