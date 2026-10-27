@@ -41,7 +41,7 @@ No installation and no Python needed. ExifTool is included.
 - **Working with many photos:** check boxes, filters (no title, no keywords, unsaved, errors…), search, and copy and paste of titles, keywords and notes between photos.
 - **Reliable:** Stop at any time, a time limit with automatic retry, and one log file for troubleshooting.
 - **What's new:** shown once after each update; see [CHANGELOG.md](CHANGELOG.md).
-- **Automatic updates:** new releases published here are downloaded in the background and installed when you restart the app. You can turn this off in Settings.
+- **Easy updates:** when a new release is published here, the app asks whether to download it, then installs it when you restart. You can also turn off the check in Settings.
 
 ## What gets written
 

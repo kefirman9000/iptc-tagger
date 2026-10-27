@@ -1,5 +1,9 @@
 # What's new
 
+## 2026.10.27.13
+
+- **Updates ask first:** when a new version is published, the app asks whether to download and install it. Nothing is downloaded until you click **Yes, download it**. It's then installed when you restart or close the app. To skip the question, tick **Download new versions without asking first** in **Settings → General**.
+
 ## 2026.10.27.12
 
 - **More specific titles:** for products, titles name the brand, the exact product and its variety, flavour, scent or size from the packaging, e.g. *Doritos Cool Ranch Flavored Tortilla Chips* rather than *Bag of Chips*. Brands, stores and restaurants get their well-known parent company too (*a Frito-Lay and PepsiCo Brand*, *Owned by Yum! Brands*), and these go into the keywords as well. *Copyright-free* photos still leave all names out.
