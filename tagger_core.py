@@ -39,7 +39,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.10.27.15"
+APP_VERSION = "2026.10.27.16"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 
 # Free vision models (run locally with Ollama) offered for one-click download:
@@ -1460,18 +1460,32 @@ def editorial_keywords(location: str = "", taken: str = "") -> list[str]:
     return clean_keywords(out)
 
 
-def place_editorial_keywords(keywords, extra, pos: str = "before", after: int = 0) -> list[str]:
-    """Put the Editorial keywords at the start (after the first `after` keywords, i.e. your keywords to put
-    first) or at the end of the list. Ones already in the list aren't added twice."""
+def place_editorial_keywords(keywords, extra, pos: str = "before", after: int = 0, title: str = "") -> list[str]:
+    """Add the Editorial keywords where they're relevant instead of always first: after your keywords to put
+    first (the first `after`) and the keywords that name what's in the title, the place; the month and year
+    at the end. (Before/after only moves the place and date in the title.) Ones already in the list aren't
+    added twice; a suggestion like "tokyo" joins the place keywords."""
     keywords = clean_keywords(keywords)
-    if pos == "after":
-        have = {k.casefold() for k in keywords}
-        return keywords + [k for k in clean_keywords(extra) if k.casefold() not in have]
     head = keywords[:after]
-    head_set = {k.casefold() for k in head}
-    extra = [k for k in clean_keywords(extra) if k.casefold() not in head_set]
-    moved = {k.casefold() for k in extra}               # a suggestion like "tokyo" moves up with them
-    return head + extra + [k for k in keywords[after:] if k.casefold() not in moved]
+    taken = {k.casefold() for k in head}
+    extra = [k for k in clean_keywords(extra) if k.casefold() not in taken]
+    dates = [k for k in extra if re.fullmatch(r"(?:[a-z]+ )?\d{4}", k.casefold())]
+    places = [k for k in extra if k not in dates]
+    moved = {k.casefold() for k in extra}
+    rest = [k for k in keywords[after:] if k.casefold() not in moved]
+    if not extra:
+        return head + rest                            # nothing to add: the order is left exactly as it was
+    words = {_singular(w) for w in re.findall(r"[\w']+", (title or "").casefold().replace("'", ""))
+             if w not in SMALL_WORDS}
+
+    def names_title(k):
+        ws = [_singular(w) for w in k.casefold().split() if w not in SMALL_WORDS]
+        return bool(words) and bool(ws) and all(w in words for w in ws)
+    # the place goes right after the last of the top keywords that name what's in the title
+    # (or after the top three when none do); the rest keep their order
+    hits = [i for i, k in enumerate(rest[:10]) if names_title(k)]
+    at = hits[-1] + 1 if hits else min(3, len(rest))
+    return head + rest[:at] + places + rest[at:] + dates
 
 
 def expand_lead_keywords(text: str, taken: str = "") -> list[str]:
