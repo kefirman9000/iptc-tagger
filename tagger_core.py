@@ -39,7 +39,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.10.27.20"
+APP_VERSION = "2026.10.27.21"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 
 # Free vision models (run locally with Ollama) offered for one-click download:
@@ -148,9 +148,33 @@ def single_line(text: str) -> str:
     return " ".join(str(text).split())
 
 
+_QUOTES = "\"'“”‘’„«»"
+
+
 def clean_title(text: str) -> str:
-    t = single_line(text).strip().strip('"').strip("'").strip()
+    t = single_line(text).strip().strip(_QUOTES).strip()
     return t[:-1] if t.endswith(".") and not t.endswith("..") else t
+
+
+# A model now and then writes its whole answer inside the title, with curly quotes, e.g.
+#   Shelf Display”, “Keywords”: “car care”, “wheel cleaner”, … 16
+_LEAKED = re.compile(r"[\s,;]*[" + _QUOTES + r"]?\s*[,;]?\s*[" + _QUOTES + r"]?\s*\b(?:keywords?|tags)\b\s*["
+                     + _QUOTES + r"]?\s*[:=：]", re.I)
+
+
+def split_leaked_keywords(title: str) -> tuple[str, list[str]]:
+    """Cut a keyword list (and anything after it) out of a title. Returns (title, the keywords found)."""
+    if not title:
+        return title, []
+    m = _LEAKED.search(title)
+    if not m:
+        return title, []
+    head, tail = title[:m.start()], title[m.end():]
+    parts = [p.strip(" \t" + _QUOTES + "[](){}") for p in re.split(r"[" + _QUOTES + r"]?\s*,\s*[" + _QUOTES + r"]?|[“”\"]\s+[“\"]", tail)]
+    words = [p for p in parts if p and not re.fullmatch(r"[\d\s.]+", p) and len(p.split()) <= 6]
+    # a stray number after the list (a count the model added) isn't a keyword
+    words = [re.sub(r"[" + _QUOTES + r"]\s*\d+\s*$", "", w).strip(" " + _QUOTES) for w in words]
+    return head.strip(" ,;:-–—" + _QUOTES), [w for w in words if w]
 
 
 # Symbols in the AI's titles and keywords ------------------------------------------------------
@@ -2319,6 +2343,10 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
     draft = ask(prompt, OUTPUT_SCHEMA, "draft", temperature=0.5 if (feedback or "").strip() else 0.2)
     raw_title = str(draft.get("title", "") or "").strip()
     raw_keywords = _as_list(draft.get("keywords", []))
+    raw_title, leaked = split_leaked_keywords(raw_title)
+    if leaked:
+        debug(f"{name}: the keywords had been written into the title; moved {len(leaked)} back to the keywords")
+        raw_keywords = list(raw_keywords) + [k for k in leaked if k not in raw_keywords]
 
     revised = False
     if revise and raw_title and (copyright_free or any((t or "").strip()
@@ -2329,7 +2357,7 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
                                               context, photo_note, direction, title_location, copyright_free,
                                               feedback),
                         OUTPUT_SCHEMA, "double-check", with_image=False, temperature=0.1)
-            new_title = str(fixed.get("title", "") or "").strip()
+            new_title = split_leaked_keywords(str(fixed.get("title", "") or "").strip())[0]
             new_keywords = _as_list(fixed.get("keywords", []))
             if new_title:
                 raw_title, revised = new_title, True
@@ -2358,7 +2386,7 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
                   + "Title Case, no quotation marks and no full stop at the end. "
                   'Output only JSON: {"title": "..."}')
         try:
-            longer = str(ask(expand, TITLE_SCHEMA, "longer title").get("title", "") or "").strip()
+            longer = split_leaked_keywords(str(ask(expand, TITLE_SCHEMA, "longer title").get("title", "") or "").strip())[0]
             if len(longer.split()) > len(raw_title.split()):
                 debug(f"{name}: title was {len(raw_title.split())} words, expanded to {len(longer.split())}")
                 raw_title = longer

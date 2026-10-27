@@ -1,5 +1,9 @@
 # What's new
 
+## 2026.10.27.21
+
+- **Keywords stay out of titles:** now and then the AI wrote its keyword list inside the title (*…Maintenance", "Keywords": "Car Care Products", …*). That's now caught: the title is cut back to the real title, and those keywords go into the keywords where they belong.
+
 ## 2026.10.27.20
 
 - **Easier to read:** the links on the blue update banner (*Yes, download it*, *Restart now*…) are now dark, bold blue instead of a light blue that blended into the background.
