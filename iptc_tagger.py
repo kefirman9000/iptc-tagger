@@ -1008,22 +1008,19 @@ class MainWindow(QMainWindow):
         # ----- instructions for the AI
         self.instructions = QGroupBox("Instructions for the AI (used every time you click Detect)")
         g = QGridLayout(self.instructions)
-        about_lbl = QLabel("<b>About these photos</b><br><span style='color:#8a8f98'>Clarify what the "
-                           "photos show: place, event, client, people's roles, species…</span>")
-        dir_lbl = QLabel("<b>Title &amp; keyword direction</b><br><span style='color:#8a8f98'>How titles and "
-                         "keywords should be written. These directions take priority.</span>")
-        for lbl in (about_lbl, dir_lbl):
-            lbl.setWordWrap(True)
+        about_lbl = QLabel("<span style='color:#8a8f98'>What the photos show (place, event, client, people's roles, "
+                           "species…) and how titles and keywords should be written. Directions here take priority "
+                           "over the defaults.</span>")
+        about_lbl.setWordWrap(True)
+        # one box for facts and directions (it used to be two: "About these photos" and "Title & keyword direction")
         self.context = QPlainTextEdit(self.settings.get("context", ""))
-        self.context.setPlaceholderText("e.g. Autumn wedding of Sarah and James at Meiji Shrine, "
-                                        "Tokyo, Japan. The older couple are the bride's parents.")
-        self.direction = QPlainTextEdit(self.settings.get("direction", ""))
-        self.direction.setPlaceholderText("e.g. Titles in the form \"Subject, Location\", 6 words max.\n"
-                                          "Always include the keywords wedding, Tokyo and Japan.\n"
-                                          "Avoid words like beautiful and stunning.")
-        for box in (self.context, self.direction):
-            box.setMaximumHeight(78)
-            box.setTabChangesFocus(True)
+        self.context.setPlaceholderText("e.g. Autumn wedding of Sarah and James at Meiji Shrine, Tokyo, Japan. "
+                                        "The older couple are the bride's parents.\n"
+                                        "Always include the keywords wedding and Japan. Avoid words like beautiful "
+                                        "and stunning.")
+        self.direction = self.context                  # (same box: older code and settings read either name)
+        self.context.setMaximumHeight(78)
+        self.context.setTabChangesFocus(True)
         self.keep_titles = QCheckBox("Keep existing titles")
         self.keep_titles.setChecked(bool(self.settings.get("keep_existing_titles", True)))
         self.keep_titles.setToolTip("Photos that already have a title keep it; only empty titles are filled in")
@@ -1034,16 +1031,14 @@ class MainWindow(QMainWindow):
         self.keep_kw.toggled.connect(lambda *_: self._remember_options())
         self.revise = QCheckBox("Double-check against my instructions")
         self.revise.setChecked(bool(self.settings.get("revise", True)))
-        self.revise.setToolTip("After the first suggestion, the AI checks it against About these photos, your photo "
-                               "notes and your Title & keyword direction, and fixes anything that doesn't follow them.\n"
+        self.revise.setToolTip("After the first suggestion, the AI checks it against your instructions and photo notes,\n"
+                               "and fixes anything that doesn't follow them.\n"
                                "Only runs when you've written instructions. Adds a few seconds per photo.")
         self.revise.toggled.connect(lambda *_: self._remember_options())
         note = QLabel("Tip: to clarify a single photo, double-click its <b>Photo notes</b> cell in the list.")
         note.setStyleSheet(f"color:{GREY}")
-        g.addWidget(about_lbl, 0, 0)
-        g.addWidget(self.context, 1, 0)
-        g.addWidget(dir_lbl, 0, 1)
-        g.addWidget(self.direction, 1, 1)
+        g.addWidget(about_lbl, 0, 0, 1, 2)
+        g.addWidget(self.context, 1, 0, 1, 2)
         self.lead = QLineEdit(self.settings.get("lead_keywords", ""))
         self.lead.setPlaceholderText("e.g. Tokyo, Japan, Shibuya, {year}, {month} {year}")
         self.lead.setToolTip("Put first in every photo's keywords, exactly as typed, before the AI's suggestions.\n"
@@ -1550,7 +1545,8 @@ class MainWindow(QMainWindow):
             return
         if hasattr(self, "location_box"):
             self._remember_location()                # a location in use goes to the top of the dropdown
-        self.settings.update(context=self.context.toPlainText().strip(),
+        text = self.context.toPlainText().strip()
+        self.settings.update(context=text,
                              lead_keywords=self.lead.text().strip(),
                              title_prefix=self.prefix.text().strip(),
                              title_location=" ".join(self.location.text().split()),
@@ -1563,7 +1559,7 @@ class MainWindow(QMainWindow):
                              title_loc_sep=self.loc_sep.currentData() or "dash",
                              custom_date_on=self.custom_date_on.isChecked(),
                              custom_date=self.custom_date.date().toString("yyyy-MM-dd"),
-                             direction=self.direction.toPlainText().strip(),
+                             direction=text,           # one box: the same text is both
                              keep_existing_titles=self.keep_titles.isChecked(),
                              revise=self.revise.isChecked(),
                              keep_existing_keywords=self.keep_kw.isChecked())

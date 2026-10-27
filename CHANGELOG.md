@@ -1,5 +1,9 @@
 # What's new
 
+## 2026.10.27.22
+
+- **One box for your instructions:** *About these photos* and *Title & keyword direction* are now one box in **Instructions for the AI**. Write the facts (place, event, client, people's roles, species…) and how titles and keywords should be written together. The AI uses the facts and follows the directions, and the directions still take priority over the defaults. Anything you had in the two boxes is joined into the new one.
+
 ## 2026.10.27.21
 
 - **Keywords stay out of titles:** now and then the AI wrote its keyword list inside the title (*…Maintenance", "Keywords": "Car Care Products", …*). That's now caught: the title is cut back to the real title, and those keywords go into the keywords where they belong.

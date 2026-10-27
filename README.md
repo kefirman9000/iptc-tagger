@@ -31,7 +31,7 @@ No installation and no Python needed. ExifTool is included.
 - **Drag and drop** JPEGs or whole folders, including subfolders.
 - **Detect:** the AI suggests a full, descriptive, SEO-friendly title in Title Case (short, standard or detailed, as you choose) and 30–40 lowercase keywords per photo.
 - **Review and edit** in a table or a side panel with a large preview. Save one photo at a time or many at once.
-- **Instructions for the AI:** facts about the batch, title and keyword rules, and a note per photo.
+- **Instructions for the AI:** one box for facts about the batch and how titles and keywords should be written, plus a note per photo.
 - **Photo types:** landscape, food, architecture, product on a shelf, company logo with a stock chart, editorial event and more, plus your own. A **Copyright-free** type keeps brand and personal names out.
 - **Editorial:** one checkbox adds the location and the date taken to every title (before or after it) and to the keywords (sorted by relevance), e.g. *Tokyo, Japan - October 26, 2026: Shibuya Crossing at Dusk*. Text before titles, a live preview and a custom date (when the camera's date is wrong) round it off.
 - **Clean text:** symbols in the AI's titles and keywords are converted to words (& → and, % → percent) or removed, as you choose.

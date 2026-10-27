@@ -39,7 +39,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.10.27.21"
+APP_VERSION = "2026.10.27.22"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 
 # Free vision models (run locally with Ollama) offered for one-click download:
@@ -273,7 +273,8 @@ DEFAULT_SETTINGS = {
     "revise": True,           # double-check each draft against your instructions (one extra, text-only pass)
     "xmp2iptc_on_save": False, # also copy every other XMP field to IPTC with xmp2iptc.args (the title and keywords
                                # are already written in full to IPTC directly)
-    "iptc_direct": True,      # (marks settings from after the switch to one-step saving)
+    "iptc_direct": True,
+    "instructions_merged": True,  # (one "Instructions for the AI" box; "context" and "direction" hold the same text)      # (marks settings from after the switch to one-step saving)
     "xmp2iptc_args": "",      # path to xmp2iptc.args; blank = find it next to ExifTool, else the bundled copy
     "meta_fields": None,      # which metadata fields are written (None = the usual set, see METADATA_FIELDS)
     "symbols": "convert",     # symbols in the AI's titles and keywords: convert (& -> and) / remove / keep
@@ -592,6 +593,11 @@ def load_settings() -> dict:
         s["meta_fields"] = [k for k in DEFAULT_META_FIELDS if k != "description"]
     if s.get("default_type") == "general":    # "General photo" was merged into "Automatic"
         s["default_type"] = "auto"
+    if isinstance(raw, dict) and raw and "instructions_merged" not in raw:
+        # "About these photos" and "Title & keyword direction" are now one box: join what was in them
+        parts = [str(raw.get(k) or "").strip() for k in ("context", "direction")]
+        joined = "\n".join(p for p in parts if p)
+        s["context"] = s["direction"] = joined
     if isinstance(raw, dict) and raw and "iptc_direct" not in raw:
         # saving is one step now: the full title and keywords go straight into IPTC, so the second
         # xmp2iptc pass is no longer needed for that (it stays available in Settings)
@@ -1558,8 +1564,9 @@ def system_prompt(direction: str = "") -> str:
     """The system message. Your directions go here too, because models give it the most weight."""
     if not (direction or "").strip():
         return SYSTEM_PROMPT
-    return (SYSTEM_PROMPT + "\n\nThe photographer's directions below are your highest priority. They override "
-            "every default rule (title style, length, wording and keyword rules). Follow each one exactly:\n"
+    return (SYSTEM_PROMPT + "\n\nThe photographer's instructions below are your highest priority. Treat any facts "
+            "in them as true, and follow each direction exactly: they override every default rule (title style, "
+            "length, wording and keyword rules):\n"
             + direction.strip())
 
 EMPTY_REPLY = "The AI model returned no title or keywords for this photo. Try again or try another model."
@@ -1840,7 +1847,12 @@ def build_prompt(keyword_min: int, keyword_max: int, context: str = "", existing
     your directions are repeated at the end. (title_prefix is never shown to the AI.)"""
     context, photo_note, direction = (context or "").strip(), (photo_note or "").strip(), (direction or "").strip()
     lines = ["Write the title and keywords for this stock photo."]
-    if context:
+    merged = bool(context) and context == direction       # one "Instructions for the AI" box: facts and directions
+    if merged:
+        lines += ["", "THE PHOTOGRAPHER'S INSTRUCTIONS. Any facts in them (place, event, company, product, names, "
+                  "roles, species) are true: build the title and keywords around them. Any directions in them (how "
+                  "to write the title and keywords) take priority over every default rule below:", context]
+    elif context:
         lines += ["", "ABOUT THESE PHOTOS (facts from the photographer; treat them as true). Build the title and "
                   "keywords around these facts: use any place, event, company, product, names or roles they give.",
                   context]
@@ -1903,7 +1915,10 @@ def build_prompt(keyword_min: int, keyword_max: int, context: str = "", existing
                   "instructions here rather than copying it: "
                   + json.dumps({"title": existing_title, "keywords": list(existing_keywords or [])},
                                ensure_ascii=False)]
-    if direction:
+    if merged:
+        lines += ["", "Remember: follow every direction in the photographer's instructions at the top exactly, even "
+                  "where it differs from the rules above."]
+    elif direction:
         lines += ["", "PHOTOGRAPHER'S DIRECTIONS (highest priority: follow every one exactly, even where it "
                   "differs from the rules above):", direction]
     lines += ["", 'Output only JSON in exactly this form: {"title": "...", "keywords": ["...", "..."]}']
@@ -1988,12 +2003,16 @@ def build_revision_prompt(draft_title: str, draft_keywords, keyword_min: int, ke
     if (title_location or "").strip():
         lines += ["", f"The location ({title_location.strip()}) is added to the title separately: remove the place "
                   "name from the title if it's there, but keep it in the keywords."]
-    if (context or "").strip():
+    merged = bool((context or "").strip()) and (context or "").strip() == (direction or "").strip()
+    if merged:
+        lines += ["", "PHOTOGRAPHER'S INSTRUCTIONS (facts the title should reflect, and directions to follow exactly; "
+                  "they override all other rules):", context.strip()]
+    elif (context or "").strip():
         lines += ["", "ABOUT THESE PHOTOS (facts; the title should reflect them):", context.strip()]
     if (photo_note or "").strip():
         lines += ["", "ABOUT THIS PHOTO (fact; the title and keywords should reflect it"
                   + (", in generic words" if copyright_free else "") + "):", photo_note.strip()]
-    if (direction or "").strip():
+    if (direction or "").strip() and not merged:
         lines += ["", "PHOTOGRAPHER'S DIRECTIONS (follow every one exactly; they override all other rules):",
                   direction.strip()]
     lines += ["", "Draft:", json.dumps({"title": draft_title, "keywords": list(draft_keywords or [])}, ensure_ascii=False),
