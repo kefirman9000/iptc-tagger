@@ -12,6 +12,11 @@ on:
 permissions:
   contents: write
 
+# a newer push replaces a build that's still running, so an older build can't overwrite the release
+concurrency:
+  group: release
+  cancel-in-progress: true
+
 jobs:
   windows:
     runs-on: windows-latest
@@ -92,7 +97,7 @@ jobs:
           target_commitish: ${{ github.sha }}
           make_latest: true
           body: |
-            **Download IPTC Tagger (Windows).zip** below, unzip it anywhere and run **IPTC Tagger.exe**. Nothing to install; ExifTool is built in.
-            Mac: download IPTC Tagger (Mac).zip, open IPTC Tagger.app (the first time: right-click > Open), and install ExifTool from exiftool.org.
-            The AI needs [Ollama](https://ollama.com/download) (free) on your computer.
+            **Windows:** download **IPTC.Tagger.Windows.zip**, unzip it and run **IPTC Tagger.exe**. ExifTool is included.
+            **Mac:** download **IPTC.Tagger.Mac.zip** and open **IPTC Tagger.app** (first time: right-click → Open). Requires [ExifTool](https://exiftool.org).
+            Requires [Ollama](https://ollama.com/download) (free) for the AI.
           files: zips/*.zip

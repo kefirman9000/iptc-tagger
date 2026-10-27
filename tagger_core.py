@@ -221,12 +221,12 @@ DEFAULT_SETTINGS = {
     "location_for_ai": True,  # also tell the AI the location, so it uses it in keywords
     "location_history": [],   # locations used before, most recent first (the dropdown in Location in title)
     "revise": True,           # double-check each draft against your instructions (one extra, text-only pass)
-    "xmp2iptc_on_save": True, # after saving, copy XMP to IPTC with ExifTool's xmp2iptc.args (as your .bat does)
+    "xmp2iptc_on_save": True, # after saving, copy XMP to IPTC with ExifTool's xmp2iptc.args (keeps IPTC in step with XMP)
     "xmp2iptc_args": "",      # path to xmp2iptc.args; blank = find it next to ExifTool, else the bundled copy
-    "title_as_description": True,
+    "title_as_description": True,   # also save the title as the Description/Caption (some stock sites read it)
     "ai_time_limit": 30,      # seconds per photo before it's stopped (0 = no limit); first photo gets extra
     "ai_retries": 1,          # how many times a photo that went over the limit is tried again
-    "debug_log": False,       # write a detailed log of every AI request to debug_log.txt  # also save the title as the Description/Caption (Shutterstock reads this)
+    "debug_log": False,       # write a detailed log of every AI request to debug_log.txt
 }
 
 
@@ -379,7 +379,7 @@ APP_ICON = os.path.join(RESOURCE_DIR, "icon.png")
 
 
 def find_xmp2iptc_args(exiftool_exe: str | None, custom: str = "") -> str | None:
-    """Locate ExifTool's xmp2iptc.args: your chosen file, next to ExifTool (as in your .bat file),
+    """Locate ExifTool's xmp2iptc.args: your chosen file, next to ExifTool,
     in ExifTool's own arg_files folder, or the copy bundled with this app."""
     cands = [custom] if custom else []
     if exiftool_exe:
@@ -489,8 +489,7 @@ class ExifTool:
         return result
 
     def xmp_to_iptc(self, path: str, args_file: str) -> None:
-        """Copy XMP to IPTC with ExifTool's xmp2iptc.args, using the same options as
-        Convert_Metadata_Exiftool_Shutterstock.bat: -overwrite_original -P -m
+        """Copy XMP to IPTC with ExifTool's xmp2iptc.args: -overwrite_original -P -m
         -charset iptc=utf8 -codedcharacterset=utf8 -tagsFromFile @ -@ xmp2iptc.args"""
         out = self._run(["-overwrite_original", "-P", "-m", "-charset", "iptc=utf8", "-codedcharacterset=utf8",
                          "-tagsFromFile", "@", "-@", args_file, path])
@@ -541,7 +540,7 @@ def safe_write(et: "ExifTool", path: str, title: str, keywords: list[str], descr
     try:
         et.write(path, title, keywords, description)
         if xmp2iptc_args:
-            et.xmp_to_iptc(path, xmp2iptc_args)   # make IPTC match XMP, exactly as your .bat file does
+            et.xmp_to_iptc(path, xmp2iptc_args)   # make IPTC match XMP
     except ExifToolError:
         if os.path.exists(path) and os.path.getsize(path) == 0:
             restore("ExifTool left an empty file")
