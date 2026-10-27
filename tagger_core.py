@@ -39,7 +39,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.10.27.13"
+APP_VERSION = "2026.10.27.14"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 
 # Free vision models (run locally with Ollama) offered for one-click download:
@@ -258,6 +258,8 @@ DEFAULT_SETTINGS = {
     "check_updates": True,    # look for a newer release on GitHub when the app starts
     "last_seen_version": "",  # the version whose "What's new" was last shown
     "skipped_update": "",     # a version the user chose to skip
+    "read_label": True,       # read the text on packaging and signs first (one quick extra step per photo)
+    "tidy_keywords": True,    # remove filler keywords and put the title's words first
     "auto_download": False,   # download new versions without asking first (installed on restart)
 }
 
@@ -888,6 +890,163 @@ class ExifTool:
             raise ExifToolError(out.strip() or "ExifTool did not update the file")
 
 
+# Undo a save: every tag a save can touch (as ExifTool reports it with -G1 -> the name to write it back)
+UNDO_TAGS = [("XMP-dc:Title", "XMP-dc:Title"), ("IPTC:ObjectName", "IPTC:ObjectName"),
+             ("XMP-photoshop:Headline", "XMP-photoshop:Headline"), ("IPTC:Headline", "IPTC:Headline"),
+             ("IFD0:XPTitle", "EXIF:XPTitle"),
+             ("XMP-dc:Description", "XMP-dc:Description"), ("IPTC:Caption-Abstract", "IPTC:Caption-Abstract"),
+             ("IFD0:ImageDescription", "EXIF:ImageDescription"),
+             ("XMP-dc:Subject", "XMP-dc:Subject"), ("IPTC:Keywords", "IPTC:Keywords"),
+             ("IFD0:XPKeywords", "EXIF:XPKeywords"),
+             ("XMP-photoshop:City", "XMP-photoshop:City"), ("XMP-photoshop:State", "XMP-photoshop:State"),
+             ("XMP-photoshop:Country", "XMP-photoshop:Country"), ("IPTC:City", "IPTC:City"),
+             ("IPTC:Province-State", "IPTC:Province-State"),
+             ("IPTC:Country-PrimaryLocationName", "IPTC:Country-PrimaryLocationName")]
+UNDO_LIST_TAGS = {"XMP-dc:Subject", "IPTC:Keywords"}
+UNDO_PER_PHOTO = 5          # saves you can step back through, per photo
+UNDO_PHOTOS = 3000          # photos remembered in the undo file
+
+
+def snapshot_metadata(et: "ExifTool", path: str) -> dict:
+    """Every field a save can change, exactly as it is in the file now ({write name: value or list})."""
+    out = et._run(["-j", "-G1", "-a", "-api", "struct=0", "-charset", "iptc=UTF8"]
+                  + ["-" + t.split(":", 1)[1] for t, _ in UNDO_TAGS] + [path])
+    try:
+        rows = json.loads(out) if out.strip() else []
+    except ValueError:
+        rows = []
+    row = rows[0] if rows else {}
+    snap = {}
+    for read_name, write_name in UNDO_TAGS:
+        v = row.get(read_name)
+        if v is None or v == "":
+            continue
+        if write_name in UNDO_LIST_TAGS:
+            snap[write_name] = [str(x) for x in v] if isinstance(v, list) else [str(v)]
+        else:
+            snap[write_name] = str(v[0] if isinstance(v, list) and v else v)
+    return snap
+
+
+def restore_metadata(et: "ExifTool", path: str, snap: dict) -> None:
+    """Put back the fields from snapshot_metadata(): fields that were empty then are emptied again.
+    The picture itself is verified unchanged, as with every save."""
+    args = ["-P", "-overwrite_original", "-charset", "iptc=UTF8", "-IPTC:CodedCharacterSet=UTF8"]
+    for _, tag in UNDO_TAGS:
+        v = (snap or {}).get(tag)
+        args.append(f"-{tag}=")                       # clear first (also removes every keyword)
+        if isinstance(v, list):
+            args += [f"-{tag}={single_line(x)}" for x in v]
+        elif v:
+            args.append(f"-{tag}={single_line(v)}")
+
+    def run():
+        out = et._run(args + [path])
+        if "1 image files updated" not in out and "1 image files unchanged" not in out:
+            raise ExifToolError(out.strip() or "ExifTool did not update the file")
+    _guarded(path, run)
+
+
+_undo_lock = threading.Lock()
+
+
+def undo_path() -> str:
+    return os.path.join(config_dir(), "undo_history.json")
+
+
+def _undo_load() -> dict:
+    try:
+        with open(undo_path(), encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _undo_save(data: dict) -> None:
+    os.makedirs(config_dir(), exist_ok=True)
+    tmp = undo_path() + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
+    os.replace(tmp, undo_path())
+
+
+def remember_for_undo(path: str, snap: dict) -> None:
+    """Keep what was in the file before a save, so the save can be undone (even after a restart)."""
+    key = os.path.normcase(os.path.abspath(path))
+    with _undo_lock:
+        data = _undo_load()
+        steps = data.pop(key, [])
+        steps.append({"when": time.strftime("%Y-%m-%d %H:%M"), "meta": snap})
+        data[key] = steps[-UNDO_PER_PHOTO:]           # (re-inserted: the most recently saved photos last)
+        while len(data) > UNDO_PHOTOS:
+            data.pop(next(iter(data)))
+        _undo_save(data)
+
+
+def undoable(paths) -> set:
+    """Which of these photos have a save that can be undone."""
+    with _undo_lock:
+        data = _undo_load()
+    return {p for p in paths if data.get(os.path.normcase(os.path.abspath(p)))}
+
+
+def can_undo(path: str) -> bool:
+    with _undo_lock:
+        return bool(_undo_load().get(os.path.normcase(os.path.abspath(path))))
+
+
+def undo_last_save(et: "ExifTool", path: str) -> None:
+    """Restore the metadata from before the most recent save of this photo."""
+    key = os.path.normcase(os.path.abspath(path))
+    with _undo_lock:
+        data = _undo_load()
+        steps = data.get(key) or []
+        if not steps:
+            raise ExifToolError("there's no earlier save of this photo to undo")
+        step = steps[-1]
+    restore_metadata(et, path, step.get("meta") or {})
+    with _undo_lock:
+        data = _undo_load()
+        steps = data.get(key) or []
+        if steps and steps[-1] == step:
+            steps.pop()
+            if steps:
+                data[key] = steps
+            else:
+                data.pop(key, None)
+            _undo_save(data)
+
+
+def _guarded(path: str, action) -> None:
+    """Run a metadata change, then prove the picture itself is untouched. If the image data ever
+    differs, the original file is restored exactly and an error raised."""
+    before = jpeg_image_data_hash(path)
+    st = os.stat(path)
+    with open(path, "rb") as f:
+        original = f.read()
+
+    def restore(reason: str):
+        with open(path, "wb") as f:
+            f.write(original)
+        os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))
+        raise ExifToolError(reason + " (original file restored)")
+
+    try:
+        action()
+    except ExifToolError:
+        if os.path.exists(path) and os.path.getsize(path) == 0:
+            restore("ExifTool left an empty file")
+        raise
+    try:
+        after = jpeg_image_data_hash(path)
+    except (OSError, ValueError):
+        restore("the file could not be read back after writing")
+    if after != before:
+        restore("the image data changed, which should never happen")
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))
+
+
 def safe_write(et: "ExifTool", path: str, title: str, keywords: list[str], description: str | None = None,
                xmp2iptc_args: str | None = None, fields=None, location: str = "") -> None:
     """Write metadata, then prove the picture itself is untouched. If the image
@@ -1031,6 +1190,33 @@ def seo_keywords(words, limit: int | None = None, keep=None, lower: bool = True,
         if limit and len(out) >= limit:
             break
     return out
+
+
+# words that describe the file, not the photo: buyers never search for them
+FILLER_KEYWORDS = {"photo", "photos", "photograph", "photographs", "photography", "image", "images", "picture",
+                   "pictures", "pic", "pics", "stock", "stock photo", "stock image", "stock photography",
+                   "jpeg", "jpg", "hd", "4k", "high quality", "high resolution", "royalty free", "no people"}
+MAX_KEYWORD_WORDS = 4
+
+
+def tidy_keywords(keywords, title: str = "", protect: str = "") -> list[str]:
+    """Remove filler words ('photo', 'image', 'stock'…) and long phrases, then move the keywords that
+    name what's in the title to the front (stock sites weigh the first ten the most). Keywords you
+    asked for in your own instructions are never removed."""
+    protect = (protect or "").casefold()
+    title_words = {_singular(w) for w in re.findall(r"[\w']+", (title or "").casefold().replace("'", ""))
+                   if w not in SMALL_WORDS}
+    kept = []
+    for k in keywords or []:
+        mine = bool(protect) and k.casefold() in protect
+        if not mine and (k.casefold() in FILLER_KEYWORDS or len(k.split()) > MAX_KEYWORD_WORDS):
+            continue
+        kept.append(k)
+
+    def in_title(k):
+        ws = [_singular(w) for w in k.casefold().split() if w not in SMALL_WORDS]
+        return bool(ws) and all(w in title_words for w in ws)
+    return [k for k in kept if in_title(k)] + [k for k in kept if not in_title(k)]
 
 
 MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September",
@@ -1349,6 +1535,43 @@ MORE_KEYWORDS_SCHEMA = {
     "properties": {"keywords": {"type": "array", "items": {"type": "string"}}},
     "required": ["keywords"],
 }
+
+# "Read the label first": a quick first look that only copies the text printed on the product or sign
+LABEL_SCHEMA = {
+    "type": "object",
+    "properties": {"brand": {"type": "string"}, "product": {"type": "string"},
+                   "variety": {"type": "string"}, "size": {"type": "string"},
+                   "parent_company": {"type": "string"},
+                   "other_text": {"type": "array", "items": {"type": "string"}}},
+    "required": ["brand", "product", "variety", "size", "parent_company", "other_text"],
+}
+
+LABEL_PROMPT = (
+    "Look closely at this photo and copy the text you can actually read on the main product, packaging, sign, "
+    "screen or storefront. Don't describe the photo. Fill in: brand (the brand or store name), product (the exact "
+    "product name or product line), variety (flavour, scent, style, colour or edition printed on it), size (weight, "
+    "volume or count printed on it), parent_company (the company that owns the brand, only if you are sure, "
+    "otherwise empty) and other_text (up to 6 other short pieces of legible text, such as a slogan or a claim like "
+    "'gluten free'). Spell everything exactly as printed. Leave a field empty if it can't be read; never guess. "
+    'Output only JSON: {"brand": "", "product": "", "variety": "", "size": "", "parent_company": "", '
+    '"other_text": []}')
+
+
+def label_note(label: dict) -> str:
+    """The text read from the photo, as a line for the main prompt ('' if nothing was readable)."""
+    if not isinstance(label, dict):
+        return ""
+    parts = []
+    for key, name in (("brand", "brand"), ("product", "product"), ("variety", "variety or flavour"),
+                      ("size", "size"), ("parent_company", "parent company")):
+        v = single_line(str(label.get(key) or "")).strip().strip(".")
+        if v and v.casefold() not in ("none", "n/a", "unknown", "not visible", "unreadable", "-"):
+            parts.append(f"{name}: {v}")
+    other = [single_line(str(x)).strip() for x in _as_list(label.get("other_text", []))][:6]
+    other = [x for x in other if x and len(x) <= 60]
+    if other:
+        parts.append("other text: " + "; ".join(other))
+    return "; ".join(parts)
 
 # Photo types: tell the AI what kind of photo it is, so titles and keywords fit the situation.
 # (key, label shown in the app, what the photo shows - given to the AI as a fact)
@@ -1937,7 +2160,8 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
              date_in_title: bool = False, revise: bool = True, title_location: str = "",
              copyright_free: bool = False, opener=None, cancel: CancelToken | None = None,
              symbols: str = "keep", feedback: str = "", rejected_title: str = "",
-             title_length: str = "detailed", expand_short: bool = False) -> dict:
+             title_length: str = "detailed", expand_short: bool = False,
+             read_label: bool = False, tidy: bool = False) -> dict:
     """Ask the local vision model for an SEO title and keywords.
     With revise=True and any notes or directions given, a second (text-only) pass checks the draft
     against them. Returns {'title', 'keywords', 'seconds', 'revised'}."""
@@ -1980,7 +2204,8 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
     def ask(user_text, schema, step="draft", **kw):
         """One request to the model. A reply that comes back cut off or unreadable is asked again once,
         a little more freely (a re-roll almost always fixes a model that got stuck)."""
-        need = "title" if schema in (OUTPUT_SCHEMA, TITLE_SCHEMA) else "keywords"   # what a usable reply must have
+        need = ("title" if schema in (OUTPUT_SCHEMA, TITLE_SCHEMA) else "brand" if schema is LABEL_SCHEMA
+                else "keywords")                     # what a usable reply must have
         for attempt in (1, 2):
             if cancel is not None and cancel.is_set():
                 debug(f"{name}: {step}: stopped before sending")
@@ -2009,16 +2234,32 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
             # usable: has a title (main request), or has the keyword list at all (an empty top-up just means
             # "nothing more"). The optional double-check isn't re-asked when it's unreadable: the draft stays.
             usable = bool(parsed.get("title")) if need == "title" else need in parsed
-            if not cut_off and (usable or step == "double-check"):
+            if not cut_off and (usable or step in ("double-check", "read label")):
                 return parsed
             debug(f"{name}: {step}: PROBLEM: reply {'was cut off at the length cap' if cut_off else 'had no ' + need}"
                   + (f"; full reply: {_clip(content, 2000)}" if attempt == 1 else ""))
-            if attempt == 2:
+            if attempt == 2 or step == "read label":
                 return parsed                      # keep whatever arrived (cut off, or nothing usable)
             kw["temperature"] = 0.5                  # re-roll
         return parsed
 
     started = time.monotonic()
+    own_context = context                            # (the label text below doesn't by itself need a double-check)
+    read = ""
+    if read_label and not copyright_free:
+        # first, only read the text on the product or sign; the title is then written from exact spellings
+        try:
+            read = label_note(ask(LABEL_PROMPT, LABEL_SCHEMA, "read label", temperature=0.0))
+            debug(f"{name}: read label: {read or 'no readable text'}")
+        except Stopped:
+            raise
+        except ApiError:
+            read = ""                                 # carry on without it
+        if read:
+            prompt += ("\n\nText read from this photo in a first close look (" + read + "). Use these exact "
+                       "spellings for the brand, product, variety or flavour and parent company in the title and "
+                       "keywords, as long as they fit what you see.")
+            context = ((context or "").strip() + "\nText on the product or sign: " + read).strip()
     # a redo is asked a little more freely, so it doesn't come back with the same words
     draft = ask(prompt, OUTPUT_SCHEMA, "draft", temperature=0.5 if (feedback or "").strip() else 0.2)
     raw_title = str(draft.get("title", "") or "").strip()
@@ -2026,7 +2267,7 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
 
     revised = False
     if revise and raw_title and (copyright_free or any((t or "").strip()
-                                                       for t in (direction, context, photo_note, feedback))):
+                                                       for t in (direction, own_context, photo_note, feedback))):
         # second pass: make the draft follow your notes and directions (fast: text only, no image)
         try:
             fixed = ask(build_revision_prompt(raw_title, raw_keywords, keyword_min, keyword_max,
@@ -2075,7 +2316,10 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
     raw_keywords = [tidy_symbols(str(k), symbols) for k in raw_keywords]
     if copyright_free:
         raw_keywords = drop_brand_keywords(raw_keywords)
-    keywords = seo_keywords(raw_keywords, keep=lead_keywords, lower=lower, protect=protect)[:keyword_max]
+    keywords = seo_keywords(raw_keywords, keep=lead_keywords, lower=lower, protect=protect)
+    if tidy:
+        keywords = tidy_keywords(keywords, title, protect)
+    keywords = keywords[:keyword_max]
 
     if title and len(keywords) < keyword_min:
         # one follow-up request for more keywords so every photo gets at least the minimum
@@ -2089,8 +2333,10 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
             extra = [tidy_symbols(str(k), symbols) for k in _as_list(more.get("keywords", []))]
             if copyright_free:
                 extra = drop_brand_keywords(extra)
-            keywords += seo_keywords(extra, limit=keyword_max - len(keywords),
-                                     keep=list(lead_keywords or []) + keywords, lower=lower, protect=protect)
+            extra = seo_keywords(extra, keep=list(lead_keywords or []) + keywords, lower=lower, protect=protect)
+            if tidy:
+                extra = tidy_keywords(extra, title, protect)
+            keywords += extra[:keyword_max - len(keywords)]
         except Stopped:
             raise
         except ApiError:
@@ -2102,7 +2348,7 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
     debug(f"{name}: DONE in {time.monotonic() - started:.1f} s: {len(keywords)} keywords, revised={revised}, "
           f"title={title!r}")
     result = {"title": title, "keywords": keywords, "seconds": round(time.monotonic() - started, 1),
-              "revised": revised}
+              "revised": revised, "label": read}
     if copyright_free:
         names = brand_names_in(title)
         if names:

@@ -35,6 +35,9 @@ No installation and no Python needed. ExifTool is included.
 - **Photo types:** landscape, food, architecture, product on a shelf, company logo with a stock chart, editorial event and more, plus your own. A **Copyright-free** type keeps brand and personal names out.
 - **Editorial:** one checkbox adds the location and the date taken to every title and to the keywords, before or after the AI's suggestion, e.g. *Tokyo, Japan - October 26, 2026: Shibuya Crossing at Dusk*. Text before titles, a live preview and a custom date (when the camera's date is wrong) round it off.
 - **Clean text:** symbols in the AI's titles and keywords are converted to words (& → and, % → percent) or removed, as you choose.
+- **Reads the label first:** for products and signs, the AI copies the brand, product, flavour and size from the packaging, then uses those exact spellings.
+- **Tidy keywords:** filler words like *photo* and *image* are removed, and the keywords that name what's in the title come first.
+- **Undo a save:** right-click → **Undo last save** restores the photo's previous metadata (the last 5 saves per photo, even after a restart).
 - **Keywords to put first:** e.g. place or client, with `{year}`, `{month}` and `{date}` filled in from each photo.
 - **Redo with reasons:** tell the AI what's wrong with a suggestion (too generic, wrong subject, too short…) or what to focus on, and it tries again with that in mind. Works on the selected photo, or on every checked photo with **Redo Checked**.
 - **CSV export:** Shutterstock or Adobe Stock upload format, or every detail for a spreadsheet.
@@ -66,7 +69,7 @@ After saving, XMP is optionally copied to IPTC with ExifTool's `xmp2iptc.args`, 
 
 ## Settings and logs
 
-Settings are stored in `%APPDATA%\IPTC Tagger` (Windows) or `~/Library/Application Support/IPTC Tagger` (Mac), so they carry over between versions. The log, `debug_log.txt`, is saved there too. It always records errors; turn on **Debug mode** in **Settings → General** to record every AI request as well.
+Settings are stored in `%APPDATA%\IPTC Tagger` (Windows) or `~/Library/Application Support/IPTC Tagger` (Mac), so they carry over between versions. The log, `debug_log.txt`, and the undo history, `undo_history.json`, are saved there too. It always records errors; turn on **Debug mode** in **Settings → General** to record every AI request as well.
 
 ## Building from source
 
