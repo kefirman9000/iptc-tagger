@@ -895,6 +895,9 @@ class RedoDialog(QDialog):
         return core.redo_feedback([k for k, cb in self.boxes.items() if cb.isChecked()], self.other.text())
 
 
+UPDATE_LINK = "#0b3a82"        # links on the light blue update banner
+
+
 def banner_label() -> QLabel:
     b = QLabel()
     b.setWordWrap(True)
@@ -1447,12 +1450,17 @@ class MainWindow(QMainWindow):
         if self.settings.get("auto_download", False) and self._can_install(info):   # only if the user opted in
             self.start_update_download()             # quietly, in the background
             return
-        self.update_banner.setText(
+        self._update_text(
             f"<b>{core.APP_NAME} {info['version']} is available</b> (you have {core.APP_VERSION}). &nbsp;"
             + ("Download and install it? &nbsp;<a href='install'>Yes, download it</a> &nbsp;·&nbsp; "
                "<a href='download'>See what's new</a>" if self._can_install(info) else "<a href='download'>Download</a>")
             + " &nbsp;·&nbsp; <a href='skip'>Skip this version</a> &nbsp;·&nbsp; <a href='later'>Not now</a>")
         self.update_banner.show()
+
+    def _update_text(self, html: str):
+        """The update banner's text, with links in a dark, bold blue that stands out on its light blue background
+        (Qt ignores the style sheet colour for links, so it's set on each one)."""
+        self.update_banner.setText(html.replace("<a href=", f"<a style='color:{UPDATE_LINK};font-weight:600' href="))
 
     def _can_install(self, info) -> bool:
         """The packaged program can replace itself (not when running from the source code, or when its
@@ -1465,11 +1473,11 @@ class MainWindow(QMainWindow):
         if not url:
             return
         self.update_downloading = True
-        self.update_banner.setText(f"Downloading {core.APP_NAME} {info['version']}…")
+        self._update_text(f"Downloading {core.APP_NAME} {info['version']}…")
         self.update_banner.show()
         run_job(self, Job("update-download", self._fetch_update, url, progress=True), self.io_pool,
                 lambda _k, res: self._update_downloaded(res), lambda _k, msg: self._update_download_failed(msg),
-                on_progress=lambda _k, p: self.update_banner.setText(
+                on_progress=lambda _k, p: self._update_text(
                     f"Downloading {core.APP_NAME} {info['version']}… {p[1]}"
                     + (f" ({p[0] * 100:.0f}%)" if p[0] is not None else "")))
 
@@ -1485,7 +1493,7 @@ class MainWindow(QMainWindow):
         self.update_ready = res                       # (new program, download folder)
         v = (self.update_info or {}).get("version", "")
         core.debug(f"update: {v} is downloaded and ready: {res[0]}")
-        self.update_banner.setText(
+        self._update_text(
             f"<b>{core.APP_NAME} {v} is ready to install.</b> &nbsp;<a href='restart'>Restart now</a>"
             " &nbsp;·&nbsp; <a href='later'>Later</a> (it installs when you close the app)")
         self.update_banner.show()
@@ -1494,7 +1502,7 @@ class MainWindow(QMainWindow):
         self.update_downloading = False
         core.debug(f"update: download failed: {msg}", always=True)
         info = self.update_info or {}
-        self.update_banner.setText(
+        self._update_text(
             f"<b>{core.APP_NAME} {info.get('version', '')} is available</b>, but it couldn't be downloaded ({msg}). "
             "&nbsp;<a href='download'>Download it yourself</a> &nbsp;·&nbsp; <a href='later'>Not now</a>")
         self.update_banner.show()
