@@ -323,6 +323,18 @@ class SettingsDialog(QDialog):
         self.symbols.setToolTip("What happens to symbols like & + @ % in the AI's titles and keywords.\n"
                                 "Your own text (text before titles, location, keywords to put first) is never changed.")
         f_text.addRow("Symbols", self.symbols)
+        self.read_label = QCheckBox("Read the text on packaging and signs first")
+        self.read_label.setChecked(bool(settings.get("read_label", True)))
+        self.read_label.setToolTip("Before writing the title, the AI first copies the text it can read on the product,\n"
+                                   "packaging or sign (brand, product, flavour, size). The title and keywords then use\n"
+                                   "those exact spellings. Adds one quick step per photo. Not used for Copyright-free.")
+        f_text.addRow("Labels", self.read_label)
+        self.tidy_kw = QCheckBox("Tidy keywords: remove filler words and put the title's words first")
+        self.tidy_kw.setChecked(bool(settings.get("tidy_keywords", True)))
+        self.tidy_kw.setToolTip("Removes keywords nobody searches for (photo, image, stock, jpeg, high quality…) and long\n"
+                                "phrases, then moves the keywords that name what's in the title to the front, because\n"
+                                "stock sites weigh the first ten the most. Keywords from your own instructions are kept.")
+        f_text.addRow("Keywords", self.tidy_kw)
         self.title_len = QComboBox()
         for key, label, _lo, _hi in core.TITLE_LENGTHS:
             self.title_len.addItem(label, key)
@@ -590,6 +602,7 @@ class SettingsDialog(QDialog):
                  ai_time_limit=self.tlimit.value(), ai_retries=int(self.tretry.currentData() or 0),
                  debug_log=self.debug.isChecked(), symbols=self.symbols.currentData() or "convert",
                  title_length=self.title_len.currentData() or "detailed",
+                 read_label=self.read_label.isChecked(), tidy_keywords=self.tidy_kw.isChecked(),
                  check_updates=self.updates.isChecked(), auto_download=self.auto_update.isChecked())
         s["keyword_min"], s["keyword_max"] = core.keyword_range(self.kmin.value(), self.kmax.value())
         return s
@@ -1872,6 +1885,10 @@ class MainWindow(QMainWindow):
         a = menu.addAction("Revert unsaved changes")
         a.setEnabled(n_changed > 0)
         a.triggered.connect(lambda *_: self.revert_photos(idle))
+        undo_ok = [p for p in idle if p.path in core.undoable([q.path for q in idle])]
+        a = menu.addAction("Undo last save" if one else f"Undo last save ({len(undo_ok)})")
+        a.setEnabled(bool(undo_ok) and self.exiftool is not None)
+        a.triggered.connect(lambda *_: self.undo_saves(undo_ok))
         menu.addSeparator()
         a = menu.addAction("Copy title && keywords")
         a.setEnabled(one)
@@ -2548,7 +2565,9 @@ class MainWindow(QMainWindow):
                                              symbols=self.settings.get("symbols", "convert"),
                                              feedback=redo.get("feedback", ""), rejected_title=redo.get("rejected", ""),
                                              title_length=self.settings.get("title_length", "detailed"),
-                                             expand_short=True),
+                                             expand_short=True,
+                                             read_label=bool(self.settings.get("read_label", True)),
+                                             tidy=bool(self.settings.get("tidy_keywords", True))),
                   ph.path, url, model, kmin, kmax,
                   context, self.bare_title(ph), list(ph.keywords), direction, ph.note,
                   core.type_description(self.settings, self.effective_type(ph)),
@@ -2779,9 +2798,69 @@ class MainWindow(QMainWindow):
         return {"fields": core.meta_fields(s), "location": self.editorial_location(), "xmp2iptc_args": args}
 
     def _write_one(self, path, title, keywords, opts):
+        try:
+            before = core.snapshot_metadata(self.exiftool, path)   # so this save can be undone
+        except Exception as e:
+            before = None
+            core.debug(f"{os.path.basename(path)}: couldn't keep a copy for Undo: {e!r}", always=True)
         core.safe_write(self.exiftool, path, title, keywords, xmp2iptc_args=opts["xmp2iptc_args"],
                         fields=opts["fields"], location=opts["location"])
+        if before is not None:
+            try:
+                core.remember_for_undo(path, before)
+            except OSError as e:
+                core.debug(f"{os.path.basename(path)}: couldn't save the Undo copy: {e!r}", always=True)
         return self.exiftool.read([path])[path]   # confirm what is now in the file
+
+    # ---------- undo a save
+    def undo_saves(self, photos):
+        """Put back what was in the files before their last save."""
+        photos = [p for p in photos if not p.busy]
+        can = core.undoable([p.path for p in photos])
+        photos = [p for p in photos if p.path in can]
+        if not photos or not self.exiftool:
+            return
+        n = len(photos)
+        what = os.path.basename(photos[0].path) if n == 1 else f"{n} photos"
+        lost = sum(1 for p in photos if p.changed)
+        msg = (f"Undo the last save of {what}?\n\nThe title, keywords, description, headline and location go back "
+               "to what was in the file before that save. The picture itself isn't touched."
+               + (f"\n\n{lost} of them {'has' if lost == 1 else 'have'} unsaved changes, which will be replaced."
+                  if lost else ""))
+        if QMessageBox.question(self, "Undo save", msg) != QMessageBox.Yes:
+            return
+        self._keep_scroll_position()
+        self._begin_batch(n, "Undoing")
+        for ph in photos:
+            ph.busy, ph.status, ph.message = True, "saving", "Undoing the last save…"
+            self._show(ph)
+            run_job(self, Job(ph.path, self._undo_one, ph.path, cancel=self.cancel), self.io_pool, self._undone, self._undo_failed)
+        self._refresh_buttons()
+
+    def _undo_one(self, path):
+        core.undo_last_save(self.exiftool, path)
+        return self.exiftool.read([path])[path]
+
+    def _undone(self, path, meta):
+        ph = self._photo(path)
+        if ph:
+            ph.file_title, ph.file_keywords = meta["title"], list(meta["keywords"])
+            ph.title, ph.keywords = ph.file_title, list(ph.file_keywords)
+            ph.busy = False
+            more = core.can_undo(path)
+            ph.status, ph.message = "ready", "Save undone ✓ (image verified unchanged)" + (
+                ". Undo again to go back further" if more else "")
+            self.status.setText(f"Undid the last save of {os.path.basename(path)}.")
+            self._show(ph)
+        self._tick()
+
+    def _undo_failed(self, path, msg):
+        ph = self._photo(path)
+        if ph:
+            ph.busy = False
+            ph.status, ph.message = ("ready", "Stopped") if msg == "__cancelled__" else ("error", f"Not undone: {msg}")
+            self._show(ph)
+        self._tick()
 
     def _saved(self, path, meta):
         ph = self._photo(path)

@@ -1,5 +1,11 @@
 # What's new
 
+## 2026.10.27.14
+
+- **Reads the label first:** before writing a title, the AI takes a quick first look that only copies the text it can read on the product, packaging or sign: brand, product, flavour or variety, size and parent company. The title and keywords then use those exact spellings. Turn it off in **Settings → Titles & keywords → Labels**.
+- **Tidier keywords:** keywords nobody searches for (*photo*, *image*, *stock*, *high quality*…) and long phrases are removed, and the keywords that name what's in the title come first, because stock sites weigh the first ten the most. Keywords from your own instructions are always kept.
+- **Undo a save:** right-click a photo → **Undo last save** puts its title, keywords, description, headline and location back to what was in the file before. The last 5 saves of each photo can be undone, even after you restart the app. The picture itself is never touched.
+
 ## 2026.10.27.13
 
 - **Updates ask first:** when a new version is published, the app asks whether to download and install it. Nothing is downloaded until you click **Yes, download it**. It's then installed when you restart or close the app. To skip the question, tick **Download new versions without asking first** in **Settings → General**.
