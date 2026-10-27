@@ -39,7 +39,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.10.27.18"
+APP_VERSION = "2026.10.27.19"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 
 # Free vision models (run locally with Ollama) offered for one-click download:
@@ -247,7 +247,9 @@ DEFAULT_SETTINGS = {
     "location_for_ai": True,  # also tell the AI the location, so it uses it in keywords
     "location_history": [],   # locations used before, most recent first (the dropdown in Location in title)
     "revise": True,           # double-check each draft against your instructions (one extra, text-only pass)
-    "xmp2iptc_on_save": True, # after saving, copy XMP to IPTC with ExifTool's xmp2iptc.args (keeps IPTC in step with XMP)
+    "xmp2iptc_on_save": False, # also copy every other XMP field to IPTC with xmp2iptc.args (the title and keywords
+                               # are already written in full to IPTC directly)
+    "iptc_direct": True,      # (marks settings from after the switch to one-step saving)
     "xmp2iptc_args": "",      # path to xmp2iptc.args; blank = find it next to ExifTool, else the bundled copy
     "meta_fields": None,      # which metadata fields are written (None = the usual set, see METADATA_FIELDS)
     "symbols": "convert",     # symbols in the AI's titles and keywords: convert (& -> and) / remove / keep
@@ -566,6 +568,10 @@ def load_settings() -> dict:
         s["meta_fields"] = [k for k in DEFAULT_META_FIELDS if k != "description"]
     if s.get("default_type") == "general":    # "General photo" was merged into "Automatic"
         s["default_type"] = "auto"
+    if isinstance(raw, dict) and raw and "iptc_direct" not in raw:
+        # saving is one step now: the full title and keywords go straight into IPTC, so the second
+        # xmp2iptc pass is no longer needed for that (it stays available in Settings)
+        s["xmp2iptc_on_save"] = False
     if isinstance(raw, dict) and raw and "editorial_on" not in raw:
         # settings from before the Editorial checkbox: it's on if a location or date was being added
         s["editorial_on"] = s.get("title_date_pos", "off") != "off" or bool(str(s.get("title_location") or "").strip())
@@ -734,11 +740,12 @@ METADATA_FIELDS = [
      "tip": "The standard title field. Read by Lightroom, Bridge, Adobe Stock, Windows and most stock sites.",
      "args": lambda t, k, d, l: _set("XMP-dc:Title", t)},
     {"key": "title_iptc", "group": "Title", "label": "IPTC Object Name", "default": True,
-     "tip": "The older IPTC title field (up to 64 bytes). Still read by many sites and tools.",
-     "args": lambda t, k, d, l: _set("IPTC:ObjectName", truncate_utf8(t, IPTC_TITLE_MAX))},
+     "tip": "The older IPTC title field. Still read by many sites and tools. The full title is written,\n"
+            "even past the official 64-byte limit, as stock sites expect.",
+     "args": lambda t, k, d, l: _set("IPTC:ObjectName", t)},
     {"key": "headline", "group": "Title", "label": "Headline (XMP and IPTC)", "default": True,
      "tip": "A short headline. Editorial agencies and Photo Mechanic use it as the title.",
-     "args": lambda t, k, d, l: _set("XMP-photoshop:Headline", t) + _set("IPTC:Headline", truncate_utf8(t, 256))},
+     "args": lambda t, k, d, l: _set("XMP-photoshop:Headline", t) + _set("IPTC:Headline", t)},
     {"key": "title_windows", "group": "Title", "label": "Windows Title (XPTitle)", "default": False,
      "tip": "The title Windows File Explorer shows in some older versions. Usually not needed.",
      "args": lambda t, k, d, l: _set("EXIF:XPTitle", t)},
@@ -752,8 +759,9 @@ METADATA_FIELDS = [
      "tip": "The standard keyword field. Read by Lightroom, Bridge, Adobe Stock, Windows and most stock sites.",
      "args": lambda t, k, d, l: _kw_args("XMP-dc:Subject", k)},
     {"key": "keywords_iptc", "group": "Keywords", "label": "IPTC Keywords", "default": True,
-     "tip": "The older IPTC keyword field (each up to 64 bytes). Still read by many sites and tools.",
-     "args": lambda t, k, d, l: _kw_args("IPTC:Keywords", k, IPTC_KEYWORD_MAX)},
+     "tip": "The older IPTC keyword field. Still read by many sites and tools. Long keywords are written\n"
+            "in full, even past the official 64-byte limit.",
+     "args": lambda t, k, d, l: _kw_args("IPTC:Keywords", k)},
     {"key": "keywords_windows", "group": "Keywords", "label": "Windows Tags (XPKeywords)", "default": False,
      "tip": "The tags Windows File Explorer shows in some older versions. Usually not needed.",
      "args": lambda t, k, d, l: _set("EXIF:XPKeywords", "; ".join(k))},
@@ -882,7 +890,9 @@ class ExifTool:
                 {"description"} if description is not None else set())
         fields = set(fields)
         desc = clean_title(description if description is not None else title)
-        args = ["-P", "-overwrite_original", "-charset", "iptc=UTF8", "-IPTC:CodedCharacterSet=UTF8"]
+        # -m lets IPTC values go past the official length limits (64 bytes for the title and each keyword), so
+        # IPTC gets the full title in this one step, the same as xmp2iptc.args used to give it in a second pass
+        args = ["-m", "-P", "-overwrite_original", "-charset", "iptc=UTF8", "-IPTC:CodedCharacterSet=UTF8"]
         for f in METADATA_FIELDS:
             if f["key"] in fields:
                 args += f["args"](title, keywords, desc, location)
@@ -932,7 +942,7 @@ def snapshot_metadata(et: "ExifTool", path: str) -> dict:
 def restore_metadata(et: "ExifTool", path: str, snap: dict) -> None:
     """Put back the fields from snapshot_metadata(): fields that were empty then are emptied again.
     The picture itself is verified unchanged, as with every save."""
-    args = ["-P", "-overwrite_original", "-charset", "iptc=UTF8", "-IPTC:CodedCharacterSet=UTF8"]
+    args = ["-m", "-P", "-overwrite_original", "-charset", "iptc=UTF8", "-IPTC:CodedCharacterSet=UTF8"]
     for _, tag in UNDO_TAGS:
         v = (snap or {}).get(tag)
         args.append(f"-{tag}=")                       # clear first (also removes every keyword)

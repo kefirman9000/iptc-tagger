@@ -394,9 +394,11 @@ class SettingsDialog(QDialog):
                               "They appear in every Type list."))
         f_types.addRow(self.custom)
 
-        self.x2i = QCheckBox("Copy XMP to IPTC after every save (for sites that read IPTC)")
-        self.x2i.setChecked(bool(settings.get("xmp2iptc_on_save", True)))
-        self.x2i.setToolTip("Runs ExifTool with xmp2iptc.args on each photo as it's saved, so its IPTC fields match the XMP ones:\n"
+        self.x2i = QCheckBox("Also copy every other XMP field to IPTC after saving (xmp2iptc.args)")
+        self.x2i.setChecked(bool(settings.get("xmp2iptc_on_save", False)))
+        self.x2i.setToolTip("Not needed for the title and keywords: they are written in full to IPTC directly.\n"
+                            "Tick this only if you also want other XMP fields (creator, copyright…) copied to IPTC.\n"
+                            "It runs a second ExifTool pass on each photo:\n"
                             "-overwrite_original -P -m -charset iptc=utf8 -codedcharacterset=utf8 -tagsFromFile @ "
                             "-@ xmp2iptc.args")
         f_save.addRow("When saving", self.x2i)
@@ -777,10 +779,7 @@ class ReviewPanel(QWidget):
         self.keywords.setReadOnly(busy)
         status = self.win.status_text(ph)
         self.state.setText(f"<span style='color:{status[1]}'>{status[0]}</span>")
-        n_bytes = len(ph.title.encode("utf-8"))
         info = f"{len(ph.title)} characters"
-        if n_bytes > core.IPTC_TITLE_MAX and not self.win.settings.get("xmp2iptc_on_save", True):
-            info += f". The older IPTC field keeps only the first {core.IPTC_TITLE_MAX} bytes; XMP keeps it all."
         self.title_info.setText(info)
         self.kw_info.setText(f"{len(ph.keywords)} keyword{'s' if len(ph.keywords) != 1 else ''}")
         can_write = self.win.exiftool is not None
@@ -2782,8 +2781,8 @@ class MainWindow(QMainWindow):
         msg = (f"Save title and keywords into {n} photo{'s' if n != 1 else ''}?\n\n"
                "Only metadata (IPTC and XMP) is changed. The pictures themselves are not re-saved, and "
                "each file is checked afterwards to confirm the image data is identical."
-               + ("\n\nAfter saving, XMP is copied to IPTC with xmp2iptc.args, so both match."
-                  if self.settings.get("xmp2iptc_on_save", True) else ""))
+               + ("\n\nAfter saving, every other XMP field is also copied to IPTC with xmp2iptc.args."
+                  if self.settings.get("xmp2iptc_on_save", False) else ""))
         if self.settings.get("confirm_save", True) and not self._ask_save(msg):
             return
         self.save_photos(targets)
@@ -2835,7 +2834,7 @@ class MainWindow(QMainWindow):
         """What happens on every save, decided once per batch (read on the main thread)."""
         s = self.settings
         args = None
-        if s.get("xmp2iptc_on_save", True):
+        if s.get("xmp2iptc_on_save", False):
             args = core.find_xmp2iptc_args(self.exiftool.exe if self.exiftool else None, s.get("xmp2iptc_args", ""))
         return {"fields": core.meta_fields(s), "location": self.editorial_location(), "xmp2iptc_args": args}
 
@@ -2912,7 +2911,7 @@ class MainWindow(QMainWindow):
             if ph.changed:   # file doesn't match what we asked for
                 ph.status, ph.message = "error", "Saved, but the file reads back differently"
             else:
-                synced = " · IPTC synced" if self.settings.get("xmp2iptc_on_save", True) else ""
+                synced = " · other XMP copied to IPTC" if self.settings.get("xmp2iptc_on_save", False) else ""
                 ph.status, ph.message = "saved", f"Saved ✓ (image verified unchanged){synced}"
                 self.status.setText(f"Saved {os.path.basename(path)}. Image verified unchanged.")
             self._show(ph)
