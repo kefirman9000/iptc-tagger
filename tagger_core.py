@@ -39,7 +39,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.10.27.11"
+APP_VERSION = "2026.10.27.12"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 
 # Free vision models (run locally with Ollama) offered for one-click download:
@@ -1363,7 +1363,8 @@ PHOTO_TYPES = [
      "a stock photo of a company's logo displayed on a smartphone screen, held in front of a computer "
      "screen showing a stock market or financial performance chart"),
     ("product_shelf", "Product on a store shelf",
-     "a photo of a retail product sitting on a grocery or retail store shelf"),
+     "a photo of a retail product sitting on a grocery or retail store shelf; name the brand, the exact product, "
+     "its variety, flavour, scent or size from the packaging, and the brand's parent company"),
     ("app_store", "App in the Play Store",
      "a photo of an app shown on a phone screen in the Google Play Store"),
     ("storefront", "Store or restaurant front",
@@ -1447,7 +1448,7 @@ def type_description(settings: dict, key: str) -> str:
 
 INPUT_RULES = """How to read the photographer's input:
 - If the input is only a company name, the photo is a stock photo of that company's logo displayed on a smartphone screen, held in front of a computer screen showing a stock market or financial performance chart.
-- If the input is only a retail product name, the photo shows that product sitting on a grocery or retail store shelf.
+- If the input is only a retail product name, the photo shows that product sitting on a grocery or retail store shelf; name its variety, flavour or size from the packaging, and its parent company.
 - If the input is a name followed by the word "app", the photo shows that app on a phone screen in the Google Play Store.
 - Otherwise, treat the input as accurate information about the photo.
 - If there is no input, describe what you see in the photo."""
@@ -1472,7 +1473,12 @@ def title_rules(length: str = "detailed") -> str:
             "happening, or the setting; (4) descriptive details of the scene that can be seen, such as the style, "
             "materials, signs, surroundings, people or objects around it. Only mention the time of day, light or "
             "weather when it is a striking, defining part of the photo (a sunset sky, a city at night, snow); never "
-            "add it just to fill out the title. Join the parts naturally with commas or words such as with, on and in. "
+            "add it just to fill out the title. Be specific, never vague: for a product, name the brand, the exact product "
+            "or product line and its variety, flavour, scent, style or size as read from the packaging (for example "
+            "'Doritos Cool Ranch Flavored Tortilla Chips' rather than 'Bag of Chips'); and for a brand, product, store, "
+            "restaurant or company, name its well-known parent company too (for example 'Doritos, a Frito-Lay and "
+            "PepsiCo Brand' or 'KFC Restaurant, Owned by Yum! Brands'), but only when you are sure of it. "
+            "Join the parts naturally with commas or words such as with, on and in. "
             "The title must be complete and stand on its own, describing only what is in this photo. Not short and "
             "blunt: for example, instead of 'Coffee Shop Exterior' write 'Independent Coffee Shop Exterior, Cozy "
             "Neighborhood Cafe with Brick Facade, Outdoor Seating and Hanging Sign on a City Street'. No quotation marks and no full stop at the end.")
@@ -1564,7 +1570,8 @@ def build_prompt(keyword_min: int, keyword_max: int, context: str = "", existing
         "lowercase, letters and numbers only: no special characters, punctuation or hashtags. No duplicates "
         "or near-duplicates (such as singular and plural of the same word), and don't repeat the same word "
         "across many keywords. Cover the subject, what it is known for, its industry or category, setting, "
-        "objects, colours, concepts and likely search terms.",
+        "objects, colours, concepts and likely search terms. For a product or brand, include the brand, the "
+        "product line, its variety or flavour and the parent company as keywords.",
         "", COPYRIGHT_FREE_RULES if copyright_free else BRAND_RULES,
     ]
     if (feedback or "").strip():
@@ -1604,8 +1611,9 @@ def build_prompt(keyword_min: int, keyword_max: int, context: str = "", existing
 # Redo with reasons: what the photographer didn't like about the last suggestion
 REDO_PROBLEMS = [   # "What's wrong"
     ("generic", "Too generic",
-     "The title was too generic. Be specific about what makes this photo distinctive: the exact subject, "
-     "what is happening, the setting and the mood."),
+     "The title was too generic and vague. Be specific about what makes this photo distinctive: the exact subject "
+     "(for a product: the brand, the exact product, its variety or flavour, and the parent company), what is "
+     "happening and the setting."),
     ("wrong", "Wrong subject, or something misidentified",
      "Something was identified wrongly. Look at the photo again carefully and describe only what is really there."),
     ("long", "Too long",
