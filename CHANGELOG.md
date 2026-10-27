@@ -1,5 +1,11 @@
 # What's new
 
+## 2026.10.27.9
+
+- **Editorial checkbox:** the *Editorial style* button is replaced by a checkbox, **Editorial (include location and date)**, at the start of the location row. Ticked, the location and the date taken are added to every title and to the keywords (e.g. tokyo, japan, october 2026, 2026). Unticked, neither is added anywhere.
+- **Before or after:** choose whether they go **before** the AI's title and keywords (*Tokyo, Japan - October 26, 2026: Title*) or **after** them (*Title, Tokyo, Japan - October 26, 2026*).
+- **Add to titles now** also adds the location and date keywords to photos you've already done.
+
 ## 2026.10.27.8
 
 - **New column order:** in the photo list, **Status** now comes before **Type**, and the **Detect** and **Save** buttons come before **Photo notes**. The text you edit (notes, title, keywords) now sits together on the right.
