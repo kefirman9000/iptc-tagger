@@ -39,7 +39,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.10.27.4"
+APP_VERSION = "2026.10.27.5"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 
 # Free vision models (run locally with Ollama) offered for one-click download:
@@ -252,6 +252,8 @@ DEFAULT_SETTINGS = {
     "ai_time_limit": 30,      # seconds per photo before it's stopped (0 = no limit); first photo gets extra
     "ai_retries": 1,          # how many times a photo that went over the limit is tried again
     "debug_log": False,       # write a detailed log of every AI request to debug_log.txt
+    "check_updates": True,    # look for a newer release on GitHub when the app starts
+    "skipped_update": "",     # a version the user chose to skip
 }
 
 
@@ -303,6 +305,42 @@ def debug(msg: str):
 def _clip(text, n=400) -> str:
     text = str(text).replace("\r", " ").replace("\n", "\\n")
     return text if len(text) <= n else text[:n] + f"… [{len(text) - n} more characters]"
+
+
+# Update check ------------------------------------------------------------------------------------
+UPDATE_REPO = "kefirman9000/iptc-tagger"
+UPDATE_API = f"https://api.github.com/repos/{UPDATE_REPO}/releases/latest"
+RELEASES_PAGE = f"https://github.com/{UPDATE_REPO}/releases/latest"
+
+
+def version_tuple(v: str) -> tuple:
+    """'v2026.10.27.4' -> (2026, 10, 27, 4). Anything that isn't a number counts as 0."""
+    parts = re.findall(r"\d+", str(v or ""))
+    return tuple(int(p) for p in parts) if parts else (0,)
+
+
+def is_newer(latest: str, current: str = APP_VERSION) -> bool:
+    return version_tuple(latest) > version_tuple(current)
+
+
+def check_for_update(current: str = APP_VERSION, opener=None, timeout: float = 6) -> dict | None:
+    """Ask GitHub for the latest release. Returns {'version', 'url', 'notes'} if it's newer than
+    `current`, else None. Only the public release info is fetched; nothing is sent about you or your
+    photos. Any problem (offline, GitHub unreachable, no releases) just means 'no update'."""
+    req = urllib.request.Request(UPDATE_API, headers={"User-Agent": f"{APP_NAME}/{current}",
+                                                     "Accept": "application/vnd.github+json"})
+    try:
+        with (opener or urllib.request.urlopen)(req, timeout=timeout) as resp:
+            info = json.loads(resp.read().decode("utf-8"))
+    except Exception as e:
+        debug(f"update check: couldn't reach GitHub ({e.__class__.__name__}: {e})")
+        return None
+    tag = str(info.get("tag_name") or "")
+    version = tag.lstrip("vV")
+    debug(f"update check: running {current}, latest release {version or '?'}")
+    if not version or info.get("draft") or info.get("prerelease") or not is_newer(version, current):
+        return None
+    return {"version": version, "url": info.get("html_url") or RELEASES_PAGE, "notes": info.get("body") or ""}
 
 
 def load_settings() -> dict:

@@ -38,6 +38,7 @@ No installation and no Python needed. ExifTool is included.
 - **Keywords to put first:** e.g. place or client, with `{year}`, `{month}` and `{date}` filled in from each photo.
 - **Working with many photos:** check boxes, filters (no title, no keywords, unsaved, errors…), search, and copy and paste of titles, keywords and notes between photos.
 - **Reliable:** Stop at any time, a time limit with automatic retry, and an optional debug log.
+- **Update check:** when a new release is published here, the app says so at startup, with a link to download it. You can turn this off in Settings.
 
 ## What gets written
 

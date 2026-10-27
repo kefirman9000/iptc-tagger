@@ -377,6 +377,21 @@ class SettingsDialog(QDialog):
         dhint.setStyleSheet(f"color:{GREY}")
         dhint.setWordWrap(True)
         other.addRow("", dhint)
+        self.updates = QCheckBox("Check for a new version when the app starts")
+        self.updates.setChecked(bool(settings.get("check_updates", True)))
+        self.updates.setToolTip("Asks GitHub whether a newer release exists. Nothing about you or your photos is sent,\n"
+                                "and nothing is downloaded or installed: you choose whether to get it.")
+        check_now = QPushButton("Check now")
+        check_now.clicked.connect(lambda *_: self._check_now())
+        self.update_result = QLabel(f"You have {core.APP_NAME} {core.APP_VERSION}.")
+        self.update_result.setStyleSheet(f"color:{GREY}")
+        self.update_result.setOpenExternalLinks(True)
+        urow = QHBoxLayout()
+        urow.addWidget(self.updates)
+        urow.addStretch(1)
+        urow.addWidget(self.update_result)
+        urow.addWidget(check_now)
+        other.addRow("Updates", urow)
         self.desc = QCheckBox("Also save the title as the Description (Caption): some stock sites use it as the title")
         self.desc.setChecked(bool(settings.get("title_as_description", True)))
         other.addRow("", self.desc)
@@ -476,6 +491,19 @@ class SettingsDialog(QDialog):
             return
         super().reject()
 
+    def _check_now(self):
+        self.update_result.setText("Checking…")
+        win = self.parent()
+        if win is None or not hasattr(win, "check_updates"):
+            return
+        def shown(info):
+            if info:
+                self.update_result.setText(f"<a href='{info['url']}'>{core.APP_NAME} {info['version']} is available</a>")
+            else:
+                self.update_result.setText(f"{core.APP_VERSION} is the latest version (or GitHub couldn't be reached).")
+        win.settings["skipped_update"] = ""            # checking by hand shows it even if it was skipped
+        win.check_updates(on_done=shown)
+
     def _open_log(self):
         path = core.debug_log_path()
         if not os.path.exists(path):
@@ -500,7 +528,8 @@ class SettingsDialog(QDialog):
                  xmp2iptc_on_save=self.x2i.isChecked(), xmp2iptc_args=self.x2i_path.text().strip(),
                  title_as_description=self.desc.isChecked(),
                  ai_time_limit=self.tlimit.value(), ai_retries=int(self.tretry.currentData() or 0),
-                 debug_log=self.debug.isChecked(), symbols=self.symbols.currentData() or "convert")
+                 debug_log=self.debug.isChecked(), symbols=self.symbols.currentData() or "convert",
+                 check_updates=self.updates.isChecked())
         s["keyword_min"], s["keyword_max"] = core.keyword_range(self.kmin.value(), self.kmax.value())
         return s
 
@@ -760,6 +789,8 @@ class MainWindow(QMainWindow):
         self._refresh_buttons()
         if core.debugging():
             self.status.setText(f"Debug mode is on: details are written to {core.debug_log_path()}")
+        if self.settings.get("check_updates", True) and not os.environ.get("IPTC_TAGGER_OFFLINE"):
+            self.check_updates()
         if self.custom_date_value():
             self.status.setText("Custom date is on: titles use "
                                 + core.format_date(self.custom_date_value(), "long")
@@ -1001,6 +1032,11 @@ class MainWindow(QMainWindow):
         self.et_banner = banner_label()
         self.et_banner.setOpenExternalLinks(True)
         self.ai_banner = banner_label()
+        self.update_banner = banner_label()           # "a newer version is available"
+        self.update_banner.setStyleSheet("QLabel{background:#e8f1fd;color:#1c3d6e;border:1px solid #b5cff3;"
+                                         "border-radius:8px;padding:8px 10px}")
+        self.update_banner.linkActivated.connect(self._update_link)
+        self.update_info: dict | None = None
         self.ai_banner.linkActivated.connect(self._banner_link)
 
         self.table = QTableWidget(0, 9)
@@ -1092,6 +1128,7 @@ class MainWindow(QMainWindow):
         lay = QVBoxLayout(central)
         lay.addLayout(top)
         lay.addWidget(self.instructions)
+        lay.addWidget(self.update_banner)
         lay.addWidget(self.ai_banner)
         lay.addWidget(self.et_banner)
         lay.addWidget(self.splitter, 1)
@@ -1166,6 +1203,34 @@ class MainWindow(QMainWindow):
             self.ai_banner.show()
         else:
             self.ai_banner.hide()
+
+    # ---------- update check
+    def check_updates(self, on_done=None):
+        """Look for a newer release in the background (never blocks the window)."""
+        run_job(self, Job("update", core.check_for_update, core.APP_VERSION), self.io_pool,
+                lambda _k, info: self._update_checked(info, on_done),
+                lambda _k, _msg: self._update_checked(None, on_done))
+
+    def _update_checked(self, info, on_done=None):
+        if on_done is not None:
+            on_done(info)
+        if not info or info["version"] == self.settings.get("skipped_update"):
+            return
+        self.update_info = info
+        self.update_banner.setText(
+            f"<b>{core.APP_NAME} {info['version']} is available</b> (you have {core.APP_VERSION}). &nbsp;"
+            "<a href='download'>Download</a> &nbsp;·&nbsp; <a href='skip'>Skip this version</a>"
+            " &nbsp;·&nbsp; <a href='later'>Not now</a>")
+        self.update_banner.show()
+
+    def _update_link(self, link):
+        info = self.update_info or {}
+        if link == "download":
+            QDesktopServices.openUrl(QUrl(info.get("url") or core.RELEASES_PAGE))
+        elif link == "skip" and info:
+            self.settings["skipped_update"] = info["version"]
+            core.save_settings(self.settings)
+        self.update_banner.hide()
 
     def _banner_link(self, link):
         if link.startswith("settings"):
