@@ -1,5 +1,9 @@
 # What's new
 
+## 2026.10.27.18
+
+- **Retry when nothing comes back:** if the AI returns no title or keywords for a photo, it's tried again automatically, the same number of times as for the time limit (**Settings → AI**).
+
 ## 2026.10.27.17
 
 - **No weights or sizes:** titles and keywords no longer include the weight or volume from the packaging (grams, oz, fl oz, ml, liters, pounds…). The brand, product, flavour and parent company are still named.

@@ -39,7 +39,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.10.27.17"
+APP_VERSION = "2026.10.27.18"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 
 # Free vision models (run locally with Ollama) offered for one-click download:
@@ -1528,6 +1528,7 @@ def system_prompt(direction: str = "") -> str:
             "every default rule (title style, length, wording and keyword rules). Follow each one exactly:\n"
             + direction.strip())
 
+EMPTY_REPLY = "The AI model returned no title or keywords for this photo. Try again or try another model."
 MAX_REPLY_TOKENS = 700   # a full title + 40 keywords is ~250 tokens
 
 OUTPUT_SCHEMA = {
@@ -2388,7 +2389,7 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
 
     if not title and not keywords:
         debug(f"{name}: FAILED: no title or keywords after {time.monotonic() - started:.1f} s")
-        raise ApiError("The AI model returned no title or keywords for this photo. Try again or try another model.")
+        raise ApiError(EMPTY_REPLY)
     debug(f"{name}: DONE in {time.monotonic() - started:.1f} s: {len(keywords)} keywords, revised={revised}, "
           f"title={title!r}")
     result = {"title": title, "keywords": keywords, "seconds": round(time.monotonic() - started, 1),
