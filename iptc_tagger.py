@@ -314,6 +314,13 @@ class SettingsDialog(QDialog):
         trow.addWidget(self.tretry)
         trow.addStretch(1)
         other.addRow("Time limit per photo", trow)
+        self.symbols = QComboBox()
+        for key, label in core.SYMBOL_MODES:
+            self.symbols.addItem(label, key)
+        self.symbols.setCurrentIndex(max(0, self.symbols.findData(settings.get("symbols", "convert"))))
+        self.symbols.setToolTip("What happens to symbols like & + @ % in the AI's titles and keywords.\n"
+                                "Your own text (text before titles, location, keywords to put first) is never changed.")
+        other.addRow("Symbols in titles and keywords", self.symbols)
         self.et = QLineEdit(settings.get("exiftool_path", ""))
         self.et.setPlaceholderText(detected_exiftool or "not found: install ExifTool or choose it here")
         browse = QPushButton("Browse…")
@@ -493,7 +500,7 @@ class SettingsDialog(QDialog):
                  xmp2iptc_on_save=self.x2i.isChecked(), xmp2iptc_args=self.x2i_path.text().strip(),
                  title_as_description=self.desc.isChecked(),
                  ai_time_limit=self.tlimit.value(), ai_retries=int(self.tretry.currentData() or 0),
-                 debug_log=self.debug.isChecked())
+                 debug_log=self.debug.isChecked(), symbols=self.symbols.currentData() or "convert")
         s["keyword_min"], s["keyword_max"] = core.keyword_range(self.kmin.value(), self.kmax.value())
         return s
 
@@ -2162,7 +2169,9 @@ class MainWindow(QMainWindow):
         if ph.token is None or ph.token.is_set():
             ph.token = core.CancelToken()
         ph.ai_started = 0.0
-        job = Job(ph.path, functools.partial(core.identify, cancel=ph.token), ph.path, url, model, kmin, kmax,
+        job = Job(ph.path, functools.partial(core.identify, cancel=ph.token,
+                                             symbols=self.settings.get("symbols", "convert")),
+                  ph.path, url, model, kmin, kmax,
                   context, self.bare_title(ph), list(ph.keywords), direction, ph.note,
                   core.type_description(self.settings, self.effective_type(ph)),
                   core.expand_lead_keywords(self.settings.get("lead_keywords", ""), self.photo_date(ph)),

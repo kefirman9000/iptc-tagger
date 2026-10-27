@@ -39,7 +39,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.10.27.3"
+APP_VERSION = "2026.10.27.4"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 
 # Free vision models (run locally with Ollama) offered for one-click download:
@@ -153,6 +153,30 @@ def clean_title(text: str) -> str:
     return t[:-1] if t.endswith(".") and not t.endswith("..") else t
 
 
+# Symbols in the AI's titles and keywords ------------------------------------------------------
+SYMBOL_MODES = [("convert", "Convert to words (& → and, + → plus, @ → at, % → percent)"),
+                ("remove", "Remove them"),
+                ("keep", "Keep as written")]
+SYMBOL_WORDS = [("&", "and"), ("+", "plus"), ("@", "at"), ("%", "percent"), ("°", "degrees")]
+SYMBOL_DROP = "™®©#*~^|<>{}[]\\=_`•"          # never useful in a title or keyword
+
+
+def tidy_symbols(text: str, mode: str = "convert") -> str:
+    """Convert symbols to words ('Salt & Pepper' -> 'Salt and Pepper'), remove them, or keep them.
+    Normal punctuation (, . - ' : ! ? / ( ) and currency signs) is always left alone."""
+    if mode not in ("convert", "remove") or not text:
+        return text
+    t = text
+    for sym, word in SYMBOL_WORDS:
+        t = t.replace(sym, f" {word} " if mode == "convert" else " ")
+    for ch in "™®©":
+        t = t.replace(ch, "")
+    for ch in SYMBOL_DROP:
+        t = t.replace(ch, " ")
+    t = " ".join(t.split())
+    return re.sub(r"\s+([,.;:!?)])", r"\1", t).replace("( ", "(")
+
+
 def clean_keywords(words, limit: int | None = None) -> list[str]:
     """Trim, drop empties, replace separators, de-duplicate (case-insensitive, first wins)."""
     out, seen = [], set()
@@ -224,6 +248,7 @@ DEFAULT_SETTINGS = {
     "xmp2iptc_on_save": True, # after saving, copy XMP to IPTC with ExifTool's xmp2iptc.args (keeps IPTC in step with XMP)
     "xmp2iptc_args": "",      # path to xmp2iptc.args; blank = find it next to ExifTool, else the bundled copy
     "title_as_description": True,   # also save the title as the Description/Caption (some stock sites read it)
+    "symbols": "convert",     # symbols in the AI's titles and keywords: convert (& -> and) / remove / keep
     "ai_time_limit": 30,      # seconds per photo before it's stopped (0 = no limit); first photo gets extra
     "ai_retries": 1,          # how many times a photo that went over the limit is tried again
     "debug_log": False,       # write a detailed log of every AI request to debug_log.txt
@@ -292,6 +317,8 @@ def load_settings() -> dict:
     if not str(s.get("ollama_url") or "").strip():
         s["ollama_url"] = DEFAULT_OLLAMA_URL
     s["keyword_min"], s["keyword_max"] = keyword_range(s.get("keyword_min"), s.get("keyword_max"))
+    if s.get("symbols") not in {k for k, _ in SYMBOL_MODES}:
+        s["symbols"] = DEFAULT_SETTINGS["symbols"]
     if not isinstance(s.get("location_history"), list):
         s["location_history"] = []
     try:
@@ -1100,7 +1127,8 @@ def drop_brand_keywords(keywords) -> list[str]:
 def build_prompt(keyword_min: int, keyword_max: int, context: str = "", existing_title: str = "",
                  existing_keywords=None, direction: str = "", photo_note: str = "",
                  photo_type: str = "", lead_keywords=None, title_prefix: str = "",
-                 date_in_title: bool = False, title_location: str = "", copyright_free: bool = False) -> str:
+                 date_in_title: bool = False, title_location: str = "", copyright_free: bool = False,
+                 symbols: str = "keep") -> str:
     """The instructions for one photo. Your notes come first and the title is built around them;
     your directions are repeated at the end. (title_prefix is never shown to the AI.)"""
     context, photo_note, direction = (context or "").strip(), (photo_note or "").strip(), (direction or "").strip()
@@ -1139,6 +1167,10 @@ def build_prompt(keyword_min: int, keyword_max: int, context: str = "", existing
         "objects, colours, concepts and likely search terms.",
         "", COPYRIGHT_FREE_RULES if copyright_free else BRAND_RULES,
     ]
+    if symbols in ("convert", "remove"):
+        lines += ["", "No symbols: write words instead of symbols in the title and keywords (\"and\" instead of "
+                  "\"&\", \"plus\" instead of \"+\", \"percent\" instead of \"%\") and don't use symbols such as "
+                  "@ # * ™ ® ©."]
     # The "text before titles" is deliberately NOT shown to the AI: it writes a complete title for the
     # photo alone, and the app puts the text in front afterwards (title_prefix is ignored here).
     if (title_location or "").strip():
@@ -1424,7 +1456,8 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
              existing_title: str = "", existing_keywords=None, direction: str = "",
              photo_note: str = "", photo_type: str = "", lead_keywords=None, title_prefix: str = "",
              date_in_title: bool = False, revise: bool = True, title_location: str = "",
-             copyright_free: bool = False, opener=None, cancel: CancelToken | None = None) -> dict:
+             copyright_free: bool = False, opener=None, cancel: CancelToken | None = None,
+             symbols: str = "keep") -> dict:
     """Ask the local vision model for an SEO title and keywords.
     With revise=True and any notes or directions given, a second (text-only) pass checks the draft
     against them. Returns {'title', 'keywords', 'seconds', 'revised'}."""
@@ -1448,7 +1481,7 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
               f"note={_clip(photo_note or '', 80)!r}, location={title_location!r}")
     prompt = build_prompt(keyword_min, keyword_max, context, existing_title, existing_keywords,
                           direction, photo_note, photo_type, lead_keywords, title_prefix, date_in_title,
-                          title_location, copyright_free)
+                          title_location, copyright_free, symbols)
     system = system_prompt(direction)
 
     def body(user_text, schema, with_image=True, temperature=0.2):
@@ -1532,8 +1565,9 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
     # in copyright-free mode names from your notes are not protected: they mustn't end up in the keywords
     protect = " ".join([direction or ""] if copyright_free else [direction or "", context or "", photo_note or ""])
     lower = not keyword_case_overridden(direction)
-    raw_title = drop_trailing_location(raw_title, title_location)
+    raw_title = tidy_symbols(drop_trailing_location(raw_title, title_location), symbols)
     title = clean_title(raw_title) if title_case_overridden(direction) else title_case(raw_title)
+    raw_keywords = [tidy_symbols(str(k), symbols) for k in raw_keywords]
     if copyright_free:
         raw_keywords = drop_brand_keywords(raw_keywords)
     keywords = seo_keywords(raw_keywords, keep=lead_keywords, lower=lower, protect=protect)[:keyword_max]
@@ -1547,7 +1581,7 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
                        "Output only JSON: {\"keywords\": [\"...\"]}")
         try:
             more = ask(more_prompt, MORE_KEYWORDS_SCHEMA, "more keywords")
-            extra = _as_list(more.get("keywords", []))
+            extra = [tidy_symbols(str(k), symbols) for k in _as_list(more.get("keywords", []))]
             if copyright_free:
                 extra = drop_brand_keywords(extra)
             keywords += seo_keywords(extra, limit=keyword_max - len(keywords),
