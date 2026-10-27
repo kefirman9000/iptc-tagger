@@ -1,5 +1,9 @@
 # What's new
 
+## 2026.10.27.7
+
+- **More redo reasons:** *Redo with reasons* now has a second column, **What to focus on**: the words and signs in the photo, the location, the mood, the main subject, the action, the colours and light, the people, the concept for commercial buyers, or the season. There are new problems to pick too: too flowery, not factual enough, and keywords too general. Hover over a reason to see exactly what the AI is told.
+
 ## 2026.10.27.6
 
 - **More metadata fields:** the title is now also saved as the **Headline**, and your *Location in title* fills the photo's **City, State and Country** fields, which editorial reviewers check. Windows title and tags and the EXIF description are available too.
