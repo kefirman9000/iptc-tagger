@@ -1,5 +1,9 @@
 # What's new
 
+## 2026.10.27.19
+
+- **Simpler, faster saving:** each photo is now saved in one step. The full title and keywords go straight into the IPTC fields, past IPTC's old 64-character limit, so IPTC matches XMP without a second pass. The separate *Copy XMP to IPTC* step is now off. You can still turn it on in **Settings → Saving** if you also want other XMP fields (creator, copyright…) copied to IPTC.
+
 ## 2026.10.27.18
 
 - **Retry when nothing comes back:** if the AI returns no title or keywords for a photo, it's tried again automatically, the same number of times as for the time limit (**Settings → AI**).

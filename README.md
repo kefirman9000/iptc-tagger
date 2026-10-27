@@ -60,7 +60,7 @@ The usual fields are written by default. Choose exactly which in **Settings → 
 | EXIF description | `EXIF:ImageDescription` | off |
 | Windows title and tags | `EXIF:XPTitle`, `EXIF:XPKeywords` | off |
 
-After saving, XMP is optionally copied to IPTC with ExifTool's `xmp2iptc.args`, so both match. This is on by default.
+Everything is written in one ExifTool step. The IPTC title and keywords are written in full, past IPTC's official 64-byte limit, so they match XMP. Optionally, every other XMP field (creator, copyright…) can also be copied to IPTC with ExifTool's `xmp2iptc.args`. This is off by default.
 
 **The image itself is never changed.**
 - Only the metadata is rewritten; the image data is never re-encoded.
