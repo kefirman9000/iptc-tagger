@@ -39,7 +39,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.10.27.22"
+APP_VERSION = "2026.10.27.23"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 
 # Free vision models (run locally with Ollama) offered for one-click download:
@@ -1783,10 +1783,12 @@ def title_rules(length: str = "detailed") -> str:
             "weather when it is a striking, defining part of the photo (a sunset sky, a city at night, snow); never "
             "add it just to fill out the title. Be specific, never vague: for a product, name the brand, the exact product "
             "or product line and its variety, flavour, scent or style as read from the packaging, but never the "
-            "weight, volume or size such as grams, oz or ml (for example "
-            "'Doritos Cool Ranch Flavored Tortilla Chips' rather than 'Bag of Chips'); and for a brand, product, store, "
-            "restaurant or company, name its well-known parent company too (for example 'Doritos, a Frito-Lay and "
-            "PepsiCo Brand' or 'KFC Restaurant, Owned by Yum! Brands'), but only when you are sure of it. "
+            "weight, volume or size such as grams, oz or ml (in the pattern '[Brand] [Product] [Flavour] [Kind of "
+            "Product]' rather than 'Bag of Chips'); and for a brand, product, store, restaurant or company, you may name "
+            "its parent company too (in the pattern '[Brand], a [Parent Company] Brand'), but only when you are sure "
+            "which company owns that exact brand, and leave it out when you're not. The words in square brackets are "
+            "placeholders: never put a brand, company or product name in the title or keywords unless that brand is "
+            "really in this photo or in the photographer's notes. "
             "Join the parts naturally with commas or words such as with, on and in. "
             "The title must be complete and stand on its own, describing only what is in this photo. Not short and "
             "blunt: for example, instead of 'Coffee Shop Exterior' write 'Independent Coffee Shop Exterior, Cozy "

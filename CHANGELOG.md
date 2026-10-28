@@ -1,5 +1,9 @@
 # What's new
 
+## 2026.10.27.23
+
+- **No more stray Frito-Lay:** the AI's instructions had real brand names as examples, and the AI sometimes copied them into titles that had nothing to do with them. The examples are now placeholders (*[Brand], a [Parent Company] Brand*), and the AI is told to name a brand or parent company only when it's really in the photo or your notes, and only when it's sure who owns it.
+
 ## 2026.10.27.22
 
 - **One box for your instructions:** *About these photos* and *Title & keyword direction* are now one box in **Instructions for the AI**. Write the facts (place, event, client, people's roles, species…) and how titles and keywords should be written together. The AI uses the facts and follows the directions, and the directions still take priority over the defaults. Anything you had in the two boxes is joined into the new one.
