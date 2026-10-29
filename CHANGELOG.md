@@ -1,5 +1,12 @@
 # What's new
 
+## 2026.10.28.7
+
+- **Avoid column:** next to *Photo notes* there's now an **Avoid** column (also in the side panel) for what the AI should *not* say about that photo, e.g. *crane, sunset* or *don't mention the weather*. The AI is told to stay away from it, and short entries (up to 3 words, separated by commas) are also removed from its title and keywords for certain. It stays when you redo, so *it's a heron* in the notes plus *crane* in Avoid is the quickest fix for a wrong subject.
+- **Never-use words:** list words the AI must never use on any photo (*beautiful, stunning*, a competitor's name…) in **Settings → Titles & keywords → Never use**. Any AI keyword containing one is removed, and by default they're taken out of titles too. Your own keywords are never touched.
+- **No holes in titles:** when the AI uses a never-use or Avoid word anyway, it's asked once to rewrite the title without it, instead of the word just being cut out and leaving a title with no subject.
+- **Find and replace:** fix a word or phrase in the titles and keywords of the checked photos (or the selected ones, or all shown) at once, e.g. *Cocacola → Coca-Cola*, or leave *Replace with* empty to remove it. Use the **Find & Replace…** button next to the search box, right-click → **Find and replace…**, or Ctrl+H (⌘⌥F on a Mac). It shows how many photos will change before you click Replace, and nothing is saved into the files until you save.
+
 ## 2026.10.28.6
 
 - **Your list is kept safe:** while you work, the app keeps a copy of the photo list with every title and keyword that isn't saved yet, plus photo notes and types. If the app closes unexpectedly (a crash, a power cut, Windows restarting for an update), it offers to **bring the list back** the next time it starts. Photos that were deleted or moved meanwhile are left out. When you close the app normally, the copy is removed.

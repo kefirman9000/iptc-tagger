@@ -39,7 +39,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.10.28.6"
+APP_VERSION = "2026.10.28.7"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 
 # Free vision models (run locally with Ollama) offered for one-click download:
@@ -283,6 +283,8 @@ DEFAULT_SETTINGS = {
     "ai_retries": 1,          # how many times a photo that went over the limit is tried again
     "debug_log": False,       # write a detailed log of every AI request to debug_log.txt
     "check_updates": True,    # look for a newer release on GitHub when the app starts
+    "never_use": "",          # words the AI must never use (comma or line separated); removed from its keywords
+    "never_use_titles": True, # ... and taken out of its titles too
     "finish_alert": "both",   # when a long batch finishes: both (sound + notification) / sound / notify / off
     "preload_model": True,    # load the AI model into memory when the app starts
     "keep_model_ready": True, # keep it loaded while the app is open (else Ollama unloads it after 15 min)
@@ -1887,12 +1889,86 @@ def drop_brand_keywords(keywords) -> list[str]:
     return [k for k in keywords if not brand_names_in(str(k))]
 
 
+# ----- never-use words, and find & replace -------------------------------------------------------------
+def parse_word_list(text: str) -> list[str]:
+    """'beautiful, stunning\ncompetitor name' -> ['beautiful', 'stunning', 'competitor name'] (no repeats)."""
+    out, seen = [], set()
+    for part in re.split(r"[,;\n]+", text or ""):
+        w = " ".join(part.split()).strip(" .\"'")
+        if w and w.lower() not in seen:
+            seen.add(w.lower())
+            out.append(w)
+    return out
+
+
+def _word_pattern(terms) -> re.Pattern | None:
+    terms = [t for t in terms or [] if t.strip()]
+    if not terms:
+        return None
+    alts = sorted((r"\s+".join(map(re.escape, t.split())) for t in terms), key=len, reverse=True)
+    return re.compile(r"(?<![\w])(?:" + "|".join(alts) + r")(?![\w])", re.I)
+
+
+def avoid_terms(avoid: str) -> list[str]:
+    """The short entries (up to 3 words) of a photo's Avoid note: these are also filtered out for certain.
+    Longer phrases ("don't mention the weather") only go to the AI as an instruction."""
+    return [t for t in parse_word_list(avoid) if len(t.split()) <= 3]
+
+
+def drop_never_keywords(keywords, terms) -> list[str]:
+    """Remove every keyword that is, or contains as a whole word, one of the never-use words
+    ('beautiful' removes 'beautiful' and 'beautiful sunset', but not 'beautify')."""
+    pat = _word_pattern(terms)
+    return list(keywords) if pat is None else [k for k in keywords if not pat.search(str(k))]
+
+
+def drop_never_from_title(title: str, terms) -> str:
+    """Take the never-use words out of a title and tidy what's left (spaces, commas, dangling 'and')."""
+    pat = _word_pattern(terms)
+    if pat is None or not title:
+        return title
+    t = pat.sub("", title)
+    t = re.sub(r"\s+([,;:.!?])", r"\1", t)                        # "Sunset , Lake" -> "Sunset, Lake"
+    t = re.sub(r"([,;:])(\s*[,;:])+", r"\1", t)                    # ", ," -> ","
+    t = re.sub(r"\s{2,}", " ", t).strip(" ,;:-–—")
+    for _ in range(2):                                             # a joining word left hanging at either end
+        t = re.sub(r"^(and|or|with|of|the|a|an)\s+", "", t, flags=re.I)
+        t = re.sub(r"\s+(and|or|with|of|the|a|an|at|in|on|by|for|from|to|over|near)$", "", t,
+                   flags=re.I).strip(" ,;:-–—")
+    t = re.sub(r"\b(and|or|with)\s+(?=(and|or|with)\b)", "", t, flags=re.I)   # "Lake and with Trees"
+    return t.strip(" ,;:-–—")
+
+
+def find_replace(text: str, find: str, repl: str, whole_words: bool = True, match_case: bool = False) -> str:
+    """Replace every occurrence of `find` in `text` (plain words, never a pattern), then tidy the spaces."""
+    if not find or not find.strip() or text is None:
+        return text
+    core_pat = r"\s+".join(map(re.escape, find.split()))
+    pat = re.compile((r"(?<![\w])" + core_pat + r"(?![\w])") if whole_words else core_pat, 0 if match_case else re.I)
+    out = pat.sub(lambda _m: repl, text)
+    return re.sub(r"\s{2,}", " ", out).strip() if out != text else text
+
+
+def find_replace_keywords(keywords, find: str, repl: str, whole_words: bool = True,
+                          match_case: bool = False) -> list[str]:
+    """Find & replace inside each keyword; a keyword that ends up empty is removed, and repeats are dropped."""
+    out, seen = [], set()
+    for k in keywords:
+        k2 = find_replace(str(k), find, repl, whole_words, match_case).strip(" ,")
+        if k2 != k and str(k) == str(k).lower():
+            k2 = k2.lower()                              # keywords written in lowercase stay lowercase
+        if k2 and k2.lower() not in seen:
+            seen.add(k2.lower())
+            out.append(k2)
+    return out
+
+
 def build_prompt(keyword_min: int, keyword_max: int, context: str = "", existing_title: str = "",
                  existing_keywords=None, direction: str = "", photo_note: str = "",
                  photo_type: str = "", lead_keywords=None, title_prefix: str = "",
                  date_in_title: bool = False, title_location: str = "", copyright_free: bool = False,
                  symbols: str = "keep", feedback: str = "", rejected_title: str = "",
-                 title_length: str = "detailed") -> str:
+                 title_length: str = "detailed", never_use=None, photo_avoid: str = "") -> str:
     """The instructions for one photo. Your notes come first and the title is built around them;
     your directions are repeated at the end. (title_prefix is never shown to the AI.)"""
     context, photo_note, direction = (context or "").strip(), (photo_note or "").strip(), (direction or "").strip()
@@ -1943,6 +2019,12 @@ def build_prompt(keyword_min: int, keyword_max: int, context: str = "", existing
                   + (f" ({json.dumps(rejected_title, ensure_ascii=False)})" if rejected_title else "")
                   + ". Write a clearly better, different title and keywords that fix these problems:",
                   feedback.strip()]
+    if never_use:
+        lines += ["", "Never use these words or phrases anywhere in the title or the keywords, not even as part of "
+                  "a longer keyword: " + ", ".join(never_use) + "."]
+    if (photo_avoid or "").strip():
+        lines += ["", "AVOID for this photo (the photographer's own words; don't use these words, names or ideas "
+                  "anywhere in the title or the keywords): " + single_line(photo_avoid)]
     if symbols in ("convert", "remove"):
         lines += ["", "No symbols: write words instead of symbols in the title and keywords (\"and\" instead of "
                   "\"&\", \"plus\" instead of \"+\", \"percent\" instead of \"%\") and don't use symbols such as "
@@ -2041,9 +2123,15 @@ def redo_feedback(reasons, other: str = "") -> str:
 
 def build_revision_prompt(draft_title: str, draft_keywords, keyword_min: int, keyword_max: int,
                           context: str = "", photo_note: str = "", direction: str = "",
-                          title_location: str = "", copyright_free: bool = False, feedback: str = "") -> str:
+                          title_location: str = "", copyright_free: bool = False, feedback: str = "",
+                          never_use=None, photo_avoid: str = "") -> str:
     """Second pass (text only): bring a draft in line with your notes and directions."""
     lines = ["Check this draft title and keyword list for a stock photo against the photographer's instructions."]
+    if never_use:
+        lines += ["", "Remove these words or phrases from the title and the keywords: " + ", ".join(never_use) + "."]
+    if (photo_avoid or "").strip():
+        lines += ["", "The photographer says to AVOID this for this photo; take it out of the title and keywords: "
+                  + single_line(photo_avoid)]
     if (feedback or "").strip():
         lines += ["", "The photographer rejected an earlier suggestion for these reasons; make sure the draft fixes them:",
                   feedback.strip()]
@@ -2427,7 +2515,8 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
              copyright_free: bool = False, opener=None, cancel: CancelToken | None = None,
              symbols: str = "keep", feedback: str = "", rejected_title: str = "",
              title_length: str = "detailed", expand_short: bool = False,
-             read_label: bool = False, tidy: bool = False) -> dict:
+             read_label: bool = False, tidy: bool = False, never_use=None, never_in_title: bool = True,
+             photo_avoid: str = "") -> dict:
     """Ask the local vision model for an SEO title and keywords.
     With revise=True and any notes or directions given, a second (text-only) pass checks the draft
     against them. Returns {'title', 'keywords', 'seconds', 'revised'}."""
@@ -2451,7 +2540,8 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
               f"note={_clip(photo_note or '', 80)!r}, location={title_location!r}")
     prompt = build_prompt(keyword_min, keyword_max, context, existing_title, existing_keywords,
                           direction, photo_note, photo_type, lead_keywords, title_prefix, date_in_title,
-                          title_location, copyright_free, symbols, feedback, rejected_title, title_length)
+                          title_location, copyright_free, symbols, feedback, rejected_title, title_length,
+                          never_use=never_use, photo_avoid=photo_avoid)
     system = system_prompt(direction)
 
     def body(user_text, schema, with_image=True, temperature=0.2):
@@ -2542,7 +2632,7 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
         try:
             fixed = ask(build_revision_prompt(raw_title, raw_keywords, keyword_min, keyword_max,
                                               context, photo_note, direction, title_location, copyright_free,
-                                              feedback),
+                                              feedback, never_use=never_use, photo_avoid=photo_avoid),
                         OUTPUT_SCHEMA, "double-check", with_image=False, temperature=0.1)
             new_title = split_leaked_keywords(str(fixed.get("title", "") or "").strip())[0]
             new_keywords = _as_list(fixed.get("keywords", []))
@@ -2583,7 +2673,32 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
             pass                                     # keep the short one
     raw_title = drop_sizes(tidy_symbols(drop_trailing_location(raw_title, title_location), symbols))
     title = clean_title(raw_title) if title_case_overridden(direction) else title_case(raw_title)
-    raw_keywords = drop_size_keywords([tidy_symbols(str(k), symbols) for k in raw_keywords])
+    avoid = avoid_terms(photo_avoid)                 # this photo's own: always out of the title too
+    title_never = (list(never_use or []) if never_in_title else []) + avoid
+    if title_never and drop_never_from_title(title, title_never) != title:
+        # the AI used a word it was told not to: ask once for the title rewritten without it (text only,
+        # quick), so the title isn't left with a hole where the word was; anything left is still cut out
+        rewrite = (f"Rewrite this stock photo title without these words or phrases: {', '.join(title_never)}. "
+                   f"Title: {json.dumps(title, ensure_ascii=False)}. "
+                   + (f"About the photo: {single_line(photo_note)}. " if (photo_note or "").strip() else "")
+                   + "Keep its meaning and length, use other words where needed, Title Case, no quotation marks, "
+                   'no full stop. Output only JSON: {"title": "..."}')
+        try:
+            fixed = split_leaked_keywords(str(ask(rewrite, TITLE_SCHEMA, "remove words", with_image=False)
+                                              .get("title", "") or "").strip())[0]
+            fixed = drop_never_from_title(title_case(fixed) if not title_case_overridden(direction)
+                                          else clean_title(fixed), title_never)
+            if len(fixed.split()) >= 3:
+                debug(f"{name}: title rewritten without never-use / avoid words")
+                title = fixed
+        except Stopped:
+            raise
+        except ApiError:
+            pass
+        title = drop_never_from_title(title, title_never)
+    never_use = list(never_use or []) + avoid
+    raw_keywords = drop_never_keywords(drop_size_keywords([tidy_symbols(str(k), symbols) for k in raw_keywords]),
+                                       never_use)
     if copyright_free:
         raw_keywords = drop_brand_keywords(raw_keywords)
     keywords = seo_keywords(raw_keywords, keep=lead_keywords, lower=lower, protect=protect)
@@ -2600,7 +2715,8 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
                        "Output only JSON: {\"keywords\": [\"...\"]}")
         try:
             more = ask(more_prompt, MORE_KEYWORDS_SCHEMA, "more keywords")
-            extra = drop_size_keywords([tidy_symbols(str(k), symbols) for k in _as_list(more.get("keywords", []))])
+            extra = drop_never_keywords(drop_size_keywords([tidy_symbols(str(k), symbols)
+                                                            for k in _as_list(more.get("keywords", []))]), never_use)
             if copyright_free:
                 extra = drop_brand_keywords(extra)
             extra = seo_keywords(extra, keep=list(lead_keywords or []) + keywords, lower=lower, protect=protect)
