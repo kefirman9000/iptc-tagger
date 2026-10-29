@@ -1,5 +1,9 @@
 # What's new
 
+## 2026.10.28.8
+
+- **Avoid column on or off:** a new **Avoid column** checkbox under **Instructions for the AI** (next to *Double-check against my instructions*) shows or hides the Avoid column and the Avoid box in the side panel. It's off to start with. While it's off, the AI ignores Avoid, but what you typed there is kept for when you turn it back on. The *Never use* list in Settings works either way.
+
 ## 2026.10.28.7
 
 - **Avoid column:** next to *Photo notes* there's now an **Avoid** column (also in the side panel) for what the AI should *not* say about that photo, e.g. *crane, sunset* or *don't mention the weather*. The AI is told to stay away from it, and short entries (up to 3 words, separated by commas) are also removed from its title and keywords for certain. It stays when you redo, so *it's a heron* in the notes plus *crane* in Avoid is the quickest fix for a wrong subject.

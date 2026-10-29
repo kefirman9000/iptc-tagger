@@ -791,7 +791,8 @@ class ReviewPanel(QWidget):
         b.addWidget(self.type)
         b.addWidget(lbl("Photo notes for the AI"))
         b.addWidget(self.note)
-        b.addWidget(lbl("Avoid"))
+        self.avoid_label = lbl("Avoid")
+        b.addWidget(self.avoid_label)
         b.addWidget(self.avoid)
         b.addWidget(lbl("Title"))
         b.addWidget(self.title)
@@ -1075,8 +1076,8 @@ class RedoDialog(QDialog):
         lay.addWidget(self.other)
         tip = QLabel("The current title and keywords are cleared, and the AI starts fresh from the photo, your "
                      "instructions, the photo note and what you tick here. If you stop the redo, they come back.\n"
-                     "Tip: when the AI got something wrong, a photo note (e.g. it's a heron) and the wrong word in the "
-                     "Avoid column (e.g. crane) help it most.")
+                     "Tip: when the AI got something wrong, a photo note (e.g. it's a heron) helps it most, and so "
+                     "does the wrong word (e.g. crane) in the Avoid column (tick Avoid column under Instructions).")
         tip.setStyleSheet(f"color:{GREY}")
         tip.setWordWrap(True)
         lay.addWidget(tip)
@@ -1151,6 +1152,7 @@ class MainWindow(QMainWindow):
         self._ready = False   # widgets send signals while the window is being built; ignore those
 
         self._build_ui()
+        self._show_avoid_column()
         self._ready = True
         self.ai_timer = QTimer(self)                  # ticks once a second while the AI works
         self.ai_timer.setInterval(1000)
@@ -1261,6 +1263,13 @@ class MainWindow(QMainWindow):
                                "and fixes anything that doesn't follow them.\n"
                                "Only runs when you've written instructions. Adds a few seconds per photo.")
         self.revise.toggled.connect(lambda *_: self._remember_options())
+        self.avoid_on = QCheckBox("Avoid column")
+        self.avoid_on.setChecked(bool(self.settings.get("avoid_on", False)))
+        self.avoid_on.setToolTip("Shows an Avoid column next to Photo notes (and in the side panel) for what the AI\n"
+                                 "should NOT say about each photo, e.g. crane, sunset. Short entries are also removed\n"
+                                 "from its titles and keywords.\n"
+                                 "Off: the column is hidden and the AI ignores it. What you typed there is kept.")
+        self.avoid_on.toggled.connect(lambda *_: (self._remember_options(), self._show_avoid_column()))
         note = QLabel("Tip: to clarify a single photo, double-click its <b>Photo notes</b> cell in the list.")
         note.setStyleSheet(f"color:{GREY}")
         g.addWidget(about_lbl, 0, 0, 1, 2)
@@ -1423,6 +1432,7 @@ class MainWindow(QMainWindow):
         checks.addWidget(self.keep_titles)
         checks.addWidget(self.keep_kw)
         checks.addWidget(self.revise)
+        checks.addWidget(self.avoid_on)
         checks.addStretch(1)
         checks.addWidget(note)
         g.addLayout(checks, 7, 0, 1, 2)
@@ -1763,6 +1773,13 @@ class MainWindow(QMainWindow):
                 self.reset_model()
         elif link == "restart":
             self.restart_ollama()
+
+    def _show_avoid_column(self):
+        """The Avoid column and the side panel's Avoid box appear only while 'Avoid column' is ticked."""
+        on = self.avoid_on.isChecked()
+        self.table.setColumnHidden(COL_AVOID, not on)
+        self.review.avoid.setVisible(on)
+        self.review.avoid_label.setVisible(on)
 
     def _startup_dialogs(self):
         """One after the other, never stacked: bring back the list, then what's new."""
@@ -2123,6 +2140,7 @@ class MainWindow(QMainWindow):
                              direction=text,           # one box: the same text is both
                              keep_existing_titles=self.keep_titles.isChecked(),
                              revise=self.revise.isChecked(),
+                             avoid_on=self.avoid_on.isChecked(),
                              keep_existing_keywords=self.keep_kw.isChecked())
         core.save_settings(self.settings)
 
@@ -3330,7 +3348,7 @@ class MainWindow(QMainWindow):
                                              read_label=bool(self.settings.get("read_label", True)),
                                              never_use=core.parse_word_list(self.settings.get("never_use", "")),
                                              never_in_title=bool(self.settings.get("never_use_titles", True)),
-                                             photo_avoid=ph.avoid,
+                                             photo_avoid=ph.avoid if self.settings.get("avoid_on") else "",
                                              tidy=bool(self.settings.get("tidy_keywords", True))),
                   ph.path, url, model, kmin, kmax,
                   context, old_title, old_keywords, direction, ph.note,

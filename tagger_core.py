@@ -39,7 +39,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.10.28.7"
+APP_VERSION = "2026.10.28.8"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 
 # Free vision models (run locally with Ollama) offered for one-click download:
@@ -283,6 +283,7 @@ DEFAULT_SETTINGS = {
     "ai_retries": 1,          # how many times a photo that went over the limit is tried again
     "debug_log": False,       # write a detailed log of every AI request to debug_log.txt
     "check_updates": True,    # look for a newer release on GitHub when the app starts
+    "avoid_on": False,        # show the per-photo Avoid column and use it
     "never_use": "",          # words the AI must never use (comma or line separated); removed from its keywords
     "never_use_titles": True, # ... and taken out of its titles too
     "finish_alert": "both",   # when a long batch finishes: both (sound + notification) / sound / notify / off
