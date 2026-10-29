@@ -29,7 +29,7 @@ import tagger_core as core
 
 THUMB = 72
 # column order in the list: status, type and the Detect/Save buttons sit before the text you edit
-COL_CHECK, COL_THUMB, COL_FILE, COL_STATUS, COL_TYPE, COL_ACTION, COL_NOTE, COL_TITLE, COL_KEYWORDS = range(9)
+COL_CHECK, COL_THUMB, COL_FILE, COL_STATUS, COL_TYPE, COL_ACTION, COL_NOTE, COL_AVOID, COL_TITLE, COL_KEYWORDS = range(10)
 PREVIEW = 520   # long edge of the large preview in the review panel
 GREY = "#8a8f98"
 STATUS_COLORS = {
@@ -178,7 +178,7 @@ FILTERS = [
     ("checked", "Checked"),
     ("unchecked", "Not checked"),
     ("no_date", "No date taken"),
-    ("has_note", "With photo notes"),
+    ("has_note", "With photo notes or Avoid"),
 ]
 
 
@@ -197,7 +197,7 @@ def photo_matches(ph, key: str, search: str = "", keyword_min: int = 0) -> bool:
         "checked": ph.checked,
         "unchecked": not ph.checked,
         "no_date": not ph.taken,
-        "has_note": bool(ph.note.strip()),
+        "has_note": bool(ph.note.strip() or ph.avoid.strip()),
     }.get(key, True)
     if not ok:
         return False
@@ -212,6 +212,7 @@ class Photo:
     def __init__(self, path: str):
         self.path = path
         self.note = ""                   # per-photo clarification for the AI (not saved to the file)
+        self.avoid = ""                  # per-photo: what the AI must not say (not saved to the file)
         self.title = ""
         self.keywords: list[str] = []
         self.file_title = ""             # what is currently saved in the file
@@ -379,6 +380,21 @@ class SettingsDialog(QDialog):
                                 "phrases, then moves the keywords that name what's in the title to the front, because\n"
                                 "stock sites weigh the first ten the most. Keywords from your own instructions are kept.")
         f_text.addRow("Keywords", self.tidy_kw)
+        self.never_use = QPlainTextEdit(str(settings.get("never_use", "") or ""))
+        self.never_use.setPlaceholderText("e.g. beautiful, stunning, amazing, a competitor's name")
+        self.never_use.setMaximumHeight(60)
+        self.never_use.setTabChangesFocus(True)
+        self.never_use.setToolTip("Words or phrases the AI must never use, separated by commas or on separate lines.\n"
+                                  "Any AI keyword that contains one is removed, whatever the AI does. Your own\n"
+                                  "keywords (Keywords to put first, keywords already on the file) are never touched.\n"
+                                  "For one photo only, use the Avoid column instead.")
+        self.never_titles = QCheckBox("Also take them out of the AI's titles")
+        self.never_titles.setChecked(bool(settings.get("never_use_titles", True)))
+        nl = QVBoxLayout()
+        nl.setContentsMargins(0, 0, 0, 0)
+        nl.addWidget(self.never_use)
+        nl.addWidget(self.never_titles)
+        f_text.addRow("Never use", nl)
         self.title_len = QComboBox()
         for key, label, _lo, _hi in core.TITLE_LENGTHS:
             self.title_len.addItem(label, key)
@@ -695,7 +711,8 @@ class SettingsDialog(QDialog):
                  read_label=self.read_label.isChecked(), tidy_keywords=self.tidy_kw.isChecked(),
                  check_updates=self.updates.isChecked(), auto_download=self.auto_update.isChecked(),
                  preload_model=self.preload.isChecked(), keep_model_ready=self.keep_ready.isChecked(),
-                 finish_alert=self.finish_alert.currentData() or "both")
+                 finish_alert=self.finish_alert.currentData() or "both",
+                 never_use=self.never_use.toPlainText().strip(), never_use_titles=self.never_titles.isChecked())
         s["keyword_min"], s["keyword_max"] = core.keyword_range(self.kmin.value(), self.kmax.value())
         return s
 
@@ -732,6 +749,10 @@ class ReviewPanel(QWidget):
 
         self.note = QLineEdit()
         self.note.setPlaceholderText("Tell the AI something about this photo (optional)")
+        self.avoid = QLineEdit()
+        self.avoid.setPlaceholderText("What the AI should NOT say, e.g. crane, sunset (optional)")
+        self.avoid.setToolTip("Short entries (up to 3 words, separated by commas) are also removed from the AI's\n"
+                              "title and keywords. Longer ones, like \"don't mention the weather\", are told to the AI.")
         self.title = QLineEdit()
         self.title.setPlaceholderText("Title")
         self.title_info = QLabel()
@@ -770,6 +791,8 @@ class ReviewPanel(QWidget):
         b.addWidget(self.type)
         b.addWidget(lbl("Photo notes for the AI"))
         b.addWidget(self.note)
+        b.addWidget(lbl("Avoid"))
+        b.addWidget(self.avoid)
         b.addWidget(lbl("Title"))
         b.addWidget(self.title)
         b.addWidget(self.title_info)
@@ -805,6 +828,7 @@ class ReviewPanel(QWidget):
         self.body.hide()
 
         self.note.textEdited.connect(self._edited)
+        self.avoid.textEdited.connect(self._edited)
         self.type.currentIndexChanged.connect(self._type_chosen)
         self.title.textEdited.connect(self._edited)
         self.keywords.textChanged.connect(self._edited)
@@ -838,6 +862,8 @@ class ReviewPanel(QWidget):
         # only replace text that actually differs, so the cursor isn't thrown around
         if self.note.text() != ph.note:
             self.note.setText(ph.note)
+        if self.avoid.text() != ph.avoid:
+            self.avoid.setText(ph.avoid)
         if core.clean_title(self.title.text()) != ph.title or new_photo:
             self.title.setText(ph.title)
         if core.parse_keywords_text(self.keywords.toPlainText()) != ph.keywords or new_photo:
@@ -887,6 +913,7 @@ class ReviewPanel(QWidget):
         ph = self.photo
         before = (ph.title, list(ph.keywords))
         ph.note = core.single_line(self.note.text())
+        ph.avoid = core.single_line(self.avoid.text())
         ph.title = core.clean_title(self.title.text())
         ph.keywords = core.parse_keywords_text(self.keywords.toPlainText())
         if (ph.title, ph.keywords) != before:
@@ -932,6 +959,88 @@ def show_whats_new(parent, since: str = "", full: bool = False) -> bool:
     return True
 
 
+class FindReplaceDialog(QDialog):
+    """Find and replace a word or phrase in the titles and keywords of several photos at once."""
+
+    def __init__(self, parent, photos, scope: str, find: str = ""):
+        super().__init__(parent)
+        self.setWindowTitle("Find and replace")
+        self.setMinimumWidth(480)
+        self.photos = photos
+        n = len(photos)
+        where = {"checked": f"the {n} checked photo", "selected": f"the {n} selected photo",
+                 "shown": f"the {n} photo", "all": f"all {n} photo"}.get(scope, f"{n} photo")
+        where += "s" if n != 1 else ""
+        where += " shown" if scope == "shown" else ""
+        lay = QVBoxLayout(self)
+        head = QLabel(f"In {where}. Nothing is saved into the files until you save.")
+        head.setWordWrap(True)
+        lay.addWidget(head)
+        form = QFormLayout()
+        self.find = QLineEdit(find)
+        self.find.setPlaceholderText("Word or phrase, e.g. Cocacola")
+        self.repl = QLineEdit()
+        self.repl.setPlaceholderText("Replace with (leave empty to remove it)")
+        form.addRow("Find", self.find)
+        form.addRow("Replace with", self.repl)
+        lay.addLayout(form)
+        opts = QHBoxLayout()
+        self.in_titles = QCheckBox("Titles")
+        self.in_titles.setChecked(True)
+        self.in_keywords = QCheckBox("Keywords")
+        self.in_keywords.setChecked(True)
+        self.whole = QCheckBox("Whole words only")
+        self.whole.setChecked(True)
+        self.whole.setToolTip("On: 'cat' doesn't change 'category'. Off: it changes any text that matches.")
+        self.case = QCheckBox("Match case")
+        for w in (self.in_titles, self.in_keywords, self.whole, self.case):
+            opts.addWidget(w)
+            w.toggled.connect(lambda *_: self._preview())
+        opts.addStretch(1)
+        lay.addLayout(opts)
+        self.result = QLabel()
+        self.result.setWordWrap(True)
+        self.result.setStyleSheet(f"color:{GREY}")
+        lay.addWidget(self.result)
+        self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        self.buttons.button(QDialogButtonBox.Ok).setText("Replace")
+        self.buttons.accepted.connect(self.accept)
+        self.buttons.rejected.connect(self.reject)
+        lay.addWidget(self.buttons)
+        self.find.textChanged.connect(lambda *_: self._preview())
+        self.repl.textChanged.connect(lambda *_: self._preview())
+        self._preview()
+
+    def values(self):
+        return (self.find.text(), self.repl.text(), self.in_titles.isChecked(), self.in_keywords.isChecked(),
+                self.whole.isChecked(), self.case.isChecked())
+
+    def changes(self) -> list[tuple]:
+        """(photo, new title, new keywords) for every photo that would change."""
+        find, repl, in_t, in_k, whole, case = self.values()
+        out = []
+        if not find.strip():
+            return out
+        for ph in self.photos:
+            t = core.clean_title(core.find_replace(ph.title, find, repl, whole, case)) if in_t else ph.title
+            k = core.find_replace_keywords(ph.keywords, find, repl, whole, case) if in_k else list(ph.keywords)
+            if t != ph.title or k != ph.keywords:
+                out.append((ph, t, k))
+        return out
+
+    def _preview(self):
+        ch = self.changes()
+        self.buttons.button(QDialogButtonBox.Ok).setEnabled(bool(ch))
+        if not self.find.text().strip():
+            self.result.setText("Type what to find.")
+        elif not ch:
+            self.result.setText("Not found in these photos.")
+        else:
+            ph, t, _k = ch[0]
+            example = (f"<br>e.g. {os.path.basename(ph.path)}: <i>{t}</i>" if t != ph.title else "")
+            self.result.setText(f"<b>{len(ch)} photo{'s' if len(ch) != 1 else ''} will change.</b>{example}")
+
+
 class RedoDialog(QDialog):
     """Redo with reasons: tick what's wrong with the current suggestion, and the AI starts again from the photo
     with that in mind. The current title and keywords are cleared and not shown to it."""
@@ -966,7 +1075,8 @@ class RedoDialog(QDialog):
         lay.addWidget(self.other)
         tip = QLabel("The current title and keywords are cleared, and the AI starts fresh from the photo, your "
                      "instructions, the photo note and what you tick here. If you stop the redo, they come back.\n"
-                     "Tip: a photo note (e.g. the subject's name) helps the AI most when it got something wrong.")
+                     "Tip: when the AI got something wrong, a photo note (e.g. it's a heron) and the wrong word in the "
+                     "Avoid column (e.g. crane) help it most.")
         tip.setStyleSheet(f"color:{GREY}")
         tip.setWordWrap(True)
         lay.addWidget(tip)
@@ -1331,9 +1441,9 @@ class MainWindow(QMainWindow):
         self.update_downloading = self.update_installing = self.restarting_for_update = False
         self.ai_banner.linkActivated.connect(self._banner_link)
 
-        self.table = QTableWidget(0, 9)
+        self.table = QTableWidget(0, 10)
         headers = {COL_CHECK: "✓", COL_THUMB: "", COL_FILE: "File", COL_STATUS: "Status", COL_TYPE: "Type",
-                   COL_ACTION: "", COL_NOTE: "Photo notes (optional)", COL_TITLE: "Title",
+                   COL_ACTION: "", COL_NOTE: "Photo notes (optional)", COL_AVOID: "Avoid (optional)", COL_TITLE: "Title",
                    COL_KEYWORDS: "Keywords (comma separated)"}
         self.table.setHorizontalHeaderLabels([headers[c] for c in range(len(headers))])
         self.table.setIconSize(QSize(THUMB, THUMB))
@@ -1350,12 +1460,17 @@ class MainWindow(QMainWindow):
         self.table.setColumnWidth(COL_CHECK, 34)
         h.setSectionResizeMode(COL_THUMB, QHeaderView.Fixed)
         self.table.setColumnWidth(COL_THUMB, THUMB + 16)
-        for col, width in ((COL_FILE, 170), (COL_TYPE, 200), (COL_NOTE, 160), (COL_TITLE, 260), (COL_STATUS, 160)):
+        for col, width in ((COL_FILE, 170), (COL_TYPE, 200), (COL_NOTE, 160), (COL_AVOID, 130), (COL_TITLE, 260),
+                           (COL_STATUS, 160)):
             h.setSectionResizeMode(col, QHeaderView.Interactive)
             self.table.setColumnWidth(col, width)
         h.setSectionResizeMode(COL_KEYWORDS, QHeaderView.Stretch)
         h.setSectionResizeMode(COL_ACTION, QHeaderView.Fixed)
         self.table.setColumnWidth(COL_ACTION, 180)      # Detect + Save
+        self.table.horizontalHeaderItem(COL_NOTE).setToolTip("What the AI should know or include for this photo")
+        self.table.horizontalHeaderItem(COL_AVOID).setToolTip(
+            "What the AI should NOT say for this photo, e.g. crane, sunset, don't mention the weather.\n"
+            "Short entries (up to 3 words, separated by commas) are also removed from its title and keywords.")
         self.table.itemChanged.connect(self._cell_edited)
         self.table.itemSelectionChanged.connect(self._selection_changed)
         self.table.cellDoubleClicked.connect(self._open_photo)
@@ -1392,6 +1507,11 @@ class MainWindow(QMainWindow):
         fb.addWidget(self.search, 1)
         fb.addWidget(self.filter_count)
         fb.addWidget(self.btn_show_all)
+        self.btn_replace = QPushButton("Find && Replace…")
+        self.btn_replace.setToolTip("Replace a word or phrase in the titles and keywords of the checked photos\n"
+                                    "(or the selected ones, or all shown)  (Ctrl+H, or ⌘⌥F on a Mac)")
+        self.btn_replace.clicked.connect(lambda *_: self.find_replace())
+        fb.addWidget(self.btn_replace)
         self.filter_bar.hide()                       # shown once there are photos
         self.list_side = QWidget()
         ls = QVBoxLayout(self.list_side)
@@ -1446,7 +1566,8 @@ class MainWindow(QMainWindow):
                           (QKeySequence(QKeySequence.Copy), self.copy_metadata),
                           (QKeySequence(QKeySequence.Paste), lambda: self.paste_metadata("both")),
                           (QKeySequence("Ctrl+Shift+V"), lambda: self.paste_metadata("add")),
-                          (QKeySequence(QKeySequence.Find), self.focus_search)):
+                          (QKeySequence(QKeySequence.Find), self.focus_search),
+                          (QKeySequence(QKeySequence.Replace), self.find_replace)):   # Ctrl+H; ⌘⌥F on a Mac
             act = QAction(self)
             act.setShortcut(seq)
             act.triggered.connect(slot)
@@ -1663,6 +1784,8 @@ class MainWindow(QMainWindow):
             e = {"path": ph.path}
             if ph.note:
                 e["note"] = ph.note
+            if ph.avoid:
+                e["avoid"] = ph.avoid
             if ph.type_key:
                 e["type"] = ph.type_key
             if ph.history:
@@ -1708,6 +1831,7 @@ class MainWindow(QMainWindow):
         if not e:
             return
         ph.note = e.get("note", "") or ""
+        ph.avoid = e.get("avoid", "") or ""
         ph.history = [h for h in e.get("history") or [] if isinstance(h, dict)][-core.SUGGESTIONS_PER_PHOTO:]
         if e.get("type"):
             ph.type_key = e["type"]
@@ -2063,12 +2187,15 @@ class MainWindow(QMainWindow):
             status = QTableWidgetItem()
             status.setFlags(fixed)
             note = QTableWidgetItem()
-            note.setToolTip("Double-click to tell the AI something about this photo")
+            note.setToolTip("Click to tell the AI something about this photo")
+            avoid = QTableWidgetItem()
+            avoid.setToolTip("Click to tell the AI what NOT to say for this photo (e.g. crane, sunset)")
             check = QTableWidgetItem()
             check.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsUserCheckable)
             check.setCheckState(Qt.Unchecked)
             check.setToolTip("Tick the photos the buttons should work on")
             for col, item in ((COL_CHECK, check), (COL_THUMB, thumb), (COL_FILE, name), (COL_NOTE, note),
+                              (COL_AVOID, avoid),
                               (COL_TITLE, QTableWidgetItem()), (COL_KEYWORDS, QTableWidgetItem()),
                               (COL_STATUS, status)):
                 self.table.setItem(row, col, item)
@@ -2176,6 +2303,7 @@ class MainWindow(QMainWindow):
             return
         self._filling = True
         self.table.item(row, COL_NOTE).setText(ph.note)
+        self.table.item(row, COL_AVOID).setText(ph.avoid)
         self.table.item(row, COL_TITLE).setText(ph.title)
         self.table.item(row, COL_KEYWORDS).setText(core.keywords_to_text(ph.keywords))
         self.table.item(row, COL_KEYWORDS).setToolTip(f"{len(ph.keywords)} keywords")
@@ -2186,7 +2314,7 @@ class MainWindow(QMainWindow):
         status.setForeground(QColor(color))
         self._session_changed()
         editable = Qt.ItemIsEnabled | Qt.ItemIsSelectable | (Qt.NoItemFlags if ph.busy else Qt.ItemIsEditable)
-        for col in (COL_NOTE, COL_TITLE, COL_KEYWORDS):
+        for col in (COL_NOTE, COL_AVOID, COL_TITLE, COL_KEYWORDS):
             self.table.item(row, col).setFlags(editable)
         if ph.type_combo is not None:
             if ph.busy and ph.type_combo.hasFocus():
@@ -2232,14 +2360,19 @@ class MainWindow(QMainWindow):
                 ph.checked = on
                 self._refresh_buttons()
             return
-        if self._filling or item.column() not in (COL_NOTE, COL_TITLE, COL_KEYWORDS):
+        if self._filling or item.column() not in (COL_NOTE, COL_AVOID, COL_TITLE, COL_KEYWORDS):
             return
         if not 0 <= item.row() < len(self.photos):
             return
         ph = self.photos[item.row()]
-        if item.column() == COL_NOTE:
-            ph.note = core.single_line(item.text())
+        if item.column() in (COL_NOTE, COL_AVOID):
+            if item.column() == COL_NOTE:
+                ph.note = core.single_line(item.text())
+            else:
+                ph.avoid = core.single_line(item.text())
             self._show(ph)
+            if self.review.photo is ph:
+                self.review.show_photo(ph)
             return   # notes are for the AI only; they don't change the file
         if item.column() == COL_TITLE:
             ph.title = core.clean_title(item.text())
@@ -2293,6 +2426,30 @@ class MainWindow(QMainWindow):
             self.save_photos([ph])
         self.select_offset(1)
 
+    def find_replace(self):
+        photos, scope = self.targets()
+        photos = [p for p in photos if not p.busy]
+        if not photos:
+            self.status.setText("No photos to search: add some, or wait for the AI to finish.")
+            return
+        dlg = FindReplaceDialog(self, photos, scope)
+        if not dlg.exec():
+            return
+        changes = dlg.changes()
+        find, repl = dlg.values()[:2]
+        for ph, t, k in changes:
+            ph.title, ph.keywords = t, k
+            if ph.status == "saved":
+                ph.status = "ready"
+            ph.message = "Find and replace, not saved yet"
+            self._show(ph)
+        if self.review.photo is not None:
+            self.review.show_photo(self.review.photo)
+        self.apply_filter()
+        core.debug(f"find and replace {find!r} -> {repl!r}: {len(changes)} photo(s) changed")
+        self.status.setText(f"Replaced “{find}” " + (f"with “{repl}”" if repl else "(removed)")
+                            + f" in {len(changes)} photo{'s' if len(changes) != 1 else ''}. Not saved yet.")
+
     def revert_photos(self, photos):
         for ph in photos:
             if ph.busy or not ph.changed:
@@ -2335,6 +2492,9 @@ class MainWindow(QMainWindow):
         a = menu.addAction(f"Redo checked photos with reasons… ({len(checked_idle)})")
         a.setEnabled(bool(checked_idle))
         a.triggered.connect(lambda *_: self.redo_photos(checked_idle))
+        a = menu.addAction("Find and replace…")
+        a.setEnabled(bool(idle))
+        a.triggered.connect(lambda *_: self.find_replace())
         a = menu.addAction("Revert unsaved changes")
         a.setEnabled(n_changed > 0)
         a.triggered.connect(lambda *_: self.revert_photos(idle))
@@ -2757,12 +2917,12 @@ class MainWindow(QMainWindow):
     def _cell_clicked(self, row, col):
         """One click on a Photo notes cell opens it for typing (no double-click needed). Ctrl/Shift-clicks
         are left alone, so selecting several rows still works."""
-        if col != COL_NOTE or not 0 <= row < len(self.photos) or self.photos[row].busy:
+        if col not in (COL_NOTE, COL_AVOID) or not 0 <= row < len(self.photos) or self.photos[row].busy:
             return
         if QApplication.keyboardModifiers() != Qt.NoModifier:
             return
         if self.table.state() != QAbstractItemView.EditingState:
-            self.table.editItem(self.table.item(row, COL_NOTE))
+            self.table.editItem(self.table.item(row, col))
 
     def _open_photo(self, row, col):
         if col in (COL_THUMB, COL_FILE) and 0 <= row < len(self.photos):
@@ -3168,6 +3328,9 @@ class MainWindow(QMainWindow):
                                              title_length=self.settings.get("title_length", "detailed"),
                                              expand_short=True,
                                              read_label=bool(self.settings.get("read_label", True)),
+                                             never_use=core.parse_word_list(self.settings.get("never_use", "")),
+                                             never_in_title=bool(self.settings.get("never_use_titles", True)),
+                                             photo_avoid=ph.avoid,
                                              tidy=bool(self.settings.get("tidy_keywords", True))),
                   ph.path, url, model, kmin, kmax,
                   context, old_title, old_keywords, direction, ph.note,
