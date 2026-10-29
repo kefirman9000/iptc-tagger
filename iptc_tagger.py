@@ -213,6 +213,7 @@ class Photo:
         self.path = path
         self.note = ""                   # per-photo clarification for the AI (not saved to the file)
         self.avoid = ""                  # per-photo: what the AI must not say (not saved to the file)
+        self.location = ""               # per-photo location for Editorial; "" = the main location
         self.title = ""
         self.keywords: list[str] = []
         self.file_title = ""             # what is currently saved in the file
@@ -794,6 +795,14 @@ class ReviewPanel(QWidget):
         self.avoid_label = lbl("Avoid")
         b.addWidget(self.avoid_label)
         b.addWidget(self.avoid)
+        self.loc = QLineEdit()
+        self.loc.setToolTip("This photo's location for Editorial. Empty: it uses the main location from Instructions.\n"
+                            "Press Enter (or click elsewhere) and the title, location keywords and City / State /\n"
+                            "Country are updated right away, without detecting again.")
+        self.loc.editingFinished.connect(self._location_edited)
+        self.loc_label = lbl("Location")
+        b.addWidget(self.loc_label)
+        b.addWidget(self.loc)
         b.addWidget(lbl("Title"))
         b.addWidget(self.title)
         b.addWidget(self.title_info)
@@ -865,6 +874,7 @@ class ReviewPanel(QWidget):
             self.note.setText(ph.note)
         if self.avoid.text() != ph.avoid:
             self.avoid.setText(ph.avoid)
+        self.refresh_location()
         if core.clean_title(self.title.text()) != ph.title or new_photo:
             self.title.setText(ph.title)
         if core.parse_keywords_text(self.keywords.toPlainText()) != ph.keywords or new_photo:
@@ -907,6 +917,26 @@ class ReviewPanel(QWidget):
         if self._loading or self.photo is None or self.photo.busy:
             return
         self.win.set_photo_type([self.photo], self.type.currentData() or "")
+
+    def refresh_location(self):
+        """The Location box: only while Editorial is on; the main location shows when the photo has none."""
+        on = bool(self.win.settings.get("editorial_on"))
+        self.loc.setVisible(on)
+        self.loc_label.setVisible(on)
+        main = self.win.settings.get("title_location", "")
+        self.loc.setPlaceholderText(f"{main}  (main location)" if main else "No location (set one in Instructions)")
+        ph = self.photo
+        if ph is not None and self.loc.text() != ph.location and not self.loc.hasFocus():
+            self.loc.setText(ph.location)
+        self.loc.setEnabled(ph is not None and not ph.busy)
+
+    def _location_edited(self):
+        ph = self.photo
+        if self._loading or ph is None or ph.busy:
+            return
+        new = " ".join(self.loc.text().split())
+        if new != ph.location:
+            self.win.set_location([ph], new)
 
     def _edited(self, *_):
         if self._loading or self.photo is None or self.photo.busy:
@@ -958,6 +988,45 @@ def show_whats_new(parent, since: str = "", full: bool = False) -> bool:
     lay.addWidget(ok)
     dlg.exec()
     return True
+
+
+class LocationDialog(QDialog):
+    """Set the Editorial location of several photos at once."""
+
+    def __init__(self, parent, count: int, scope: str, main: str, history: list[str], current: str = ""):
+        super().__init__(parent)
+        self.setWindowTitle("Set location")
+        self.setMinimumWidth(460)
+        lay = QVBoxLayout(self)
+        which = {"checked": "checked", "selected": "selected", "shown": "shown"}.get(scope, "")
+        head = QLabel(f"Location for the {count} {which + ' ' if which else ''}photo{'s' if count != 1 else ''}. "
+                      "Their titles, location keywords and City / State / Country are updated right away, "
+                      "without detecting again. Nothing is saved into the files until you save.")
+        head.setWordWrap(True)
+        lay.addWidget(head)
+        self.box = QComboBox()
+        self.box.setEditable(True)
+        self.box.setInsertPolicy(QComboBox.NoInsert)
+        for h in history:
+            self.box.addItem(h)
+        self.box.setCurrentIndex(-1)
+        self.box.lineEdit().setText(current)
+        self.box.lineEdit().setPlaceholderText("City, State, Country, e.g. Kyoto, Japan")
+        self.box.lineEdit().selectAll()
+        lay.addWidget(self.box)
+        hint = QLabel(f"Leave it empty to use the main location from Instructions ({main})." if main else
+                      "Leave it empty to use the main location from Instructions (none set yet).")
+        hint.setStyleSheet(f"color:{GREY}")
+        hint.setWordWrap(True)
+        lay.addWidget(hint)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.button(QDialogButtonBox.Ok).setText("Set location")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        lay.addWidget(buttons)
+
+    def location(self) -> str:
+        return " ".join(self.box.currentText().split())
 
 
 class FindReplaceDialog(QDialog):
@@ -1402,6 +1471,12 @@ class MainWindow(QMainWindow):
         loc_row.addWidget(self.loc_label)
         loc_row.addWidget(self.location_box, 3)
         loc_row.addWidget(self.loc_ai)
+        self.btn_set_loc = QPushButton("Set for Photos…")
+        self.btn_set_loc.setToolTip("Give the checked photos (or the selected ones, or all shown) a different location.\n"
+                                    "Their titles, location keywords and City / State / Country are updated right away,\n"
+                                    "without detecting again. The location box here stays the main one for the rest.")
+        self.btn_set_loc.clicked.connect(lambda *_: self.set_location_dialog())
+        loc_row.addWidget(self.btn_set_loc)
         loc_row.addSpacing(12)
         self.loc_sep_label = small("Between location and date:")
         loc_row.addWidget(self.loc_sep_label)
@@ -1803,6 +1878,8 @@ class MainWindow(QMainWindow):
                 e["note"] = ph.note
             if ph.avoid:
                 e["avoid"] = ph.avoid
+            if ph.location:
+                e["location"] = ph.location
             if ph.type_key:
                 e["type"] = ph.type_key
             if ph.history:
@@ -1849,6 +1926,7 @@ class MainWindow(QMainWindow):
             return
         ph.note = e.get("note", "") or ""
         ph.avoid = e.get("avoid", "") or ""
+        ph.location = e.get("location", "") or ""
         ph.history = [h for h in e.get("history") or [] if isinstance(h, dict)][-core.SUGGESTIONS_PER_PHOTO:]
         if e.get("type"):
             ph.type_key = e["type"]
@@ -2322,6 +2400,9 @@ class MainWindow(QMainWindow):
         self._filling = True
         self.table.item(row, COL_NOTE).setText(ph.note)
         self.table.item(row, COL_AVOID).setText(ph.avoid)
+        loc = self.location_for(ph)
+        self.table.item(row, COL_FILE).setToolTip(ph.path + (f"\nLocation: {loc}" + ("" if ph.location else " (main)")
+                                                             if loc else ""))
         self.table.item(row, COL_TITLE).setText(ph.title)
         self.table.item(row, COL_KEYWORDS).setText(core.keywords_to_text(ph.keywords))
         self.table.item(row, COL_KEYWORDS).setToolTip(f"{len(ph.keywords)} keywords")
@@ -2510,6 +2591,11 @@ class MainWindow(QMainWindow):
         a = menu.addAction(f"Redo checked photos with reasons… ({len(checked_idle)})")
         a.setEnabled(bool(checked_idle))
         a.triggered.connect(lambda *_: self.redo_photos(checked_idle))
+        a = menu.addAction("Set location…" if one else f"Set location for {len(idle)} photos…")
+        a.setEnabled(bool(idle) and bool(self.settings.get("editorial_on")))
+        if not self.settings.get("editorial_on"):
+            a.setText(a.text() + "  (tick Editorial first)")
+        a.triggered.connect(lambda *_: self.set_location_dialog(idle, "checked" if sel is checked else "selected"))
         a = menu.addAction("Find and replace…")
         a.setEnabled(bool(idle))
         a.triggered.connect(lambda *_: self.find_replace())
@@ -2609,16 +2695,20 @@ class MainWindow(QMainWindow):
         return self.custom_date_value() or ph.taken
 
     # ---------- text before titles
-    def bare_title(self, ph: Photo, strip_date: bool = True) -> str:
+    def bare_title(self, ph: Photo, strip_date: bool = True, extra_locations=()) -> str:
         """The photo's title without your text before titles, the location or the date: what the AI may see.
         Both the custom date and the metadata date are taken off, so switching between them never leaves
         an old date behind."""
         s = self.settings
         t = ph.title
+        locs = list(dict.fromkeys(x for x in [ph.location, s.get("title_location", ""), *extra_locations] if x)) or [""]
         for d in dict.fromkeys([self.photo_date(ph), ph.title_date, ph.taken]):
-            t = core.strip_title_extras(t, core.expand_title_prefix(s.get("title_prefix", ""), d),
-                                        core.format_date(d, s.get("title_date_format", "long")) if strip_date else "",
-                                        s.get("title_location", ""))
+            fd = core.format_date(d, s.get("title_date_format", "long")) if strip_date else ""
+            for loc in locs:
+                # any_location: a location next to the date is taken off even when it isn't one of these
+                # (a title saved before the location was changed), so it's never in the title twice
+                t = core.strip_title_extras(t, core.expand_title_prefix(s.get("title_prefix", ""), d), fd, loc,
+                                            any_location=bool(fd))
         return t
 
     def compose_title(self, ph: Photo, title: str) -> str:
@@ -2630,7 +2720,7 @@ class MainWindow(QMainWindow):
         return core.compose_title(title, core.expand_title_prefix(s.get("title_prefix", ""), d),
                                   core.format_date(d, s.get("title_date_format", "long")),
                                   s.get("title_date_pos", "off"), s.get("title_date_sep", "dash"),
-                                  self.editorial_location(), s.get("title_loc_sep", "dash"))
+                                  self.location_for(ph), s.get("title_loc_sep", "dash"))
 
     # ---------- previously used locations
     CLEAR_LOCATIONS = "Clear this list…"
@@ -2676,13 +2766,103 @@ class MainWindow(QMainWindow):
         self._location_entered()
 
     def editorial_location(self) -> str:
-        """The location to use: only when Editorial is on."""
+        """The main location (from Instructions): only when Editorial is on."""
         return self.settings.get("title_location", "") if self.settings.get("editorial_on") else ""
+
+    def location_for(self, ph: Photo) -> str:
+        """This photo's own location, else the main one: only when Editorial is on."""
+        if not self.settings.get("editorial_on"):
+            return ""
+        return ph.location or self.settings.get("title_location", "")
 
     def editorial_keywords(self, ph: Photo) -> list[str]:
         if not self.settings.get("editorial_on"):
             return []
-        return core.editorial_keywords(self.editorial_location(), self.photo_date(ph))
+        return core.editorial_keywords(self.location_for(ph), self.photo_date(ph))
+
+    # ---------- change the location of photos that are already done (no new detect)
+    def set_location_dialog(self, photos=None, scope: str = ""):
+        if not self.settings.get("editorial_on"):
+            self.status.setText("Tick Editorial (under Instructions for the AI) to put a location in the titles.")
+            return
+        if photos is None:
+            photos, scope = self.targets()
+        photos = [p for p in photos if not p.busy]
+        if not photos:
+            self.status.setText("No photos to set a location for: add some, or wait for the AI to finish.")
+            return
+        own = {p.location for p in photos}
+        current = next(iter(own)) if len(own) == 1 else ""
+        dlg = LocationDialog(self, len(photos), scope, self.settings.get("title_location", ""),
+                             [h for h in self.settings.get("location_history", []) if isinstance(h, str)], current)
+        if dlg.exec():
+            self.set_location(photos, dlg.location())
+
+    def set_location(self, photos, loc: str):
+        """Give these photos their own location (or '' for the main one), and swap it into their titles,
+        location keywords and (when saved) City / State / Country, without detecting again."""
+        loc = " ".join((loc or "").split())
+        main = self.settings.get("title_location", "")
+        own = "" if loc.casefold() == main.casefold() else loc     # the same as the main one: just follow it
+        if own:                                       # offered again in the location dropdowns
+            history = [h for h in self.settings.get("location_history", []) if h.casefold() != own.casefold()]
+            self.settings["location_history"] = [own] + history[:19]
+            self._fill_location_history()             # (keeps the main location box as it is)
+            core.save_settings(self.settings)
+        changed = 0
+        for ph in photos:
+            if ph.busy:
+                continue
+            old = self.location_for(ph)
+            ph.location = own
+            if self._rewrite_location(ph, [old]):
+                changed += 1
+                ph.message = "Location changed, not saved yet"
+            self._show(ph)
+        if self.review.photo is not None:
+            self.review.show_photo(self.review.photo)
+        self.apply_filter()
+        n = len([p for p in photos if not p.busy])
+        where = own or (f"the main location ({main})" if main else "no location")
+        core.debug(f"set location of {n} photo(s) to {where!r}: {changed} title(s) / keyword lists changed")
+        self.status.setText(f"Location for {n} photo{'s' if n != 1 else ''}: {where}. "
+                            + (f"Updated {changed} title{'s' if changed != 1 else ''} and keywords; save to write "
+                               "them into the files." if changed else
+                               "Photos without a title get it when you click Detect."))
+
+    def _rewrite_location(self, ph: Photo, old_locations=()) -> bool:
+        """Put this photo's current location (and date, text before titles) into its title and keywords,
+        taking out whatever location was there before. True if anything changed."""
+        if ph.busy or not ph.title.strip():
+            return False
+        s = self.settings
+        d = self.photo_date(ph)
+        date_on = s.get("title_date_pos", "off") != "off"
+        prefix = core.expand_title_prefix(s.get("title_prefix", ""), d)
+        written = core.dateline_location(ph.title, prefix, core.format_date(d, s.get("title_date_format", "long"))) \
+            if date_on else ""
+        olds = [x for x in dict.fromkeys(list(old_locations) + [written]) if x]
+        base = self.bare_title(ph, strip_date=date_on, extra_locations=olds) or ph.title
+        new_title = self.compose_title(ph, base)
+        # keywords: the old place's parts out (unless they're also in the new place, or among your keywords to
+        # put first), then the new place in where it fits
+        lead = {k.casefold() for k in core.expand_lead_keywords(s.get("lead_keywords", ""), d)}
+        new_parts = {x.strip().casefold() for x in self.location_for(ph).split(",") if x.strip()}
+        gone = {x.strip().casefold() for o in olds for x in o.split(",") if x.strip()} - new_parts - lead
+        kws = [k for k in ph.keywords if k.casefold() not in gone]
+        n_lead = 0
+        for k in kws:
+            if k.casefold() not in lead:
+                break
+            n_lead += 1
+        new_kw = core.place_editorial_keywords(kws, self.editorial_keywords(ph), s.get("editorial_pos", "before"),
+                                               after=n_lead, title=base)
+        if new_title == ph.title and new_kw == core.clean_keywords(ph.keywords):
+            return False
+        ph.title, ph.keywords = new_title, new_kw
+        if ph.status == "saved":
+            ph.status = "ready"
+        return True
 
     def _date_options_changed(self, save: bool = True):
         if not self._ready:
@@ -2699,8 +2879,9 @@ class MainWindow(QMainWindow):
         self.settings.update(editorial_on=ed_on, editorial_pos="before" if before else "after", title_date_pos=pos)
         on, has_loc = pos != "off", bool(self.location.text().strip())
         for wdg in (self.editorial_pos, self.loc_label, self.location_box, self.loc_ai, self.date_label,
-                    self.date_fmt, self.custom_date_on):
+                    self.date_fmt, self.custom_date_on, self.btn_set_loc):
             wdg.setEnabled(ed_on)
+        self.review.refresh_location()
         self.custom_date.setEnabled(ed_on and self.custom_date_on.isChecked())
         self.loc_sep.setEnabled(on and has_loc)           # only used when there's both a location and a date
         self.loc_sep_label.setEnabled(on and has_loc)
@@ -2764,6 +2945,13 @@ class MainWindow(QMainWindow):
             return
         changed = 0
         for ph in [p for p in self.targets()[0] if not p.busy and p.title.strip()]:
+            if self.settings.get("editorial_on"):
+                # swaps in the current location and date, taking out any older location (and its keywords)
+                if self._rewrite_location(ph):
+                    changed += 1
+                    ph.message = "Title text added, not saved yet"
+                    self._show(ph)
+                continue
             base = ph.title
             if self.editorial_location().strip() or self.custom_date_value():
                 # rebuild from the bare title, so a title that already has your text or a date (from before
@@ -3357,7 +3545,7 @@ class MainWindow(QMainWindow):
                   core.expand_title_prefix(self.settings.get("title_prefix", ""), self.photo_date(ph)),
                   self.settings.get("title_date_pos", "off") != "off",
                   bool(self.settings.get("revise", True)),
-                  self.editorial_location() if self.settings.get("location_for_ai", True) else "",
+                  self.location_for(ph) if self.settings.get("location_for_ai", True) else "",
                   self.effective_type(ph) == core.COPYRIGHT_FREE, cancel=ph.token)
         ph.run += 1
         ph.queued = True
@@ -3475,7 +3663,7 @@ class MainWindow(QMainWindow):
             if not keep_title:
                 # the location is added to the title for you, so a trailing "in <location>" from the AI goes
                 ph.title = self.compose_title(ph, core.drop_trailing_location(result["title"],
-                                                                               self.editorial_location()))
+                                                                               self.location_for(ph)))
             # order: your "keywords to put first", then existing keywords (if kept), then suggestions
             kmax = core.keyword_range(self.settings.get("keyword_min"), self.settings.get("keyword_max"))[1]
             lead = core.expand_lead_keywords(self.settings.get("lead_keywords", ""), self.photo_date(ph))
@@ -3626,18 +3814,19 @@ class MainWindow(QMainWindow):
         for ph in targets:
             ph.busy, ph.status, ph.message = True, "saving", "Saving…"
             self._show(ph)
-            job = Job(ph.path, self._write_one, ph.path, ph.title, list(ph.keywords), self._save_options(),
+            job = Job(ph.path, self._write_one, ph.path, ph.title, list(ph.keywords), self._save_options(ph),
                       cancel=self.cancel)
             run_job(self, job, self.io_pool, self._saved, self._save_failed)
         self._refresh_buttons()
 
-    def _save_options(self) -> dict:
+    def _save_options(self, ph: Photo | None = None) -> dict:
         """What happens on every save, decided once per batch (read on the main thread)."""
         s = self.settings
         args = None
         if s.get("xmp2iptc_on_save", False):
             args = core.find_xmp2iptc_args(self.exiftool.exe if self.exiftool else None, s.get("xmp2iptc_args", ""))
-        return {"fields": core.meta_fields(s), "location": self.editorial_location(), "xmp2iptc_args": args}
+        return {"fields": core.meta_fields(s), "xmp2iptc_args": args,
+                "location": self.location_for(ph) if ph is not None else self.editorial_location()}
 
     def _write_one(self, path, title, keywords, opts):
         try:

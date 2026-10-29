@@ -1,5 +1,11 @@
 # What's new
 
+## 2026.10.29.1
+
+- **Set the location for many photos at once:** with *Editorial* on, check the photos (or select them) and click **Set for Photos…** next to the location under *Instructions for the AI*, or right-click → **Set location…**. Their titles, location keywords and City / State / Country are changed right away, *without detecting again*: *Tokyo, Japan - October 26, 2026: Temple Gate* becomes *Kyoto, Japan - October 26, 2026: Temple Gate*, and the keyword *tokyo* becomes *kyoto*. Nothing is saved into the files until you save.
+- **A location per photo:** the location in *Instructions* is now the main one, used by every photo that hasn't got its own. A single photo's location is also in the side panel (press Enter to apply it), and hovering over a file name shows the location it uses. Leave it empty to go back to the main one. Locations are kept with the list if the app closes unexpectedly.
+- **No more doubled locations:** changing the main location and clicking **Add to titles now** used to leave the old location in the title as well (*Nara, Japan - … : Tokyo, Japan - … : Deer in the Park*). The old location, and its keywords, are now swapped out, even in titles saved in an earlier session.
+
 ## 2026.10.28.8
 
 - **Avoid column on or off:** a new **Avoid column** checkbox under **Instructions for the AI** (next to *Double-check against my instructions*) shows or hides the Avoid column and the Avoid box in the side panel. It's off to start with. While it's off, the AI ignores Avoid, but what you typed there is kept for when you turn it back on. The *Never use* list in Settings works either way.
