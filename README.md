@@ -42,6 +42,7 @@ No installation and no Python needed. ExifTool is included.
 - **Redo with reasons:** tell the AI what's wrong with a suggestion (too generic, wrong subject, too short…) or what to focus on, and it tries again with that in mind. Works on the selected photo, or on every checked photo with **Redo Checked**.
 - **CSV export:** Shutterstock or Adobe Stock upload format, or every detail for a spreadsheet.
 - **Working with many photos:** check boxes, filters (no title, no keywords, unsaved, errors…), search, and copy and paste of titles, keywords and notes between photos.
+- **Model ready light:** green when the AI model is loaded, red when it isn't. The model loads when the app starts and stays ready while it's open (both optional).
 - **Reliable:** Stop at any time, a time limit with automatic retry, and one log file for troubleshooting.
 - **What's new:** shown once after each update; see [CHANGELOG.md](CHANGELOG.md).
 - **Easy updates:** when a new release is published here, the app asks whether to download it, then installs it when you restart. Click **Check for Updates** at the top of the window any time, or turn off the check at startup in Settings.

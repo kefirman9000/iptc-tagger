@@ -39,7 +39,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.10.28.2"
+APP_VERSION = "2026.10.28.3"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 
 # Free vision models (run locally with Ollama) offered for one-click download:
@@ -283,6 +283,8 @@ DEFAULT_SETTINGS = {
     "ai_retries": 1,          # how many times a photo that went over the limit is tried again
     "debug_log": False,       # write a detailed log of every AI request to debug_log.txt
     "check_updates": True,    # look for a newer release on GitHub when the app starts
+    "preload_model": True,    # load the AI model into memory when the app starts
+    "keep_model_ready": True, # keep it loaded while the app is open (else Ollama unloads it after 15 min)
     "last_seen_version": "",  # the version whose "What's new" was last shown
     "skipped_update": "",     # a version the user chose to skip
     "confirm_save": True,     # ask before saving with Save metadata
@@ -2142,6 +2144,44 @@ def list_models(url: str, opener=None) -> list[str]:
                                 _json(_ollama(url, "/api/tags", timeout=5, opener=opener)).get("models", []))))
 
 
+# the model is loaded with the same settings every request uses: a different context size would make
+# Ollama load it all over again on the first photo
+AI_NUM_CTX = 8192
+AI_KEEP_ALIVE = "15m"       # Ollama unloads the model after this long without a request
+
+
+def same_model_name(a: str, b: str) -> bool:
+    """'gemma3' and 'gemma3:latest' are the same model."""
+    norm = lambda n: (n or "").strip() if ":" in (n or "") else (n or "").strip() + ":latest"
+    return norm(a) == norm(b)
+
+
+def model_state(url: str, model: str, opener=None) -> dict:
+    """Is Ollama running, is the model downloaded, and is it loaded in memory right now?
+    'on_gpu' is the share of it on the graphics card (1.0 = all of it, 0 = all on the processor)."""
+    version = ollama_version(url, opener)
+    st = {"running": version is not None, "installed": False, "loaded": False, "on_gpu": None}
+    if version is None:
+        return st
+    try:
+        for m in _json(_ollama(url, "/api/ps", timeout=5, opener=opener)).get("models", []):
+            if same_model_name(m.get("name") or m.get("model") or "", model):
+                size, vram = m.get("size") or 0, m.get("size_vram") or 0
+                st.update(loaded=True, installed=True, on_gpu=(vram / size) if size else None)
+                return st
+        st["installed"] = any(same_model_name(n, model) for n in list_models(url, opener))
+    except (ApiError, ValueError):
+        pass
+    return st
+
+
+def load_model(url: str, model: str, opener=None) -> None:
+    """Load the model into memory now (or keep it there for another AI_KEEP_ALIVE), so the first photo
+    doesn't wait for it. Answers right away when it's already loaded."""
+    _json(_ollama(url, "/api/generate", {"model": model, "keep_alive": AI_KEEP_ALIVE,
+                                         "options": {"num_ctx": AI_NUM_CTX}}, timeout=600, opener=opener))
+
+
 def ai_ready(url: str, opener=None) -> dict:
     """Quick check before a batch: is Ollama running, and which models are installed?"""
     version = ollama_version(url, opener)
@@ -2348,10 +2388,10 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
             user["images"] = [image_b64]
         return {
             "model": model, "stream": False, "format": schema,
-            "keep_alive": "15m",                         # stay loaded between photos in a batch
+            "keep_alive": AI_KEEP_ALIVE,                 # stay loaded between photos in a batch
             # num_predict caps the reply: a normal one is ~250 tokens, but now and then a model in JSON mode
             # gets stuck writing endless blank space; the cap ends that in seconds instead of minutes
-            "options": {"temperature": temperature, "num_ctx": 8192, "num_predict": MAX_REPLY_TOKENS},
+            "options": {"temperature": temperature, "num_ctx": AI_NUM_CTX, "num_predict": MAX_REPLY_TOKENS},
             "messages": [{"role": "system", "content": system}, user],
         }
 
