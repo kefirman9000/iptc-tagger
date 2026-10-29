@@ -39,7 +39,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.10.29.1"
+APP_VERSION = "2026.10.29.2"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 
 # Free vision models (run locally with Ollama) offered for one-click download:
@@ -284,6 +284,8 @@ DEFAULT_SETTINGS = {
     "debug_log": False,       # write a detailed log of every AI request to debug_log.txt
     "check_updates": True,    # look for a newer release on GitHub when the app starts
     "avoid_on": False,        # show the per-photo Avoid column and use it
+    "stockup_path": "",       # StockUp.app / StockUp.exe / stockup.py ("" = look in the usual places)
+    "stockup_after_save": False,  # after Save Metadata, open the saved photos in StockUp
     "never_use": "",          # words the AI must never use (comma or line separated); removed from its keywords
     "never_use_titles": True, # ... and taken out of its titles too
     "finish_alert": "both",   # when a long batch finishes: both (sound + notification) / sound / notify / off
@@ -1001,6 +1003,106 @@ def restore_metadata(et: "ExifTool", path: str, snap: dict) -> None:
 
 
 _undo_lock = threading.Lock()
+
+
+# StockUp (github.com/kefirman9000/stockup): checks the photos and uploads them to the stock sites ---------
+STOCKUP_DOWNLOAD = "https://github.com/kefirman9000/stockup/releases/latest"
+WINDOWS_ARG_LIMIT = 30000   # Windows can't start a program with a longer command line (32,767 characters)
+
+
+def find_stockup(custom: str = "") -> str | None:
+    """Where StockUp is: the one chosen in Settings, else the usual places (StockUp.app on a Mac;
+    on Windows it's a folder you unzip anywhere, so the usual folders and Downloads are searched)."""
+    import glob
+    home = os.path.expanduser("~")
+    cands = [custom] if custom else []
+    if sys.platform == "darwin":
+        cands += ["/Applications/StockUp.app", os.path.join(home, "Applications", "StockUp.app")]
+    elif os.name == "nt":
+        roots = [os.environ.get("LOCALAPPDATA", ""), os.environ.get("ProgramFiles", ""),
+                 os.path.join(home, "Desktop"), os.path.join(home, "Documents"), os.path.join(home, "Downloads"),
+                 os.path.dirname(program_root())]                          # next to IPTC Tagger's own folder
+        for r in filter(None, roots):
+            for pat in ("StockUp*.exe", "StockUp*/StockUp.exe", "StockUp*/StockUp*/StockUp.exe",
+                        "Programs/StockUp*/StockUp.exe"):
+                cands += sorted(glob.glob(os.path.join(r, pat)), reverse=True)   # newest version first
+    for c in cands:
+        if not c:
+            continue
+        if c.endswith(".app") and os.path.isdir(c):
+            return c
+        if os.path.isfile(c) and (c.lower().endswith((".exe", ".py")) or os.access(c, os.X_OK)):
+            return c
+    return None
+
+
+def _python_for_script() -> list[str] | None:
+    """A Python to run stockup.py with (this app's own Python only when it isn't the packaged program)."""
+    if not getattr(sys, "frozen", False):
+        return [sys.executable]
+    if os.name == "nt":
+        if shutil.which("py"):
+            return [shutil.which("py"), "-3"]
+        return [shutil.which("python")] if shutil.which("python") else None
+    for c in (shutil.which("python3"), "/opt/homebrew/bin/python3", "/usr/local/bin/python3",
+              "/Library/Frameworks/Python.framework/Versions/Current/bin/python3", "/usr/bin/python3"):
+        if c and os.path.isfile(c):
+            return [c]
+    return None
+
+
+def stockup_running(app_path: str) -> bool:
+    """Is StockUp open already? (It only takes photos when it starts.) Unknown for stockup.py."""
+    if not app_path or app_path.lower().endswith(".py"):
+        return False
+    try:
+        if os.name == "nt":
+            name = os.path.basename(app_path)
+            out = subprocess.run(["tasklist", "/FI", f"IMAGENAME eq {name}", "/NH", "/FO", "CSV"],
+                                 capture_output=True, text=True, timeout=10, stdin=subprocess.DEVNULL,
+                                 creationflags=0x08000000).stdout
+            return f'"{name.lower()}"' in out.lower()
+        name = os.path.splitext(os.path.basename(app_path.rstrip("/")))[0]
+        return subprocess.run(["pgrep", "-x", name], capture_output=True, timeout=10,
+                              stdin=subprocess.DEVNULL).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def stockup_command(app_path: str, paths: list[str], new_window: bool = False) -> tuple[list[str], str]:
+    """The command that opens these photos in StockUp, and a note when the folder is opened instead.
+    StockUp opens photos from one folder right where they are (only those photos); photos from several
+    folders are copied into a new batch in Pictures › StockUp Batches."""
+    note = ""
+    if os.name == "nt" and sum(len(p) + 3 for p in paths) > WINDOWS_ARG_LIMIT:
+        folders = {os.path.dirname(p) for p in paths}
+        if len(folders) != 1:
+            raise ValueError("too many photos from different folders to hand to StockUp at once. "
+                             "Open fewer at a time, or put them in one folder.")
+        paths, note = [folders.pop()], "too many photos to list one by one, so their whole folder was opened"
+    if app_path.endswith(".app"):
+        return ["open"] + (["-n"] if new_window else []) + ["-a", app_path] + paths, note
+    if app_path.lower().endswith(".py"):
+        py = _python_for_script()
+        if not py:
+            raise ValueError("Python wasn't found to run stockup.py. Install Python, or choose StockUp.exe / "
+                             "StockUp.app in Settings → Saving.")
+        return py + [app_path] + paths, note
+    return [app_path] + paths, note
+
+
+def open_in_stockup(app_path: str, paths: list[str], new_window: bool = False) -> str:
+    """Start StockUp with these photos. Returns a note ('' normally). Raises ValueError / OSError."""
+    cmd, note = stockup_command(app_path, paths, new_window)
+    kw = dict(stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True,
+              cwd=os.path.dirname(app_path.rstrip("/\\")) or None)
+    if os.name == "nt":
+        kw["creationflags"] = 0x00000008 | 0x00000200       # detached, own group: stays open when this app closes
+    else:
+        kw["start_new_session"] = True
+    subprocess.Popen(cmd, **kw)
+    debug(f"opened {len(paths)} photo(s) in StockUp: {cmd[:4]}{' …' if len(cmd) > 4 else ''}")
+    return note
 
 
 # The photo list, kept as you work so nothing is lost if the app closes unexpectedly ----------------
