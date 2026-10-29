@@ -138,6 +138,25 @@ def check_ai(url: str) -> dict:
     return {"version": version, "models": models}
 
 
+OLLAMA_LINKS = (f"<a href='open-ollama:'>Open Ollama</a> if it's installed, or "
+                f"<a href='{OLLAMA_DOWNLOAD}'>download it</a> (free)")
+
+
+def launch_ollama(parent) -> bool:
+    """Start Ollama. When it can't be found on this computer, offer the download instead."""
+    if core.open_ollama():
+        return True
+    box = QMessageBox(QMessageBox.Information, "Ollama wasn't found",
+                      "Ollama doesn't seem to be installed on this computer.\n\n"
+                      "It's free: download it, install and open it, then click Check again.", parent=parent)
+    dl = box.addButton("Download Ollama", QMessageBox.AcceptRole)
+    box.addButton(QMessageBox.Close)
+    box.exec()
+    if box.clickedButton() is dl:
+        QDesktopServices.openUrl(QUrl(OLLAMA_DOWNLOAD))
+    return False
+
+
 def same_model(a: str, b: str) -> bool:
     """'gemma3' and 'gemma3:latest' are the same model."""
     norm = lambda n: n if ":" in n else n + ":latest"
@@ -237,11 +256,17 @@ class SettingsDialog(QDialog):
         ai_lay = QVBoxLayout(ai)
         self.ai_state = QLabel("Checking for Ollama…")
         self.ai_state.setWordWrap(True)
-        self.ai_state.setOpenExternalLinks(True)
+        self.ai_state.linkActivated.connect(self._state_link)
+        self.open_ollama = QPushButton("Open Ollama")
+        self.open_ollama.setToolTip("Starts Ollama on this computer, if it's installed")
+        self.open_ollama.clicked.connect(lambda *_: self._open_ollama())
+        self.open_ollama.hide()
         recheck = QPushButton("Check again")
         recheck.clicked.connect(lambda *_: self.refresh())
+        self.ollama_wait = 0           # checks left while Ollama starts up
         row = QHBoxLayout()
         row.addWidget(self.ai_state, 1)
+        row.addWidget(self.open_ollama)
         row.addWidget(recheck)
         ai_lay.addLayout(row)
 
@@ -495,8 +520,22 @@ class SettingsDialog(QDialog):
         if path:
             self.et.setText(path)
 
+    def _state_link(self, link):
+        if link.startswith("open-ollama"):
+            self._open_ollama()
+        else:
+            QDesktopServices.openUrl(QUrl(link))
+
+    def _open_ollama(self):
+        if launch_ollama(self):
+            self.ollama_wait = 15      # it takes a few seconds to start: check every 2 s for up to 30 s
+            self.open_ollama.setEnabled(False)
+            self.ai_state.setText("Starting Ollama…")
+            QTimer.singleShot(2000, self.refresh)
+
     def refresh(self):
-        self.ai_state.setText("Checking for Ollama…")
+        if not self.ollama_wait:
+            self.ai_state.setText("Checking for Ollama…")
         run_job(self, Job("check", check_ai, self.url.text().strip() or core.DEFAULT_OLLAMA_URL),
                 self.pool, self._checked, lambda _k, msg: self._checked(None, {"version": None, "models": []}))
 
@@ -504,9 +543,20 @@ class SettingsDialog(QDialog):
         self.installed = list(info["models"])
         wanted = self.model.currentData() or self.settings.get("model") or core.DEFAULT_MODEL
         self.model.clear()
+        if info["version"] is None and self.ollama_wait > 1:
+            self.ollama_wait -= 1      # still starting up
+            QTimer.singleShot(2000, self.refresh)
+        elif info["version"] is None and self.ollama_wait:
+            self.ollama_wait = 0
+            self.ai_state.setText("<b>Ollama didn't start.</b> Open it yourself, then click <i>Check again</i>, "
+                                  f"or <a href='{OLLAMA_DOWNLOAD}'>download it again</a>.")
+        elif info["version"] is None:
+            self.ai_state.setText(f"<b>Ollama isn't running.</b> {OLLAMA_LINKS}.")
+        else:
+            self.ollama_wait = 0
+        self.open_ollama.setVisible(info["version"] is None)
+        self.open_ollama.setEnabled(not self.ollama_wait)
         if info["version"] is None:
-            self.ai_state.setText(f"<b>Ollama isn't running.</b> It's free: <a href='{OLLAMA_DOWNLOAD}'>download "
-                                  "Ollama</a>, install and open it, then click <i>Check again</i>.")
             self.model.addItem(f"{wanted} (Ollama not running)", wanted)
         elif not self.installed:
             self.ai_state.setText(f"Ollama {info['version']} is running ✓. "
@@ -928,6 +978,7 @@ class MainWindow(QMainWindow):
         self.batch_total = self.batch_done = 0
         self.stats = {"photos": 0, "seconds": 0.0, "kept": 0}
         self.ai = {"version": None, "models": []}
+        self.ollama_wait = 0                          # checks left while Ollama starts up
         self.previews: dict[str, QPixmap] = {}   # recent large previews for the review panel
         self._filling = False
         self.exiftool: core.ExifTool | None = None
@@ -1365,14 +1416,31 @@ class MainWindow(QMainWindow):
         run_job(self, Job("check", check_ai, self.settings["ollama_url"]), self.io_pool,
                 self._ai_checked, lambda *_: self._ai_checked(None, {"version": None, "models": []}))
 
+    def _open_ollama(self):
+        if launch_ollama(self):
+            self.ollama_wait = 15      # it takes a few seconds to start: check every 2 s for up to 30 s
+            self.ai_banner.setText("Starting Ollama…")
+            self.ai_banner.show()
+            QTimer.singleShot(2000, self._check_ai)
+
     def _ai_checked(self, _key, info):
+        if info["version"] is not None:
+            self.ollama_wait = 0
         self.ai = info
         model = self.settings["model"]
-        if info["version"] is None:
+        if info["version"] is None and self.ollama_wait > 1:
+            self.ollama_wait -= 1      # still starting up
+            QTimer.singleShot(2000, self._check_ai)
+        elif info["version"] is None and self.ollama_wait:
+            self.ollama_wait = 0
+            self.ai_banner.setText("<b>Ollama didn't start.</b> Open it yourself, or "
+                                   f"<a href='{OLLAMA_DOWNLOAD}'>download it again</a>, then "
+                                   "<a href='recheck:'>check again</a>.")
+            self.ai_banner.show()
+        elif info["version"] is None:
             self.ai_banner.setText(
-                "<b>AI recognition is free and runs on your computer with Ollama.</b> "
-                f"<a href='{OLLAMA_DOWNLOAD}'>Download Ollama</a>, install and open it, then open "
-                "<a href='settings:'>Settings</a> to download a model with one click.")
+                "<b>Ollama isn't running.</b> AI recognition is free and runs on your computer with Ollama. "
+                f"{OLLAMA_LINKS}, then <a href='recheck:'>check again</a>.")
             self.ai_banner.show()
         elif not any(same_model(model, n) for n in info["models"]):
             what = "No AI model is downloaded yet." if not info["models"] else f"The model {model} isn't downloaded."
@@ -1536,6 +1604,11 @@ class MainWindow(QMainWindow):
     def _banner_link(self, link):
         if link.startswith("settings"):
             self.open_settings()
+        elif link.startswith("open-ollama"):
+            self._open_ollama()
+        elif link.startswith("recheck"):
+            self.ai_banner.setText("Checking for Ollama…")
+            self._check_ai()
         else:
             QDesktopServices.openUrl(QUrl(link))
 
@@ -2541,9 +2614,19 @@ class MainWindow(QMainWindow):
         if info.get("version") is None:
             self._release(targets, "Ollama isn't running")
             self._ai_checked(None, {"version": None, "models": []})
-            QMessageBox.information(self, "Ollama isn't running",
-                                    "The free AI recognition runs on your computer with Ollama.\n\n"
-                                    "Install Ollama from ollama.com and open it, then click Detect again.")
+            box = QMessageBox(QMessageBox.Information, "Ollama isn't running",
+                              "The free AI recognition runs on your computer with Ollama.\n\n"
+                              "Open Ollama if it's installed, or download it (free). Then click Detect again.",
+                              parent=self)
+            opener = box.addButton("Open Ollama", QMessageBox.AcceptRole)
+            dl = box.addButton("Download Ollama", QMessageBox.ActionRole)
+            box.addButton(QMessageBox.Close)
+            box.setDefaultButton(opener)
+            box.exec()
+            if box.clickedButton() is opener:
+                self._open_ollama()
+            elif box.clickedButton() is dl:
+                QDesktopServices.openUrl(QUrl(OLLAMA_DOWNLOAD))
             return
         if not any(same_model(model, n) for n in info.get("names", [])):
             self._release(targets, "The AI model isn't downloaded yet")

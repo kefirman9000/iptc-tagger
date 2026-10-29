@@ -1,5 +1,9 @@
 # What's new
 
+## 2026.10.28.1
+
+- **Open Ollama from the app:** when Ollama isn't running, the banner, **Settings** and the *Detect* message now offer **Open Ollama** as well as the download link. It starts Ollama if it's installed and checks again by itself every couple of seconds until it's ready. If Ollama can't be found on the computer, the app offers to download it instead.
+
 ## 2026.10.27.23
 
 - **No more stray Frito-Lay:** the AI's instructions had real brand names as examples, and the AI sometimes copied them into titles that had nothing to do with them. The examples are now placeholders (*[Brand], a [Parent Company] Brand*), and the AI is told to name a brand or parent company only when it's really in the photo or your notes, and only when it's sure who owns it.

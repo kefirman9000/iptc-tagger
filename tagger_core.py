@@ -39,7 +39,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.10.27.23"
+APP_VERSION = "2026.10.28.1"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 
 # Free vision models (run locally with Ollama) offered for one-click download:
@@ -2041,6 +2041,54 @@ def prepare_image(path: str, max_edge: int = PREVIEW_MAX_EDGE) -> str:
 
 NOT_RUNNING = ("Ollama isn't running. Open the Ollama app (free from ollama.com), "
                "then try again.")
+
+
+def find_ollama() -> list[str] | None:
+    """The command that starts Ollama on this computer, or None if it isn't installed.
+    The desktop app is preferred (it starts the server and stays in the tray / menu bar);
+    otherwise the command-line ollama is started with 'serve'."""
+    home = os.path.expanduser("~")
+    if os.name == "nt":
+        local, progs = os.environ.get("LOCALAPPDATA", ""), os.environ.get("ProgramFiles", "")
+        folders = [os.path.join(local, "Programs", "Ollama")] if local else []
+        folders += [os.path.join(progs, "Ollama")] if progs else []
+        for folder in folders:
+            for name in ("ollama app.exe", "Ollama.exe"):
+                if os.path.isfile(os.path.join(folder, name)):
+                    return [os.path.join(folder, name)]
+        cli = shutil.which("ollama") or shutil.which("ollama.exe")
+        if not cli and os.environ.get("LOCALAPPDATA"):
+            p = os.path.join(os.environ["LOCALAPPDATA"], "Programs", "Ollama", "ollama.exe")
+            cli = p if os.path.isfile(p) else None
+        return [cli, "serve"] if cli else None
+    if sys.platform == "darwin":
+        for p in ("/Applications/Ollama.app", os.path.join(home, "Applications", "Ollama.app")):
+            if os.path.isdir(p):
+                return ["open", "-a", p]
+    # apps opened from the Finder don't see Homebrew's PATH, so the usual folders are checked too
+    for cli in (shutil.which("ollama"), "/opt/homebrew/bin/ollama", "/usr/local/bin/ollama", "/usr/bin/ollama"):
+        if cli and os.path.isfile(cli) and os.access(cli, os.X_OK):
+            return [cli, "serve"]
+    return None
+
+
+def open_ollama() -> bool:
+    """Start Ollama in the background. False when it can't be found on this computer."""
+    cmd = find_ollama()
+    if not cmd:
+        return False
+    kw = dict(stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
+    if os.name == "nt":
+        kw["creationflags"] = 0x00000008 | 0x00000200   # DETACHED_PROCESS (no console window), own group
+    else:
+        kw["start_new_session"] = True   # keeps running when this app closes
+    try:
+        subprocess.Popen(cmd, **kw)
+    except OSError as e:
+        debug(f"couldn't open Ollama with {cmd}: {e}")
+        return False
+    debug(f"opened Ollama: {cmd}")
+    return True
 
 
 def _ollama(url: str, path: str, body: dict | None = None, timeout: float = 10, opener=None):
