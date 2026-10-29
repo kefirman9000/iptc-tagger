@@ -1308,10 +1308,14 @@ class MainWindow(QMainWindow):
             [p for p in self.checked_photos() if not p.busy]))
         self.btn_redo_checked.setToolTip("Redo the checked photos with reasons: tell the AI what's wrong and it tries again")
         self.btn_export = button("Export CSV…", self.export_csv)
-        self.btn_stockup = button("Open in StockUp", self.open_in_stockup)
-        self.btn_stockup.setToolTip("Open the saved photos in StockUp, to check them against each stock site's rules and\n"
-                                    "upload them. Uses the checked photos, else the selected, else all shown.\n"
-                                    "Photos with unsaved changes can be saved first.")
+        self.btn_stockup_all = button("Send All to StockUp", lambda: self.open_in_stockup(list(self.photos)),
+                                      QStyle.SP_ArrowRight, primary=True)
+        self.btn_stockup_all.setToolTip("When you're done: open every photo in the list in StockUp, to check them for\n"
+                                        "each stock site and upload them. Photos with unsaved changes can be saved first.")
+        self.btn_stockup_checked = button("Send Checked to StockUp", lambda: self.open_in_stockup(self.checked_photos()),
+                                          QStyle.SP_ArrowRight)
+        self.btn_stockup_checked.setToolTip("Open only the photos you ticked in StockUp.\n"
+                                            "Photos with unsaved changes can be saved first.")
         self.btn_export.setToolTip("Save the titles and keywords as a spreadsheet: Shutterstock or Adobe Stock upload\n"
                                    "format, or every detail. Uses the checked photos, else the selected, else all shown.")
         self.btn_instr = button("Hide Instructions", self.toggle_instructions)
@@ -1324,7 +1328,7 @@ class MainWindow(QMainWindow):
         for w in (self.btn_add, self.btn_folder):
             top.addWidget(w)
         top.addSpacing(16)
-        for w in (self.btn_identify, self.btn_redo_checked, self.btn_save, self.btn_export, self.btn_stockup):
+        for w in (self.btn_identify, self.btn_redo_checked, self.btn_save, self.btn_export):
             top.addWidget(w)
         top.addSpacing(16)
         for w in (self.btn_check_all, self.btn_uncheck_all):
@@ -1667,6 +1671,9 @@ class MainWindow(QMainWindow):
         bottom.addWidget(self.progress, 1)
         bottom.addWidget(self.btn_stop)
         bottom.addWidget(self.btn_force)
+        bottom.addSpacing(16)
+        bottom.addWidget(self.btn_stockup_checked)
+        bottom.addWidget(self.btn_stockup_all)
 
         central = QWidget()
         lay = QVBoxLayout(central)
@@ -1942,7 +1949,7 @@ class MainWindow(QMainWindow):
         box = QMessageBox(QMessageBox.Information, "StockUp wasn't found",
                           "StockUp checks your saved photos against each stock site's rules and uploads them "
                           "to Shutterstock, Adobe Stock and the others. It's free.\n\n"
-                          "If you have it, show where it is. If not, download it, then click Open in StockUp again.",
+                          "If you have it, show where it is. If not, download it, then click the Send to StockUp button again.",
                           parent=self)
         choose = box.addButton("Choose StockUp…", QMessageBox.AcceptRole)
         get = box.addButton("Download StockUp", QMessageBox.ActionRole)
@@ -1970,7 +1977,7 @@ class MainWindow(QMainWindow):
         if core.stockup_running(app_path):
             box = QMessageBox(QMessageBox.Question, "StockUp is already open",
                               "StockUp is already open, and it only takes photos when it starts.\n\n"
-                              "Close StockUp and click Open in StockUp again, or open the photos in a second "
+                              "Close StockUp and click Send to StockUp again, or open the photos in a second "
                               "StockUp window. If you use two windows, don't upload the same photos from both.",
                               parent=self)
             second = box.addButton("Open a second window", QMessageBox.AcceptRole)
@@ -2733,9 +2740,6 @@ class MainWindow(QMainWindow):
         if not self.settings.get("editorial_on"):
             a.setText(a.text() + "  (tick Editorial first)")
         a.triggered.connect(lambda *_: self.set_location_dialog(idle, "checked" if sel is checked else "selected"))
-        a = menu.addAction("Open in StockUp" if one else f"Open {len(idle)} photos in StockUp")
-        a.setEnabled(bool(idle))
-        a.triggered.connect(lambda *_: self.open_in_stockup(idle))
         a = menu.addAction("Find and replace…")
         a.setEnabled(bool(idle))
         a.triggered.connect(lambda *_: self.find_replace())
@@ -3380,8 +3384,13 @@ class MainWindow(QMainWindow):
         self.btn_remove.setText(f"Remove {rscope} ({len(removable)})" if removable else "Remove")
         self.btn_remove.setEnabled(bool(removable) and not any(p.busy for p in removable))
         self.btn_clear.setEnabled(bool(self.photos) and not busy)
-        targets_now = self.targets()[0]
-        self.btn_stockup.setEnabled(any(not p.busy and p.status != "reading" for p in targets_now))
+        sendable = lambda ps: [p for p in ps if not p.busy and p.status != "reading"]
+        n_all, n_checked = len(sendable(self.photos)), len(sendable(self.checked_photos()))
+        self.btn_stockup_all.setEnabled(n_all > 0)
+        self.btn_stockup_all.setText(f"Send All {n_all} to StockUp" if n_all else "Send All to StockUp")
+        self.btn_stockup_checked.setEnabled(n_checked > 0)
+        self.btn_stockup_checked.setText(f"Send {n_checked} Checked to StockUp" if n_checked else
+                                         "Send Checked to StockUp")
         visible = self.visible_photos()
         self.btn_check_all.setEnabled(any(not p.checked for p in visible))
         self.btn_uncheck_all.setEnabled(any(p.checked for p in self.photos))

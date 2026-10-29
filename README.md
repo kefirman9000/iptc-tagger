@@ -42,7 +42,7 @@ No installation and no Python needed. ExifTool is included.
 - **Keywords to put first:** e.g. place or client, with `{year}`, `{month}` and `{date}` filled in from each photo.
 - **Redo with reasons:** tell the AI what's wrong with a suggestion (too generic, wrong subject, too short…) or what to focus on, and it tries again with that in mind. Works on the selected photo, or on every checked photo with **Redo Checked**.
 - **CSV export:** Shutterstock or Adobe Stock upload format, or every detail for a spreadsheet.
-- **Open in StockUp:** hand the saved photos to [StockUp](https://github.com/kefirman9000/stockup) to check them for each stock site and upload them, optionally right after every save.
+- **Send to StockUp:** **Send All to StockUp** or **Send Checked to StockUp** hands the saved photos to [StockUp](https://github.com/kefirman9000/stockup) to check them for each stock site and upload them, optionally right after every save.
 - **Working with many photos:** check boxes, filters (no title, no keywords, unsaved, errors…), search, and copy and paste of titles, keywords and notes between photos.
 - **Model ready light:** green when the AI model is loaded, red when it isn't. The model loads when the app starts and stays ready while it's open (both optional).
 - **Nothing lost:** the list with unsaved titles and keywords is brought back after a crash, each photo keeps its last 5 AI suggestions (right-click → **Earlier suggestions**), and a sound and notification tell you when a long batch is done.

@@ -1,5 +1,9 @@
 # What's new
 
+## 2026.10.29.3
+
+- **Send to StockUp buttons:** two buttons at the bottom right of the window replace *Open in StockUp*: **Send All to StockUp** sends every photo in the list when you're done, and **Send Checked to StockUp** sends only the photos you ticked. They show how many photos they'll send (*Send All 24 to StockUp*, *Send 3 Checked to StockUp*). As before, photos with unsaved changes can be saved first in the same click.
+
 ## 2026.10.29.2
 
 - **Open in StockUp:** a new **Open in StockUp** button (and right-click → **Open in StockUp**) hands the saved photos to [StockUp](https://github.com/kefirman9000/stockup), which checks them against each stock site's rules and uploads them to Shutterstock, Adobe Stock and the others. It uses the checked photos, else the selected ones, else all shown. Photos from one folder open right where they are, with only those photos in the batch.
