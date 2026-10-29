@@ -919,8 +919,8 @@ def show_whats_new(parent, since: str = "", full: bool = False) -> bool:
 
 
 class RedoDialog(QDialog):
-    """Redo with reasons: tick what's wrong with the current suggestion, and the AI tries again with that
-    in mind (it also sees the title being rejected, so it won't just repeat it)."""
+    """Redo with reasons: tick what's wrong with the current suggestion, and the AI starts again from the photo
+    with that in mind. The current title and keywords are cleared and not shown to it."""
 
     def __init__(self, parent, count: int, current_title: str = ""):
         super().__init__(parent)
@@ -950,7 +950,9 @@ class RedoDialog(QDialog):
         self.other.setPlaceholderText("Anything else, e.g. it's a heron, not a crane / mention the cherry blossoms")
         lay.addWidget(QLabel("Anything else (optional):"))
         lay.addWidget(self.other)
-        tip = QLabel("Tip: a photo note (e.g. the subject's name) helps the AI most when it got something wrong.")
+        tip = QLabel("The current title and keywords are cleared, and the AI starts fresh from the photo, your "
+                     "instructions, the photo note and what you tick here. If you stop the redo, they come back.\n"
+                     "Tip: a photo note (e.g. the subject's name) helps the AI most when it got something wrong.")
         tip.setStyleSheet(f"color:{GREY}")
         tip.setWordWrap(True)
         lay.addWidget(tip)
@@ -2787,8 +2789,14 @@ class MainWindow(QMainWindow):
         pos = (v.value(), h.value())
         QTimer.singleShot(0, lambda: (v.setValue(pos[0]), h.setValue(pos[1])))
 
+    def _restore_after_redo(self, ph):
+        """A redo that didn't finish (stopped, failed): put back the title and keywords it cleared."""
+        if ph.redo and "before" in ph.redo and not ph.title.strip() and not ph.keywords:
+            ph.title, ph.keywords = ph.redo["before"][0], list(ph.redo["before"][1])
+
     def _release(self, photos, message: str):
         for ph in photos:
+            self._restore_after_redo(ph)
             ph.busy, ph.status, ph.message, ph.redo = False, "ready", message, None
             self._show(ph)
         self._refresh_buttons()
@@ -2849,15 +2857,16 @@ class MainWindow(QMainWindow):
             ph.token = core.CancelToken()
         ph.ai_started = 0.0
         redo = ph.redo or {}
+        old_title, old_keywords = ("", []) if redo else (self.bare_title(ph), list(ph.keywords))
         job = Job(ph.path, functools.partial(core.identify, cancel=ph.token,
                                              symbols=self.settings.get("symbols", "convert"),
-                                             feedback=redo.get("feedback", ""), rejected_title=redo.get("rejected", ""),
+                                             feedback=redo.get("feedback", ""),
                                              title_length=self.settings.get("title_length", "detailed"),
                                              expand_short=True,
                                              read_label=bool(self.settings.get("read_label", True)),
                                              tidy=bool(self.settings.get("tidy_keywords", True))),
                   ph.path, url, model, kmin, kmax,
-                  context, self.bare_title(ph), list(ph.keywords), direction, ph.note,
+                  context, old_title, old_keywords, direction, ph.note,
                   core.type_description(self.settings, self.effective_type(ph)),
                   core.expand_lead_keywords(self.settings.get("lead_keywords", ""), self.photo_date(ph)),
                   core.expand_title_prefix(self.settings.get("title_prefix", ""), self.photo_date(ph)),
@@ -2880,8 +2889,12 @@ class MainWindow(QMainWindow):
         if not feedback:
             feedback = core.redo_feedback(["angle"])     # nothing ticked: at least ask for something different
         for ph in photos:
-            ph.redo = {"feedback": feedback, "rejected": self.bare_title(ph)}
-        core.debug(f"redo with reasons for {len(photos)} photo(s):\n{feedback}")
+            # start clean: the AI doesn't see the old title or keywords (saved or suggested), only your notes
+            # and reasons. They're kept here so a stopped or failed redo can put them back.
+            ph.redo = {"feedback": feedback, "before": (ph.title, list(ph.keywords))}
+            ph.title, ph.keywords = "", []
+            self._show(ph)
+        core.debug(f"redo with reasons for {len(photos)} photo(s), old title and keywords cleared:\n{feedback}")
         self.identify_photos(photos)
 
     # ---------- stopping
@@ -2965,8 +2978,8 @@ class MainWindow(QMainWindow):
             kmax = core.keyword_range(self.settings.get("keyword_min"), self.settings.get("keyword_max"))[1]
             lead = core.expand_lead_keywords(self.settings.get("lead_keywords", ""), self.photo_date(ph))
             existing = ph.keywords if self.keep_kw.isChecked() else []
-            if redo:   # replace the rejected suggestions; keep only the keywords that were in the file before
-                existing = list(ph.file_keywords) if self.keep_kw.isChecked() else []
+            if redo:   # a redo starts clean: only the new suggestions (and your keywords to put first)
+                existing = []
             suggested = result["keywords"]
             if self.effective_type(ph) == core.COPYRIGHT_FREE:
                 existing = core.drop_brand_keywords(existing)    # no brand names, even ones already on the file
@@ -3010,6 +3023,7 @@ class MainWindow(QMainWindow):
                 self._tick()
                 return
             core.debug(f"{os.path.basename(ph.path)}: GAVE UP after {ph.retries + 1} tries over the time limit")
+            self._restore_after_redo(ph)
             ph.busy, ph.redo = False, None
             ph.status = "error"
             ph.message = (f"The AI took longer than {limit} s" + (f" ({ph.retries + 1} tries)" if ph.retries else "")
@@ -3032,6 +3046,7 @@ class MainWindow(QMainWindow):
                 core.debug(f"{os.path.basename(ph.path)}: FAILED: {msg}")
             if msg == core.EMPTY_REPLY and ph.retries:
                 msg = f"The AI returned nothing ({ph.retries + 1} tries). Click Detect to try again, or try another model."
+            self._restore_after_redo(ph)
             ph.busy, ph.redo = False, None
             ph.status, ph.message = ("ready", "Stopped") if msg == core.STOPPED else ("error", msg)
             self._show(ph)

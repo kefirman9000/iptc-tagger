@@ -1,5 +1,9 @@
 # What's new
 
+## 2026.10.28.4
+
+- **Redo starts fresh:** **Redo with reasons** now clears the photo's title and keywords first, whether they were saved in the file or suggested by the AI, and doesn't show them to the AI. It writes new ones from the photo, your **Instructions for the AI**, the photo note and the reasons you ticked or typed, so it no longer leans on the old wording. Keywords from the file are no longer added back after a redo either; your *Keywords to put first* still are. If you stop a redo, or it fails, the old title and keywords come back. Nothing changes in the file until you save.
+
 ## 2026.10.28.3
 
 - **Model status light:** the bottom left of the window shows whether the AI model is ready. **Green**: it's loaded and photos start right away (hover to see whether it's on the graphics card or the processor). **Amber**: it's loading. **Red**: it isn't loaded (click **Load now**), it isn't downloaded, or Ollama isn't running (click **Open it**).
