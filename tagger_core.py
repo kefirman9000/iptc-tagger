@@ -39,7 +39,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.10.28.4"
+APP_VERSION = "2026.10.28.5"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 
 # Free vision models (run locally with Ollama) offered for one-click download:
@@ -2180,6 +2180,38 @@ def load_model(url: str, model: str, opener=None) -> None:
     doesn't wait for it. Answers right away when it's already loaded."""
     _json(_ollama(url, "/api/generate", {"model": model, "keep_alive": AI_KEEP_ALIVE,
                                          "options": {"num_ctx": AI_NUM_CTX}}, timeout=600, opener=opener))
+
+
+def unload_model(url: str, model: str, opener=None, timeout: float = 20) -> None:
+    """Take the model out of memory now (Ollama drops whatever it was still working on for this app).
+    Raises ApiError when Ollama doesn't answer in time: then it's stuck and needs a restart."""
+    _json(_ollama(url, "/api/generate", {"model": model, "keep_alive": 0}, timeout=timeout, opener=opener))
+
+
+def restart_ollama(url: str, wait: float = 15) -> str:
+    """Force Ollama to quit (the app, the server and the model it was running), then start it again.
+    Returns "" when it was started again, otherwise a short reason for the person."""
+    if os.name == "nt":
+        cmds = [["taskkill", "/F", "/T", "/IM", "ollama app.exe"], ["taskkill", "/F", "/T", "/IM", "ollama.exe"]]
+    else:   # the Mac app is "Ollama"; the server and the model runner are both "ollama"
+        cmds = [["pkill", "-x", "Ollama"], ["pkill", "-x", "ollama"]]
+    for cmd in cmds:
+        try:
+            subprocess.run(cmd, capture_output=True, stdin=subprocess.DEVNULL, timeout=15,
+                           **({"creationflags": 0x08000000} if os.name == "nt" else {}))
+        except (OSError, subprocess.TimeoutExpired) as e:
+            debug(f"restart Ollama: {cmd[0]} failed: {e}")
+    deadline = time.monotonic() + wait
+    while ollama_version(url) is not None and time.monotonic() < deadline:
+        time.sleep(0.5)
+    if ollama_version(url) is not None:
+        # e.g. Linux, where it runs as a system service: it may simply have been started again for us
+        debug("restart Ollama: it was still answering after the stop")
+        return ""
+    if not open_ollama():
+        return "Ollama was stopped, but it couldn't be found to start it again. Open it yourself."
+    debug("restart Ollama: stopped and started again")
+    return ""
 
 
 def ai_ready(url: str, opener=None) -> dict:

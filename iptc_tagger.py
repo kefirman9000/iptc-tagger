@@ -227,7 +227,10 @@ class Photo:
         self.token: core.CancelToken | None = None    # stop switch for this photo's AI request
         self.retries = 0                              # automatic retries used after going over the time limit
         self.timed_out = False                        # stopped because it went over the time limit
-        self.redo: dict | None = None                 # "Redo with reasons": {'feedback', 'rejected'} until it's done
+        self.redo: dict | None = None                 # "Redo with reasons": {'feedback', 'before'} until it's done
+        self.stop_requested = False                   # Stop was pressed: no automatic retry after that
+        self.run = 0                                  # which AI request is current (older answers are ignored)
+        self.queued = False                           # an AI request is counted in the progress bar
         self.checked = False                          # ticked in the check column: the buttons act on it
         self.title_date = ""                          # the date last put into this title (custom or own)
         self.type_combo: QComboBox | None = None      # the row's Type dropdown
@@ -1008,6 +1011,10 @@ class MainWindow(QMainWindow):
         self.model_error = ""                         # why the last load failed (no automatic retry after that)
         self.model_touched = float("-inf")            # when it was last loaded or kept ready (never yet)
         self.model_signals = JobSignals()             # the load runs on its own thread (see load_model_now)
+        self.reset_signals = JobSignals()             # reset model / restart Ollama, also on their own threads
+        self.reset_signals.done.connect(lambda _k, _r: self._model_reset(""))
+        self.reset_signals.failed.connect(lambda _k, msg: self._model_reset(msg or "no answer"))
+        self.reset_signals.progress.connect(lambda _k, problem: self._ollama_restarted(problem or ""))
         self.model_signals.done.connect(lambda _k, _r: self._model_loaded(""))
         self.model_signals.failed.connect(lambda _k, msg: self._model_loaded(msg or "unknown problem"))
         self.previews: dict[str, QPixmap] = {}   # recent large previews for the review panel
@@ -1387,6 +1394,10 @@ class MainWindow(QMainWindow):
         self.progress.hide()
         self.btn_stop = button("Stop", self.stop)
         self.btn_stop.hide()
+        self.btn_force = button("Force Stop", self.force_stop)
+        self.btn_force.setToolTip("Stop the AI right now: every photo is let go at once, the photos waiting in line are\n"
+                                  "taken out, and the model is reset in Ollama so it drops what it was working on.")
+        self.btn_force.hide()
         self.status = QLabel("")
         self.status.setStyleSheet("color:#6b7280")
         self.model_light = QLabel("<span style='color:#8a8f98'>●</span> Checking the AI model…")
@@ -1398,6 +1409,7 @@ class MainWindow(QMainWindow):
         bottom.addWidget(self.status, 1)
         bottom.addWidget(self.progress, 1)
         bottom.addWidget(self.btn_stop)
+        bottom.addWidget(self.btn_force)
 
         central = QWidget()
         lay = QVBoxLayout(central)
@@ -1581,15 +1593,17 @@ class MainWindow(QMainWindow):
             gpu = st.get("on_gpu")
             where = ("" if gpu is None else " on the graphics card" if gpu > 0.95
                      else " on the processor (slower)" if gpu < 0.05 else f", {gpu:.0%} on the graphics card")
-            text = dot(green) + f"{model} ready"
+            text = dot(green) + f"{model} ready &nbsp;<a href='reset'>Reset</a>"
             tip = (f"{model} is loaded{where}: photos start right away."
                    + (" It's kept ready while the app is open." if self.settings.get("keep_model_ready", True)
-                      else " Ollama unloads it after 15 minutes without a photo."))
+                      else " Ollama unloads it after 15 minutes without a photo.")
+                   + "\nReset: stops the AI and loads the model again fresh, if it seems stuck.")
         elif not st.get("installed"):
             text = dot(red) + f"{model} isn't downloaded &nbsp;<a href='settings'>Settings</a>"
             tip = "Download the model in Settings (free, one click)."
         elif self.model_error:
-            text = dot(red) + f"Couldn't load {model} &nbsp;<a href='load'>Try again</a>"
+            text = dot(red) + (f"Couldn't load {model} &nbsp;<a href='load'>Try again</a> &nbsp;·&nbsp; "
+                               "<a href='restart'>Restart Ollama</a>")
             tip = f"Ollama said: {self.model_error}"
         else:
             text = dot(red) + f"{model} not loaded &nbsp;<a href='load'>Load now</a>"
@@ -1604,6 +1618,13 @@ class MainWindow(QMainWindow):
             self._open_ollama()
         elif link == "settings":
             self.open_settings()
+        elif link == "reset":
+            if any(p.busy and p.status == "identifying" for p in self.photos):
+                self.force_stop()                     # (resets the model as well)
+            else:
+                self.reset_model()
+        elif link == "restart":
+            self.restart_ollama()
 
     def _show_whats_new_once(self):
         """After an update (or the first start), show what's new, once."""
@@ -2749,14 +2770,124 @@ class MainWindow(QMainWindow):
         if self.batch_done >= self.batch_total:
             self.progress.hide()
             self.btn_stop.hide()
+            self.btn_force.hide()
             self.apply_filter()
         self._refresh_buttons()
 
     def stop(self):
         for c in self.cancels:
             c.set()
-        self.stop_photos([p for p in self.photos if p.busy and p.status == "identifying"])
-        self.status.setText("Stopped.")
+        ai = [p for p in self.photos if p.busy and p.status == "identifying"]
+        self.stop_photos(ai)
+        self.status.setText("Stopping…" if ai else "Stopped.")
+        if ai:   # usually done in a moment; if not, offer Force Stop
+            QTimer.singleShot(2500, self._offer_force_stop)
+
+    def _offer_force_stop(self):
+        if any(p.busy and p.status == "identifying" for p in self.photos):
+            self.btn_force.show()
+            self.status.setText("Still stopping… Click Force Stop to let go of the photos right now.")
+
+    def force_stop(self):
+        """Let go of every photo the AI is on or has in line, right now, without waiting for Ollama, and
+        reset the model so Ollama drops the work too. Answers that still arrive later are ignored."""
+        photos = [p for p in self.photos if p.busy and p.status == "identifying"]
+        self.ai_pool.clear()                          # photos waiting in line never start
+        ticks = 0
+        for ph in photos:
+            ph.stop_requested, ph.timed_out = True, False
+            ph.run += 1                               # whatever comes back for the old request is ignored
+            if ph.token is not None:
+                ph.token.cancel()
+            self._restore_after_redo(ph)
+            ticks += 1 if ph.queued else 0
+            ph.queued, ph.busy, ph.redo = False, False, None
+            ph.status, ph.message = "ready", "Force stopped"
+            self._show(ph)
+        core.debug(f"FORCE STOP: let go of {len(photos)} photo(s)")
+        self.ai_timer.stop()
+        self.btn_force.hide()
+        for _ in range(ticks):
+            self._tick()
+        if not any(p.busy for p in self.photos):
+            self.btn_stop.hide()
+            self.progress.hide()
+        self.reset_model()
+
+    # ---------- reset the model / restart Ollama
+    def reset_model(self):
+        """Unload the model, so Ollama stops whatever it was doing for this app. With Keep it ready on,
+        it's loaded again fresh by itself a moment later."""
+        url, model, sig = self.settings["ollama_url"], self.settings["model"], self.reset_signals
+        self.status.setText(f"Resetting {model} in Ollama…")
+
+        def work():
+            try:
+                core.unload_model(url, model)
+                sig.done.emit("reset", None)
+            except Exception as e:
+                sig.failed.emit("reset", str(e))
+        threading.Thread(target=work, name="reset-model", daemon=True).start()
+
+    def _model_reset(self, error: str):
+        model = self.settings["model"]
+        if not error:
+            core.debug(f"reset: {model} unloaded")
+            self.models_loaded = False
+            self.model_state = dict(self.model_state, loaded=False)
+            self.model_touched = float("-inf")
+            self.status.setText(f"Stopped. {model} was reset"
+                                + (" and is loading again." if self.settings.get("keep_model_ready", True) else "."))
+            self._show_model_light()
+            self._poll_model()                        # (Keep it ready loads it again)
+            return
+        core.debug(f"reset: couldn't unload {model}: {error}", always=True)
+        if not self.ai.get("version"):
+            self.status.setText("Stopped.")
+            return
+        self.status.setText("Stopped, but Ollama isn't answering.")
+        box = QMessageBox(QMessageBox.Warning, "Ollama isn't answering",
+                          "The model couldn't be reset because Ollama didn't answer.\n\n"
+                          "Restart Ollama? It's closed completely and started again. Any other program using "
+                          "Ollama right now is interrupted too.", parent=self)
+        restart = box.addButton("Restart Ollama", QMessageBox.AcceptRole)
+        box.addButton(QMessageBox.Cancel)
+        box.exec()
+        if box.clickedButton() is restart:
+            self.restart_ollama(confirm=False)
+
+    def restart_ollama(self, confirm: bool = True):
+        if confirm and QMessageBox.question(
+                self, "Restart Ollama",
+                "Close Ollama completely and start it again? Use this when the AI seems stuck.\n\n"
+                "Any photos the AI is working on are stopped, and any other program using Ollama "
+                "right now is interrupted too.") != QMessageBox.Yes:
+            return
+        if any(p.busy and p.status == "identifying" for p in self.photos):
+            self.force_stop()
+        url, sig = self.settings["ollama_url"], self.reset_signals
+        self.ai_banner.setText("Restarting Ollama…")
+        self.ai_banner.show()
+        self.status.setText("Restarting Ollama…")
+
+        def work():
+            try:
+                sig.progress.emit("restart", core.restart_ollama(url))
+            except Exception as e:
+                sig.progress.emit("restart", f"Ollama couldn't be restarted: {e}")
+        threading.Thread(target=work, name="restart-ollama", daemon=True).start()
+
+    def _ollama_restarted(self, problem: str):
+        self.models_loaded = False
+        self.model_autoloaded, self.model_error = False, ""   # load it again once Ollama is back
+        if problem:
+            self.status.setText(problem)
+            self._check_ai()
+            return
+        self.status.setText("Ollama was restarted.")
+        self.ollama_wait = 15                         # it takes a few seconds to start: keep checking
+        self.ai_banner.setText("Starting Ollama…")
+        QTimer.singleShot(2000, self._check_ai)
 
     # ---------- identify with the local AI model
     def identify(self):
@@ -2772,7 +2903,7 @@ class MainWindow(QMainWindow):
         self._remember_options()
         for ph in targets:
             ph.busy, ph.status, ph.message = True, "identifying", "Checking that the AI is ready…"
-            ph.ai_started, ph.retries, ph.timed_out = 0.0, 0, False
+            ph.ai_started, ph.retries, ph.timed_out, ph.stop_requested = 0.0, 0, False, False
             ph.token = core.CancelToken()
             self._show(ph)
         self.btn_stop.show()
@@ -2874,8 +3005,23 @@ class MainWindow(QMainWindow):
                   bool(self.settings.get("revise", True)),
                   self.editorial_location() if self.settings.get("location_for_ai", True) else "",
                   self.effective_type(ph) == core.COPYRIGHT_FREE, cancel=ph.token)
-        run_job(self, job, self.ai_pool, self._identified, self._identify_failed,
-                on_started=self._identify_started)
+        ph.run += 1
+        ph.queued = True
+        run = ph.run
+
+        def current(path):                            # an answer for a request that was force-stopped: ignore it
+            p = self._photo(path)
+            ok = p is not None and p.run == run
+            if not ok:
+                core.debug(f"{os.path.basename(path)}: late answer from a stopped request, ignored")
+            elif p is not None:
+                p.queued = False
+            return ok
+        run_job(self, job, self.ai_pool,
+                lambda k, r: self._identified(k, r) if current(k) else None,
+                lambda k, m: self._identify_failed(k, m) if current(k) else None,
+                on_started=lambda k: self._identify_started(k) if (self._photo(k) and self._photo(k).run == run)
+                else None)
 
     def redo_photos(self, photos):
         """Ask what's wrong, then run the AI again on these photos with those reasons."""
@@ -2911,7 +3057,7 @@ class MainWindow(QMainWindow):
             if ph.busy and ph.status == "identifying" and ph.token is not None:
                 core.debug(f"{os.path.basename(ph.path)}: STOP pressed"
                            + (f" after {time.monotonic() - ph.ai_started:.1f} s" if ph.ai_started else " (waiting)"))
-                ph.timed_out = False
+                ph.timed_out, ph.stop_requested = False, True   # final: no automatic retry after a Stop
                 ph.message = "Stopping…"
                 ph.token.cancel()
                 self._show(ph)
@@ -3012,7 +3158,7 @@ class MainWindow(QMainWindow):
             ph.timed_out = False
             limit = int(self.settings.get("ai_time_limit", 30) or 0)
             tries = int(self.settings.get("ai_retries", 1) or 0)
-            if ph.retries < tries:                   # try again: often a stuck request just needs a fresh start
+            if ph.retries < tries and not ph.stop_requested:   # try again: a stuck request often just needs a fresh start
                 ph.retries += 1
                 core.debug(f"{os.path.basename(ph.path)}: retrying ({ph.retries} of {tries})")
                 ph.message = f"Took longer than {limit} s, trying again ({ph.retries} of {tries})…"
@@ -3029,7 +3175,8 @@ class MainWindow(QMainWindow):
             ph.message = (f"The AI took longer than {limit} s" + (f" ({ph.retries + 1} tries)" if ph.retries else "")
                           + ". Click Detect to try again, pick a faster model in Settings, or raise the time limit.")
             self._show(ph)
-        elif ph and msg == core.EMPTY_REPLY and ph.retries < int(self.settings.get("ai_retries", 1) or 0):
+        elif ph and msg == core.EMPTY_REPLY and not ph.stop_requested \
+                and ph.retries < int(self.settings.get("ai_retries", 1) or 0):
             # the model answered with nothing usable: a fresh try almost always works
             tries = int(self.settings.get("ai_retries", 1) or 0)
             ph.retries += 1
@@ -3042,6 +3189,8 @@ class MainWindow(QMainWindow):
             self._tick()
             return
         elif ph:
+            if ph.stop_requested:
+                msg = core.STOPPED                    # whatever came back after Stop, it's simply stopped
             if msg != core.STOPPED:
                 core.debug(f"{os.path.basename(ph.path)}: FAILED: {msg}")
             if msg == core.EMPTY_REPLY and ph.retries:

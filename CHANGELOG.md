@@ -1,5 +1,12 @@
 # What's new
 
+## 2026.10.28.5
+
+- **Stop really stops:** pressing **Stop** just as a photo came back empty or ran over the time limit could start that photo again by itself. A Stop is now final: no automatic retry after it.
+- **Force Stop:** if photos are still busy a couple of seconds after **Stop**, a **Force Stop** button appears. It lets go of every photo at once, takes the waiting photos out of the line, and resets the model in Ollama so it drops what it was working on. Answers that still arrive afterwards are ignored. A redo that's force stopped gets its old title and keywords back.
+- **Reset the model:** the green status light now has a **Reset** link that unloads the model and, with *Keep it ready* on, loads it again fresh. Use it when the AI seems stuck.
+- **Restart Ollama:** if Ollama doesn't answer the reset, the app offers to close Ollama completely and start it again. It's also on the red light when the model couldn't be loaded.
+
 ## 2026.10.28.4
 
 - **Redo starts fresh:** **Redo with reasons** now clears the photo's title and keywords first, whether they were saved in the file or suggested by the AI, and doesn't show them to the AI. It writes new ones from the photo, your **Instructions for the AI**, the photo note and the reasons you ticked or typed, so it no longer leans on the old wording. Keywords from the file are no longer added back after a redo either; your *Keywords to put first* still are. If you stop a redo, or it fails, the old title and keywords come back. Nothing changes in the file until you save.
