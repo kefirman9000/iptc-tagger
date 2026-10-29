@@ -626,13 +626,17 @@ class SettingsDialog(QDialog):
         win = self.parent()
         if win is None or not hasattr(win, "check_updates"):
             return
+        status: dict = {}
+
         def shown(info):
             if info:
                 self.update_result.setText(f"<a href='{info['url']}'>{core.APP_NAME} {info['version']} is available</a>")
+            elif status.get("reached"):
+                self.update_result.setText(f"{core.APP_VERSION} is the latest version ✓")
             else:
-                self.update_result.setText(f"{core.APP_VERSION} is the latest version (or GitHub couldn't be reached).")
+                self.update_result.setText("GitHub couldn't be reached. Check your internet connection.")
         win.settings["skipped_update"] = ""            # checking by hand shows it even if it was skipped
-        win.check_updates(on_done=shown)
+        win.check_updates(on_done=shown, status=status)
 
     def _open_log(self):
         path = core.debug_log_path()
@@ -1039,6 +1043,9 @@ class MainWindow(QMainWindow):
                                    "format, or every detail. Uses the checked photos, else the selected, else all shown.")
         self.btn_instr = button("Hide Instructions", self.toggle_instructions)
         self.btn_settings = button("Settings", self.open_settings, QStyle.SP_FileDialogDetailedView)
+        self.btn_updates = button("Check for Updates", self.check_updates_now, QStyle.SP_BrowserReload)
+        self.btn_updates.setToolTip(f"You have {core.APP_NAME} {core.APP_VERSION}. Asks GitHub whether a newer "
+                                    "version is out.\nNothing is downloaded unless you say so.")
 
         top = QHBoxLayout()
         for w in (self.btn_add, self.btn_folder):
@@ -1054,6 +1061,7 @@ class MainWindow(QMainWindow):
             top.addWidget(w)
         top.addStretch(1)
         top.addWidget(self.btn_instr)
+        top.addWidget(self.btn_updates)
         top.addWidget(self.btn_settings)
 
         # ----- instructions for the AI
@@ -1496,11 +1504,42 @@ class MainWindow(QMainWindow):
                                if unsaved else ""))
 
     # ---------- update check
-    def check_updates(self, on_done=None):
+    def check_updates(self, on_done=None, status: dict | None = None):
         """Look for a newer release in the background (never blocks the window)."""
-        run_job(self, Job("update", core.check_for_update, core.APP_VERSION), self.io_pool,
-                lambda _k, info: self._update_checked(info, on_done),
+        run_job(self, Job("update", functools.partial(core.check_for_update, status=status), core.APP_VERSION),
+                self.io_pool, lambda _k, info: self._update_checked(info, on_done),
                 lambda _k, _msg: self._update_checked(None, on_done))
+
+    def check_updates_now(self):
+        """The Check for Updates button: always answers in the blue banner, even when there's nothing new."""
+        if self.update_ready:                         # already downloaded: offer the restart again
+            self._update_downloaded(self.update_ready)
+            return
+        if self.update_downloading:
+            self.update_banner.show()
+            return
+        self.settings["skipped_update"] = ""          # checking by hand shows it even if it was skipped
+        self.btn_updates.setEnabled(False)
+        self._update_text("Checking for a new version…")
+        self.update_banner.show()
+        status: dict = {}
+
+        def done(info):
+            self.btn_updates.setEnabled(True)
+            if info:
+                return                                # _update_checked shows the new version
+            if status.get("reached"):
+                msg = (f"<b>You have the latest version</b> ({core.APP_NAME} {core.APP_VERSION}) ✓"
+                       " &nbsp;<a href='later'>OK</a>")
+            else:
+                msg = ("<b>GitHub couldn't be reached</b>, so the check didn't work. Check your internet "
+                       "connection. &nbsp;<a href='retry'>Try again</a> &nbsp;·&nbsp; "
+                       "<a href='download'>Open the download page</a> &nbsp;·&nbsp; <a href='later'>Close</a>")
+            self._update_text(msg)
+            if status.get("reached"):                 # the good news needn't stay up
+                QTimer.singleShot(8000, lambda: self.update_banner.hide()
+                                  if "latest version" in self.update_banner.text() else None)
+        self.check_updates(on_done=done, status=status)
 
     def _update_checked(self, info, on_done=None):
         if on_done is not None:
@@ -1508,6 +1547,8 @@ class MainWindow(QMainWindow):
         if not info or info["version"] == self.settings.get("skipped_update"):
             return
         self.update_info = info
+        self.btn_updates.setText("Update Available")
+        self.btn_updates.setToolTip(f"{core.APP_NAME} {info['version']} is available (you have {core.APP_VERSION}).")
         if self.update_ready or self.update_downloading:
             return
         if self.settings.get("auto_download", False) and self._can_install(info):   # only if the user opted in
@@ -1555,6 +1596,9 @@ class MainWindow(QMainWindow):
         self.update_downloading = False
         self.update_ready = res                       # (new program, download folder)
         v = (self.update_info or {}).get("version", "")
+        self.btn_updates.setText("Restart to Update")
+        self.btn_updates.setToolTip(f"{core.APP_NAME} {v} is downloaded. Restart to install it, "
+                                    "or it installs when you close the app.")
         core.debug(f"update: {v} is downloaded and ready: {res[0]}")
         self._update_text(
             f"<b>{core.APP_NAME} {v} is ready to install.</b> &nbsp;<a href='restart'>Restart now</a>"
@@ -1591,6 +1635,9 @@ class MainWindow(QMainWindow):
             QDesktopServices.openUrl(QUrl(info.get("url") or core.RELEASES_PAGE))
         elif link == "install":
             self.start_update_download()
+            return
+        elif link == "retry":
+            self.check_updates_now()
             return
         elif link == "restart":
             self.restarting_for_update = True
