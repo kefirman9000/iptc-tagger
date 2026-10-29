@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDateEdit, QDialog, QDialogButtonBox, QFileDialog,
     QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMainWindow,
     QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QSpinBox, QSplitter, QStackedWidget,
-    QStyle, QTableWidget, QTableWidgetItem, QTabWidget, QTextBrowser, QVBoxLayout, QWidget,
+    QStyle, QSystemTrayIcon, QTableWidget, QTableWidgetItem, QTabWidget, QTextBrowser, QVBoxLayout, QWidget,
 )
 
 import tagger_core as core
@@ -231,6 +231,7 @@ class Photo:
         self.stop_requested = False                   # Stop was pressed: no automatic retry after that
         self.run = 0                                  # which AI request is current (older answers are ignored)
         self.queued = False                           # an AI request is counted in the progress bar
+        self.history: list[dict] = []                 # earlier AI suggestions: {'title', 'keywords', 'how', 'time'}
         self.checked = False                          # ticked in the check column: the buttons act on it
         self.title_date = ""                          # the date last put into this title (custom or own)
         self.type_combo: QComboBox | None = None      # the row's Type dropdown
@@ -508,6 +509,15 @@ class SettingsDialog(QDialog):
         whats_new.setToolTip("What changed in this version and the ones before it")
         whats_new.clicked.connect(lambda *_: show_whats_new(self, "", full=True))
         f_general.addRow("", whats_new)
+        self.finish_alert = QComboBox()
+        for key, label in (("both", "Play a sound and show a notification"), ("sound", "Play a sound"),
+                           ("notify", "Show a notification"), ("off", "Do nothing")):
+            self.finish_alert.addItem(label, key)
+        self.finish_alert.setCurrentIndex(max(0, self.finish_alert.findData(settings.get("finish_alert", "both"))))
+        self.finish_alert.setToolTip("For batches that take longer than 20 seconds (Detect, Save, Undo), so you can work\n"
+                                     "on something else meanwhile. The notification also makes the taskbar button\n"
+                                     "flash (Windows) or the Dock icon bounce (Mac). Not after you press Stop.")
+        f_general.addRow("When a batch finishes", self.finish_alert)
 
         # ----- pages
         self.pages = QTabWidget()
@@ -684,7 +694,8 @@ class SettingsDialog(QDialog):
                  confirm_save=self.confirm_save.isChecked(),
                  read_label=self.read_label.isChecked(), tidy_keywords=self.tidy_kw.isChecked(),
                  check_updates=self.updates.isChecked(), auto_download=self.auto_update.isChecked(),
-                 preload_model=self.preload.isChecked(), keep_model_ready=self.keep_ready.isChecked())
+                 preload_model=self.preload.isChecked(), keep_model_ready=self.keep_ready.isChecked(),
+                 finish_alert=self.finish_alert.currentData() or "both")
         s["keyword_min"], s["keyword_max"] = core.keyword_range(self.kmin.value(), self.kmax.value())
         return s
 
@@ -1011,6 +1022,13 @@ class MainWindow(QMainWindow):
         self.model_error = ""                         # why the last load failed (no automatic retry after that)
         self.model_touched = float("-inf")            # when it was last loaded or kept ready (never yet)
         self.model_signals = JobSignals()             # the load runs on its own thread (see load_model_now)
+        self.session_timer = QTimer(self)             # the list is written to session.json a moment after changes
+        self.session_timer.setSingleShot(True)
+        self.session_timer.setInterval(3000)
+        self.session_timer.timeout.connect(self._write_session)
+        self.pending_restore: dict[str, dict] = {}    # photos being brought back: path -> what was in the list
+        self.batch_label, self.batch_started, self.batch_quiet = "", 0.0, False
+        self.tray: QSystemTrayIcon | None = None      # only for the "finished" notification
         self.reset_signals = JobSignals()             # reset model / restart Ollama, also on their own threads
         self.reset_signals.done.connect(lambda _k, _r: self._model_reset(""))
         self.reset_signals.failed.connect(lambda _k, msg: self._model_reset(msg or "no answer"))
@@ -1043,8 +1061,7 @@ class MainWindow(QMainWindow):
             self.status.setText(f"Debug mode is on: details are written to {core.debug_log_path()}")
         if self.settings.get("check_updates", True) and not os.environ.get("IPTC_TAGGER_OFFLINE"):
             self.check_updates()
-        if self.settings.get("last_seen_version") != core.APP_VERSION:
-            QTimer.singleShot(400, self._show_whats_new_once)   # once the window is on screen
+        QTimer.singleShot(400, self._startup_dialogs)  # once the window is on screen
         if self.custom_date_value():
             self.status.setText("Custom date is on: titles use "
                                 + core.format_date(self.custom_date_value(), "long")
@@ -1626,6 +1643,138 @@ class MainWindow(QMainWindow):
         elif link == "restart":
             self.restart_ollama()
 
+    def _startup_dialogs(self):
+        """One after the other, never stacked: bring back the list, then what's new."""
+        self._offer_restore()
+        if self.settings.get("last_seen_version") != core.APP_VERSION:
+            self._show_whats_new_once()
+
+    # ---------- keep the list safe (session.json)
+    def _session_changed(self):
+        if not self.session_timer.isActive():         # at most one write every 3 s, however busy it gets
+            self.session_timer.start()
+
+    def _write_session(self):
+        entries = []
+        for ph in self.photos:
+            if ph.path in self.pending_restore:       # still being brought back: keep what was saved for it
+                entries.append(self.pending_restore[ph.path])
+                continue
+            e = {"path": ph.path}
+            if ph.note:
+                e["note"] = ph.note
+            if ph.type_key:
+                e["type"] = ph.type_key
+            if ph.history:
+                e["history"] = ph.history
+            title, keywords = ph.redo["before"] if (ph.redo and "before" in ph.redo) else (ph.title, ph.keywords)
+            if ph.status != "reading" and (core.clean_title(title), core.clean_keywords(keywords)) != \
+                    (core.clean_title(ph.file_title), core.clean_keywords(ph.file_keywords)):
+                e["title"], e["keywords"] = title, list(keywords)   # only what isn't saved in the file yet
+            entries.append(e)
+        try:
+            if entries:
+                core.save_session(entries)
+            else:
+                core.clear_session()
+        except OSError as err:
+            core.debug(f"couldn't keep a copy of the list: {err}", always=True)
+
+    def _offer_restore(self):
+        entries = [e for e in core.load_session() if e["path"] not in self.rows]
+        if not entries:
+            core.clear_session()
+            return
+        n, edited = len(entries), sum(1 for e in entries if "title" in e)
+        box = QMessageBox(QMessageBox.Question, "Bring back your photo list?",
+                          f"{core.APP_NAME} didn't close properly last time. Your list had {n} photo"
+                          f"{'s' if n != 1 else ''}"
+                          + (f", {edited} of them with titles or keywords that weren't saved yet" if edited else "")
+                          + ".\n\nBring the list back as it was?", parent=self)
+        back = box.addButton("Bring it back", QMessageBox.AcceptRole)
+        box.addButton("Start with an empty list", QMessageBox.RejectRole)
+        box.setDefaultButton(back)
+        box.exec()
+        if box.clickedButton() is not back:
+            core.clear_session()
+            return
+        core.debug(f"bringing back the list: {n} photo(s), {edited} with unsaved changes")
+        self.pending_restore = {e["path"]: e for e in entries}
+        self.add_paths([e["path"] for e in entries])
+
+    def _apply_restore(self, ph):
+        """Put back what this photo had in the list before the app closed (after its file was read)."""
+        e = self.pending_restore.pop(ph.path, None)
+        if not e:
+            return
+        ph.note = e.get("note", "") or ""
+        ph.history = [h for h in e.get("history") or [] if isinstance(h, dict)][-core.SUGGESTIONS_PER_PHOTO:]
+        if e.get("type"):
+            ph.type_key = e["type"]
+            if ph.type_combo is not None:
+                self.fill_type_combo(ph.type_combo, ph.type_key)
+        if "title" in e:
+            ph.title, ph.keywords = str(e.get("title") or ""), [str(k) for k in e.get("keywords") or []]
+            if ph.status != "error":
+                ph.status, ph.message = "ready", "Brought back, not saved yet"
+
+    # ---------- finished alert
+    FINISH_ALERT_AFTER = 20   # seconds: shorter batches finish while you're still watching
+
+    def _batch_finished(self):
+        secs = time.monotonic() - self.batch_started if self.batch_started else 0
+        quiet, self.batch_quiet = self.batch_quiet, False
+        mode = self.settings.get("finish_alert", "both")
+        if quiet or mode == "off" or secs < self.FINISH_ALERT_AFTER:
+            return
+        what = {"Detecting": "Detect", "Saving": "Saving", "Undoing": "Undo"}.get(self.batch_label, "Work")
+        n = self.batch_total
+        errors = sum(1 for p in self.photos if p.status == "error")
+        took = f"{secs / 60:.0f} min" if secs >= 90 else f"{secs:.0f} s"
+        text = (f"{n} photo{'s' if n != 1 else ''} in {took}"
+                + (f", {errors} with a problem (see the Status column)" if errors else "") + ".")
+        core.debug(f"batch finished: {what}, {text}")
+        if mode in ("both", "sound"):
+            QApplication.beep()
+        if mode in ("both", "notify"):
+            QApplication.alert(self, 0)               # taskbar button flashes / Dock icon bounces until you look
+            if not self.isActiveWindow():
+                self._notify(f"{what} finished", text)
+
+    def _notify(self, title: str, text: str):
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            return
+        if self.tray is None:
+            self.tray = QSystemTrayIcon(self.windowIcon(), self)
+            self.tray.setToolTip(core.APP_NAME)
+            bring = lambda *_: (self.showNormal(), self.raise_(), self.activateWindow())
+            self.tray.activated.connect(bring)
+            self.tray.messageClicked.connect(bring)
+        self.tray.show()
+        self.tray.showMessage(title, text, QSystemTrayIcon.Information, 10000)
+        QTimer.singleShot(20000, lambda: self.tray.hide() if self.tray and self.isActiveWindow() else None)
+
+    # ---------- earlier suggestions
+    def _remember_suggestion(self, ph, how: str):
+        if not ph.title.strip() and not ph.keywords:
+            return
+        last = ph.history[-1] if ph.history else None
+        if last and last["title"] == ph.title and last["keywords"] == ph.keywords:
+            return
+        ph.history.append({"title": ph.title, "keywords": list(ph.keywords), "how": how,
+                           "time": time.strftime("%H:%M")})
+        del ph.history[:-core.SUGGESTIONS_PER_PHOTO]
+
+    def use_suggestion(self, ph, entry: dict):
+        if ph.busy:
+            return
+        ph.title, ph.keywords = entry["title"], list(entry["keywords"])
+        ph.status = "suggested" if ph.changed else "ready"
+        ph.message = f"{entry['how']} from {entry['time']} put back" + (", not saved yet" if ph.changed else "")
+        self._show(ph)
+        if self.review.photo is ph:
+            self.review.show_photo(ph)
+
     def _show_whats_new_once(self):
         """After an update (or the first start), show what's new, once."""
         since = self.settings.get("last_seen_version", "")
@@ -1975,6 +2124,7 @@ class MainWindow(QMainWindow):
                 ph = self._photo(p)
                 if ph:
                     ph.status, ph.message = "ready", "Ready (existing metadata not read)"
+                    self._apply_restore(ph)
                     self._show(ph)
             return
         for i in range(0, len(paths), 50):
@@ -1991,6 +2141,7 @@ class MainWindow(QMainWindow):
             ph.title, ph.keywords = ph.file_title, list(ph.file_keywords)
             ph.taken = meta.get("taken", "")
             ph.status, ph.message = "ready", ("Has metadata" if (ph.title or ph.keywords) else "No title or keywords yet")
+            self._apply_restore(ph)
             self._show(ph)
         self._refresh_buttons()
 
@@ -1999,6 +2150,7 @@ class MainWindow(QMainWindow):
             ph = self._photo(path)
             if ph:
                 ph.status, ph.message = "error", f"Couldn't read metadata: {msg}"
+                self._apply_restore(ph)
                 self._show(ph)
 
     def _thumb_ready(self, path, qimg):
@@ -2032,6 +2184,7 @@ class MainWindow(QMainWindow):
         status.setText(text)
         status.setToolTip(text)
         status.setForeground(QColor(color))
+        self._session_changed()
         editable = Qt.ItemIsEnabled | Qt.ItemIsSelectable | (Qt.NoItemFlags if ph.busy else Qt.ItemIsEditable)
         for col in (COL_NOTE, COL_TITLE, COL_KEYWORDS):
             self.table.item(row, col).setFlags(editable)
@@ -2185,6 +2338,20 @@ class MainWindow(QMainWindow):
         a = menu.addAction("Revert unsaved changes")
         a.setEnabled(n_changed > 0)
         a.triggered.connect(lambda *_: self.revert_photos(idle))
+        earlier = menu.addMenu("Earlier suggestions")
+        hist = sel[0].history if one else []
+        earlier.setEnabled(one and bool(hist) and bool(idle))
+        if one and not hist:
+            earlier.setTitle("Earlier suggestions (none yet)")
+        for h in reversed(hist):
+            short = h["title"] if len(h["title"]) <= 70 else h["title"][:67] + "…"
+            a = earlier.addAction(f"{h['time']}  {h['how']}: {short or '(no title)'}  ({len(h['keywords'])} keywords)")
+            a.setToolTip(core.keywords_to_text(h["keywords"]))
+            current = h["title"] == sel[0].title and h["keywords"] == sel[0].keywords
+            a.setCheckable(True)
+            a.setChecked(current)
+            a.triggered.connect(lambda *_, ph=sel[0], h=h: self.use_suggestion(ph, h))
+        earlier.setToolTipsVisible(True)
         undo_ok = [p for p in idle if p.path in core.undoable([q.path for q in idle])]
         a = menu.addAction("Undo last save" if one else f"Undo last save ({len(undo_ok)})")
         a.setEnabled(bool(undo_ok) and self.exiftool is not None)
@@ -2732,6 +2899,7 @@ class MainWindow(QMainWindow):
             self.stack.setCurrentIndex(0)
         self.apply_filter()
         self._selection_changed()
+        self._session_changed()
 
     def clear_list(self):
         if any(p.busy for p in self.photos):
@@ -2746,6 +2914,7 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentIndex(0)
         self.apply_filter()
         self._selection_changed()
+        self._session_changed()
 
     # ---------- running batches
     def _begin_batch(self, total, label):
@@ -2758,6 +2927,7 @@ class MainWindow(QMainWindow):
         else:
             self.cancels = [self.cancel]
             self.batch_total, self.batch_done = total, 0
+            self.batch_label, self.batch_started, self.batch_quiet = label, time.monotonic(), False
             self.progress.setRange(0, total)
             self.progress.setValue(0)
             self.progress.setFormat(f"{label} %v of %m")
@@ -2772,12 +2942,14 @@ class MainWindow(QMainWindow):
             self.btn_stop.hide()
             self.btn_force.hide()
             self.apply_filter()
+            self._batch_finished()
         self._refresh_buttons()
 
     def stop(self):
         for c in self.cancels:
             c.set()
         ai = [p for p in self.photos if p.busy and p.status == "identifying"]
+        self.batch_quiet = True                       # you pressed Stop: no "finished" alert for this batch
         self.stop_photos(ai)
         self.status.setText("Stopping…" if ai else "Stopped.")
         if ai:   # usually done in a moment; if not, offer Force Stop
@@ -2793,6 +2965,7 @@ class MainWindow(QMainWindow):
         reset the model so Ollama drops the work too. Answers that still arrive later are ignored."""
         photos = [p for p in self.photos if p.busy and p.status == "identifying"]
         self.ai_pool.clear()                          # photos waiting in line never start
+        self.batch_quiet = True
         ticks = 0
         for ph in photos:
             ph.stop_requested, ph.timed_out = True, False
@@ -3037,6 +3210,8 @@ class MainWindow(QMainWindow):
         for ph in photos:
             # start clean: the AI doesn't see the old title or keywords (saved or suggested), only your notes
             # and reasons. They're kept here so a stopped or failed redo can put them back.
+            if not any(h["title"] == ph.title and h["keywords"] == ph.keywords for h in ph.history):
+                self._remember_suggestion(ph, "Before redo")   # so a worse redo can be undone from the menu
             ph.redo = {"feedback": feedback, "before": (ph.title, list(ph.keywords))}
             ph.title, ph.keywords = "", []
             self._show(ph)
@@ -3135,6 +3310,7 @@ class MainWindow(QMainWindow):
                                                         self.settings.get("editorial_pos", "before"), after=len(lead),
                                                         title=result["title"])
             ph.busy, ph.status = False, "suggested"
+            self._remember_suggestion(ph, "Redo" if redo else "Suggestion")
             ph.message = (("Redone with your reasons" if redo else "Suggested")
                           + (", checked against your instructions" if result.get("revised") else "")
                           + ", not saved yet" + (" (kept existing title)" if keep_title else "")
@@ -3387,6 +3563,8 @@ class MainWindow(QMainWindow):
             e.ignore()
             return
         self._remember_options()
+        self.session_timer.stop()
+        core.clear_session()                          # closed properly: nothing to bring back next time
         if self.update_ready:                         # a downloaded update installs as the app closes
             self.install_update(relaunch=self.restarting_for_update)
         e.accept()

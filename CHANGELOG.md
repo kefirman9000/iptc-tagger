@@ -1,5 +1,11 @@
 # What's new
 
+## 2026.10.28.6
+
+- **Your list is kept safe:** while you work, the app keeps a copy of the photo list with every title and keyword that isn't saved yet, plus photo notes and types. If the app closes unexpectedly (a crash, a power cut, Windows restarting for an update), it offers to **bring the list back** the next time it starts. Photos that were deleted or moved meanwhile are left out. When you close the app normally, the copy is removed.
+- **Alert when a batch finishes:** when a Detect, Save or Undo batch that took longer than 20 seconds is done, the app plays a sound and shows a notification with how many photos and how long it took. The taskbar button flashes (Windows) or the Dock icon bounces (Mac) until you look. Choose sound, notification, both or nothing in **Settings → General → When a batch finishes**. There's no alert after you press Stop.
+- **Earlier suggestions:** each photo remembers its last 5 AI suggestions, and what it had before a redo. Right-click a photo → **Earlier suggestions** to put one back, for example when a redo came out worse than the first try. They're kept with the list, so they come back after a crash too.
+
 ## 2026.10.28.5
 
 - **Stop really stops:** pressing **Stop** just as a photo came back empty or ran over the time limit could start that photo again by itself. A Stop is now final: no automatic retry after it.

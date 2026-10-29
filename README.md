@@ -43,6 +43,7 @@ No installation and no Python needed. ExifTool is included.
 - **CSV export:** Shutterstock or Adobe Stock upload format, or every detail for a spreadsheet.
 - **Working with many photos:** check boxes, filters (no title, no keywords, unsaved, errors…), search, and copy and paste of titles, keywords and notes between photos.
 - **Model ready light:** green when the AI model is loaded, red when it isn't. The model loads when the app starts and stays ready while it's open (both optional).
+- **Nothing lost:** the list with unsaved titles and keywords is brought back after a crash, each photo keeps its last 5 AI suggestions (right-click → **Earlier suggestions**), and a sound and notification tell you when a long batch is done.
 - **Reliable:** Stop at any time, a time limit with automatic retry, and one log file for troubleshooting.
 - **What's new:** shown once after each update; see [CHANGELOG.md](CHANGELOG.md).
 - **Easy updates:** when a new release is published here, the app asks whether to download it, then installs it when you restart. Click **Check for Updates** at the top of the window any time, or turn off the check at startup in Settings.
@@ -70,7 +71,7 @@ Everything is written in one ExifTool step. The IPTC title and keywords are writ
 
 ## Settings and logs
 
-Settings are stored in `%APPDATA%\IPTC Tagger` (Windows) or `~/Library/Application Support/IPTC Tagger` (Mac), so they carry over between versions. The log, `debug_log.txt`, and the undo history, `undo_history.json`, are saved there too. It always records errors; turn on **Debug mode** in **Settings → General** to record every AI request as well.
+Settings are stored in `%APPDATA%\IPTC Tagger` (Windows) or `~/Library/Application Support/IPTC Tagger` (Mac), so they carry over between versions. The log, `debug_log.txt`, the undo history, `undo_history.json`, and the copy of the open list, `session.json` (removed when the app closes normally), are saved there too. It always records errors; turn on **Debug mode** in **Settings → General** to record every AI request as well.
 
 ## Building from source
 

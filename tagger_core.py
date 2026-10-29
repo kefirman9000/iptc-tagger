@@ -39,7 +39,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.10.28.5"
+APP_VERSION = "2026.10.28.6"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 
 # Free vision models (run locally with Ollama) offered for one-click download:
@@ -283,6 +283,7 @@ DEFAULT_SETTINGS = {
     "ai_retries": 1,          # how many times a photo that went over the limit is tried again
     "debug_log": False,       # write a detailed log of every AI request to debug_log.txt
     "check_updates": True,    # look for a newer release on GitHub when the app starts
+    "finish_alert": "both",   # when a long batch finishes: both (sound + notification) / sound / notify / off
     "preload_model": True,    # load the AI model into memory when the app starts
     "keep_model_ready": True, # keep it loaded while the app is open (else Ollama unloads it after 15 min)
     "last_seen_version": "",  # the version whose "What's new" was last shown
@@ -997,6 +998,45 @@ def restore_metadata(et: "ExifTool", path: str, snap: dict) -> None:
 
 
 _undo_lock = threading.Lock()
+
+
+# The photo list, kept as you work so nothing is lost if the app closes unexpectedly ----------------
+SUGGESTIONS_PER_PHOTO = 5   # earlier AI suggestions remembered per photo
+
+
+def session_path() -> str:
+    return os.path.join(config_dir(), "session.json")
+
+
+def save_session(entries: list[dict]) -> None:
+    """Write the current list (written to a temporary file first, so a crash mid-write can't spoil it)."""
+    path = session_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump({"app": APP_VERSION, "saved": time.time(), "photos": entries}, f, ensure_ascii=False)
+    os.replace(tmp, path)
+
+
+def load_session() -> list[dict]:
+    """The list from a session that didn't close properly: photos that still exist, else []."""
+    try:
+        with open(session_path(), encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return []
+    out = []
+    for e in data.get("photos") or [] if isinstance(data, dict) else []:
+        if isinstance(e, dict) and isinstance(e.get("path"), str) and os.path.isfile(e["path"]):
+            out.append(e)
+    return out
+
+
+def clear_session() -> None:
+    try:
+        os.remove(session_path())
+    except OSError:
+        pass
 
 
 def undo_path() -> str:
