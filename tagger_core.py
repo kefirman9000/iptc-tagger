@@ -39,7 +39,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.10.28.8"
+APP_VERSION = "2026.10.29.1"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 
 # Free vision models (run locally with Ollama) offered for one-click download:
@@ -1453,10 +1453,46 @@ def title_pieces(title: str, prefix: str = "", date: str = "", pos: str = "off",
     return pieces if "".join(t for _, t in pieces) == full else [("title", full)]
 
 
-def strip_title_extras(title: str, prefix: str = "", date: str = "", location: str = "") -> str:
-    """The bare title: remove your text before titles, the location and the date taken (in any of the
-    positions and separators compose_title uses), so only the description itself is left."""
+# the location in an editorial dateline: anything up to 80 characters that isn't a spaced dash (so it never
+# swallows part of the title) and has no colon or brackets ("Saint-Tropez, France" is fine)
+_DL_LOC = r"(?:(?!\s+[|–—-]\s)[^:()\[\]\n]){1,80}?"
+
+
+def _dateline_res(date: str):
+    """Patterns for 'Any Location - <date>' at the start of a title, and '- Any Location - <date>' or
+    '(Any Location - <date>)' at the end. Group 1 is the location."""
+    d = re.escape(date)
+    start = re.compile(r"^\s*[\(\[]?\s*(" + _DL_LOC + r")\s*[,;|–—-]?\s*" + d + r"\s*[\)\]]?\s*[:,;|–—-]*\s*(?=\S)",
+                       re.I)                                          # (a title must follow)
+    end = re.compile(r"\s+(?:[|–—-]+\s*|[\(\[]\s*)(" + _DL_LOC + r")\s*[,;|–—-]?\s*" + d + r"\s*[\)\]]?\s*$",
+                     re.I)
+    return start, end
+
+
+def dateline_location(title: str, prefix: str = "", date: str = "") -> str:
+    """The location written in front of (or after) the date in an editorial title, whatever it is:
+    'Kyoto, Japan - October 26, 2026: Temple Gate' -> 'Kyoto, Japan'. '' when there's none."""
     t = (title or "").strip()
+    if not date or not t:
+        return ""
+    start, end = _dateline_res(date)
+    for x in (t, t[len(prefix.strip()):].strip() if prefix.strip() and t.casefold().startswith(
+            prefix.strip().casefold()) else ""):
+        m = start.search(x) if x else None
+        if m:
+            return m.group(1).strip(" ,;|–—-")
+    m = end.search(t)
+    return m.group(1).strip(" ,;|–—-") if m else ""
+
+
+def strip_title_extras(title: str, prefix: str = "", date: str = "", location: str = "",
+                       any_location: bool = False) -> str:
+    """The bare title: remove your text before titles, the location and the date taken (in any of the
+    positions and separators compose_title uses), so only the description itself is left.
+    any_location: also remove a location that isn't `location` when it sits right next to the date
+    (a title from an earlier session, before the location was changed)."""
+    t = (title or "").strip()
+    generic = _dateline_res(date) if (any_location and date) else None
     seps = r"[\s,;:|–—-]*"
     location = (location or "").strip()
     pats = []
@@ -1466,6 +1502,8 @@ def strip_title_extras(title: str, prefix: str = "", date: str = "", location: s
         pats.append(re.escape(date))
 
     def drop_start(x):
+        if generic:
+            x = generic[0].sub("", x, count=1)
         for p in pats:
             x = re.sub(r"^\s*[\(\[]?\s*" + p + r"\s*[\)\]]?" + seps, "", x, flags=re.I)
         if location:   # the location on its own only counts when punctuation follows it ("Durham:" not "Durham Bulls")
@@ -1476,6 +1514,8 @@ def strip_title_extras(title: str, prefix: str = "", date: str = "", location: s
     if prefix and t.casefold().startswith(prefix.strip().casefold()):
         t = t[len(prefix.strip()):].strip()                     # your text before titles
     t = drop_start(t)                                            # location/date just before the title
+    if generic:
+        t = generic[1].sub("", t, count=1)
     for p in pats:                                               # location/date after the title
         t = re.sub(r"[\s,;|–—-]*[\(\[]?\s*" + p + r"\s*[\)\]]?\s*$", "", t, flags=re.I)
     if location:
