@@ -1,5 +1,12 @@
 # What's new
 
+## 2026.10.29.2
+
+- **Open in StockUp:** a new **Open in StockUp** button (and right-click → **Open in StockUp**) hands the saved photos to [StockUp](https://github.com/kefirman9000/stockup), which checks them against each stock site's rules and uploads them to Shutterstock, Adobe Stock and the others. It uses the checked photos, else the selected ones, else all shown. Photos from one folder open right where they are, with only those photos in the batch.
+- **Save, then open:** if some of the photos have unsaved titles or keywords, you can **Save and open in StockUp** in one click (StockUp reads them from the files, so it would otherwise see the old ones), or open only the saved ones.
+- **After Save Metadata:** tick **After Save Metadata, open the saved photos in StockUp** in **Settings → Saving** to send every batch on as soon as it's saved.
+- StockUp is found by itself in Applications (Mac) or in the usual folders and Downloads (Windows), or choose it in **Settings → Saving → StockUp**. StockUp.exe, StockUp.app or stockup.py all work. If StockUp is already open, the app asks first, because StockUp only takes photos when it starts.
+
 ## 2026.10.29.1
 
 - **Set the location for many photos at once:** with *Editorial* on, check the photos (or select them) and click **Set for Photos…** next to the location under *Instructions for the AI*, or right-click → **Set location…**. Their titles, location keywords and City / State / Country are changed right away, *without detecting again*: *Tokyo, Japan - October 26, 2026: Temple Gate* becomes *Kyoto, Japan - October 26, 2026: Temple Gate*, and the keyword *tokyo* becomes *kyoto*. Nothing is saved into the files until you save.

@@ -479,6 +479,28 @@ class SettingsDialog(QDialog):
         x2i_hint = QLabel("Leave blank to use the one next to ExifTool, or the copy that comes with this app.")
         x2i_hint.setStyleSheet(f"color:{GREY}")
         f_save.addRow("", x2i_hint)
+        self.stockup = QLineEdit(settings.get("stockup_path", ""))
+        found_su = core.find_stockup("")
+        self.stockup.setPlaceholderText(found_su or "not found: choose it, or download it")
+        self.stockup.setToolTip("StockUp checks your saved photos against each stock site's rules and uploads them.\n"
+                                "Leave blank to find it by itself (Applications on a Mac; on Windows, the usual\n"
+                                "folders and Downloads). StockUp.exe, StockUp.app or stockup.py all work.")
+        su_browse = QPushButton("Browse…")
+        su_browse.clicked.connect(lambda *_: self._browse_stockup())
+        su_row = QHBoxLayout()
+        su_row.addWidget(self.stockup, 1)
+        su_row.addWidget(su_browse)
+        f_save.addRow("StockUp", su_row)
+        su_hint = QLabel(f"<a href='{core.STOCKUP_DOWNLOAD}'>Get StockUp</a> (free): it uploads your saved photos "
+                         "to Shutterstock, Adobe Stock and other sites.")
+        su_hint.setOpenExternalLinks(True)
+        su_hint.setStyleSheet(f"color:{GREY}")
+        f_save.addRow("", su_hint)
+        self.stockup_after = QCheckBox("After Save Metadata, open the saved photos in StockUp")
+        self.stockup_after.setChecked(bool(settings.get("stockup_after_save", False)))
+        self.stockup_after.setToolTip("When the photos you saved with Save Metadata (or Ctrl/⌘+S) are done, they open in\n"
+                                      "StockUp, ready to check and upload. Not after saving a single row.")
+        f_save.addRow("", self.stockup_after)
         # troubleshooting: debug log
         self.debug = QCheckBox("Debug mode: also record every AI request in the log")
         self.debug.setChecked(bool(settings.get("debug_log")))
@@ -558,6 +580,13 @@ class SettingsDialog(QDialog):
         path, _ = QFileDialog.getOpenFileName(self, "Choose xmp2iptc.args", "", "ExifTool args (*.args);;All files (*)")
         if path:
             self.x2i_path.setText(path)
+
+    def _browse_stockup(self):
+        filt = ("StockUp (StockUp.app stockup.py)" if sys.platform == "darwin" else
+                "StockUp (StockUp*.exe stockup.py)" if os.name == "nt" else "StockUp (stockup.py StockUp)")
+        path, _ = QFileDialog.getOpenFileName(self, "Choose StockUp", "", filt + ";;All files (*)")
+        if path:
+            self.stockup.setText(path)
 
     def _browse(self):
         path, _ = QFileDialog.getOpenFileName(self, "Choose ExifTool")
@@ -713,7 +742,8 @@ class SettingsDialog(QDialog):
                  check_updates=self.updates.isChecked(), auto_download=self.auto_update.isChecked(),
                  preload_model=self.preload.isChecked(), keep_model_ready=self.keep_ready.isChecked(),
                  finish_alert=self.finish_alert.currentData() or "both",
-                 never_use=self.never_use.toPlainText().strip(), never_use_titles=self.never_titles.isChecked())
+                 never_use=self.never_use.toPlainText().strip(), never_use_titles=self.never_titles.isChecked(),
+                 stockup_path=self.stockup.text().strip(), stockup_after_save=self.stockup_after.isChecked())
         s["keyword_min"], s["keyword_max"] = core.keyword_range(self.kmin.value(), self.kmax.value())
         return s
 
@@ -1208,6 +1238,7 @@ class MainWindow(QMainWindow):
         self.session_timer.timeout.connect(self._write_session)
         self.pending_restore: dict[str, dict] = {}    # photos being brought back: path -> what was in the list
         self.batch_label, self.batch_started, self.batch_quiet = "", 0.0, False
+        self.stockup_pending: list | None = None      # photos to open in StockUp once they're saved
         self.tray: QSystemTrayIcon | None = None      # only for the "finished" notification
         self.reset_signals = JobSignals()             # reset model / restart Ollama, also on their own threads
         self.reset_signals.done.connect(lambda _k, _r: self._model_reset(""))
@@ -1277,6 +1308,10 @@ class MainWindow(QMainWindow):
             [p for p in self.checked_photos() if not p.busy]))
         self.btn_redo_checked.setToolTip("Redo the checked photos with reasons: tell the AI what's wrong and it tries again")
         self.btn_export = button("Export CSV…", self.export_csv)
+        self.btn_stockup = button("Open in StockUp", self.open_in_stockup)
+        self.btn_stockup.setToolTip("Open the saved photos in StockUp, to check them against each stock site's rules and\n"
+                                    "upload them. Uses the checked photos, else the selected, else all shown.\n"
+                                    "Photos with unsaved changes can be saved first.")
         self.btn_export.setToolTip("Save the titles and keywords as a spreadsheet: Shutterstock or Adobe Stock upload\n"
                                    "format, or every detail. Uses the checked photos, else the selected, else all shown.")
         self.btn_instr = button("Hide Instructions", self.toggle_instructions)
@@ -1289,7 +1324,7 @@ class MainWindow(QMainWindow):
         for w in (self.btn_add, self.btn_folder):
             top.addWidget(w)
         top.addSpacing(16)
-        for w in (self.btn_identify, self.btn_redo_checked, self.btn_save, self.btn_export):
+        for w in (self.btn_identify, self.btn_redo_checked, self.btn_save, self.btn_export, self.btn_stockup):
             top.addWidget(w)
         top.addSpacing(16)
         for w in (self.btn_check_all, self.btn_uncheck_all):
@@ -1855,6 +1890,108 @@ class MainWindow(QMainWindow):
         self.table.setColumnHidden(COL_AVOID, not on)
         self.review.avoid.setVisible(on)
         self.review.avoid_label.setVisible(on)
+
+    # ---------- StockUp
+    def open_in_stockup(self, photos=None):
+        """Open saved photos in StockUp. Photos with unsaved changes can be saved first (StockUp reads the
+        titles and keywords from the files, so it would otherwise see the old ones)."""
+        if photos is None:
+            photos = self.targets()[0]
+        photos = [p for p in photos if not p.busy and p.status != "reading"]
+        if not photos:
+            self.status.setText("No photos to open in StockUp: add some, or wait until they're done.")
+            return
+        unsaved = [p for p in photos if p.changed]
+        ready = [p for p in photos if not p.changed and p.status != "error"]
+        if unsaved:
+            n = len(unsaved)
+            box = QMessageBox(QMessageBox.Question, "Save first?",
+                              f"{n} of these photo{'s have' if n != 1 else ' has'} titles or keywords that aren't saved "
+                              "yet. StockUp reads them from the files, so it would see the old ones.", parent=self)
+            save_btn = box.addButton("Save and open in StockUp", QMessageBox.AcceptRole)
+            only_btn = box.addButton(f"Open only the {len(ready)} saved", QMessageBox.ActionRole) if ready else None
+            box.addButton(QMessageBox.Cancel)
+            box.setDefaultButton(save_btn)
+            box.exec()
+            if box.clickedButton() is save_btn:
+                if not self.exiftool:
+                    self._setup_exiftool()
+                if not self.exiftool:
+                    self.status.setText("ExifTool is needed to save: see the banner above.")
+                    return
+                self.stockup_pending = ready + unsaved  # opened once the save is done
+                self.save_photos(unsaved)
+                return
+            if only_btn is None or box.clickedButton() is not only_btn:
+                return
+        if not ready:
+            self.status.setText("Nothing to open in StockUp: those photos had a problem (see the Status column).")
+            return
+        untagged = sum(1 for p in ready if not p.title.strip() and not p.keywords)
+        if untagged == len(ready) and QMessageBox.question(
+                self, "No titles or keywords",
+                "None of these photos has a title or keywords yet, and the stock sites need them. "
+                "Open them in StockUp anyway?") != QMessageBox.Yes:
+            return
+        self._launch_stockup(ready)
+
+    def _find_stockup_or_ask(self) -> str | None:
+        app_path = core.find_stockup(self.settings.get("stockup_path", ""))
+        if app_path:
+            return app_path
+        box = QMessageBox(QMessageBox.Information, "StockUp wasn't found",
+                          "StockUp checks your saved photos against each stock site's rules and uploads them "
+                          "to Shutterstock, Adobe Stock and the others. It's free.\n\n"
+                          "If you have it, show where it is. If not, download it, then click Open in StockUp again.",
+                          parent=self)
+        choose = box.addButton("Choose StockUp…", QMessageBox.AcceptRole)
+        get = box.addButton("Download StockUp", QMessageBox.ActionRole)
+        box.addButton(QMessageBox.Cancel)
+        box.exec()
+        if box.clickedButton() is get:
+            QDesktopServices.openUrl(QUrl(core.STOCKUP_DOWNLOAD))
+            return None
+        if box.clickedButton() is not choose:
+            return None
+        filt = ("StockUp (StockUp.app stockup.py)" if sys.platform == "darwin" else
+                "StockUp (StockUp*.exe stockup.py)" if os.name == "nt" else "StockUp (stockup.py StockUp)")
+        path, _ = QFileDialog.getOpenFileName(self, "Choose StockUp", "", filt + ";;All files (*)")
+        if not path or not core.find_stockup(path):
+            return None
+        self.settings["stockup_path"] = path
+        core.save_settings(self.settings)
+        return path
+
+    def _launch_stockup(self, photos, failed: int = 0):
+        app_path = self._find_stockup_or_ask()
+        if not app_path:
+            return
+        new_window = False
+        if core.stockup_running(app_path):
+            box = QMessageBox(QMessageBox.Question, "StockUp is already open",
+                              "StockUp is already open, and it only takes photos when it starts.\n\n"
+                              "Close StockUp and click Open in StockUp again, or open the photos in a second "
+                              "StockUp window. If you use two windows, don't upload the same photos from both.",
+                              parent=self)
+            second = box.addButton("Open a second window", QMessageBox.AcceptRole)
+            box.addButton(QMessageBox.Cancel)
+            box.exec()
+            if box.clickedButton() is not second:
+                return
+            new_window = True
+        try:
+            note = core.open_in_stockup(app_path, [p.path for p in photos], new_window)
+        except (OSError, ValueError) as e:
+            core.debug(f"couldn't open StockUp ({app_path}): {e}", always=True)
+            QMessageBox.warning(self, "StockUp", f"StockUp couldn't be opened: {e}")
+            return
+        n = len(photos)
+        folders = len({os.path.dirname(p.path) for p in photos})
+        self.status.setText(
+            f"Opening {n} photo{'s' if n != 1 else ''} in StockUp"
+            + (f" ({note})" if note else
+               " (from several folders, so StockUp copies them into a new batch)" if folders > 1 else "")
+            + "." + (f" {failed} couldn't be saved and weren't sent: see the Status column." if failed else ""))
 
     def _startup_dialogs(self):
         """One after the other, never stacked: bring back the list, then what's new."""
@@ -2596,6 +2733,9 @@ class MainWindow(QMainWindow):
         if not self.settings.get("editorial_on"):
             a.setText(a.text() + "  (tick Editorial first)")
         a.triggered.connect(lambda *_: self.set_location_dialog(idle, "checked" if sel is checked else "selected"))
+        a = menu.addAction("Open in StockUp" if one else f"Open {len(idle)} photos in StockUp")
+        a.setEnabled(bool(idle))
+        a.triggered.connect(lambda *_: self.open_in_stockup(idle))
         a = menu.addAction("Find and replace…")
         a.setEnabled(bool(idle))
         a.triggered.connect(lambda *_: self.find_replace())
@@ -3240,6 +3380,8 @@ class MainWindow(QMainWindow):
         self.btn_remove.setText(f"Remove {rscope} ({len(removable)})" if removable else "Remove")
         self.btn_remove.setEnabled(bool(removable) and not any(p.busy for p in removable))
         self.btn_clear.setEnabled(bool(self.photos) and not busy)
+        targets_now = self.targets()[0]
+        self.btn_stockup.setEnabled(any(not p.busy and p.status != "reading" for p in targets_now))
         visible = self.visible_photos()
         self.btn_check_all.setEnabled(any(not p.checked for p in visible))
         self.btn_uncheck_all.setEnabled(any(p.checked for p in self.photos))
@@ -3309,6 +3451,14 @@ class MainWindow(QMainWindow):
             self.btn_force.hide()
             self.apply_filter()
             self._batch_finished()
+            if self.stockup_pending is not None:
+                pending, self.stockup_pending = self.stockup_pending, None
+                done = [p for p in pending if p in self.photos and not p.busy and not p.changed
+                        and p.status != "error"]
+                if done:
+                    self._launch_stockup(done, failed=len(pending) - len(done))
+                elif pending:
+                    self.status.setText("Nothing was opened in StockUp: the photos weren't saved.")
         self._refresh_buttons()
 
     def stop(self):
@@ -3774,6 +3924,8 @@ class MainWindow(QMainWindow):
                   if self.settings.get("xmp2iptc_on_save", False) else ""))
         if self.settings.get("confirm_save", True) and not self._ask_save(msg):
             return
+        if self.settings.get("stockup_after_save", False):
+            self.stockup_pending = list(targets)      # opened in StockUp once they're saved
         self.save_photos(targets)
 
     def _ask_save(self, msg) -> bool:
