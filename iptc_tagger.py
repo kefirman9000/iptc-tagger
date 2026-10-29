@@ -342,6 +342,20 @@ class SettingsDialog(QDialog):
         trow.addWidget(self.tretry)
         trow.addStretch(1)
         f_ai.addRow("Time limit per photo", trow)
+        self.preload = QCheckBox("Load the model when the app starts")
+        self.preload.setChecked(bool(settings.get("preload_model", True)))
+        self.preload.setToolTip("The model is loaded into memory in the background as soon as the app opens,\n"
+                                "so the first photo starts right away instead of waiting while it loads.\n"
+                                "It uses as much memory as the model's size while it's loaded.")
+        self.keep_ready = QCheckBox("Keep it ready while the app is open")
+        self.keep_ready.setChecked(bool(settings.get("keep_model_ready", True)))
+        self.keep_ready.setToolTip("Ollama unloads a model after 15 minutes without a photo. With this on, it stays\n"
+                                   "loaded for as long as the app is open, and is unloaded 15 minutes after you close it.")
+        mrow = QHBoxLayout()
+        mrow.addWidget(self.preload)
+        mrow.addWidget(self.keep_ready)
+        mrow.addStretch(1)
+        f_ai.addRow("Model in memory", mrow)
         self.symbols = QComboBox()
         for key, label in core.SYMBOL_MODES:
             self.symbols.addItem(label, key)
@@ -666,7 +680,8 @@ class SettingsDialog(QDialog):
                  title_length=self.title_len.currentData() or "detailed",
                  confirm_save=self.confirm_save.isChecked(),
                  read_label=self.read_label.isChecked(), tidy_keywords=self.tidy_kw.isChecked(),
-                 check_updates=self.updates.isChecked(), auto_download=self.auto_update.isChecked())
+                 check_updates=self.updates.isChecked(), auto_download=self.auto_update.isChecked(),
+                 preload_model=self.preload.isChecked(), keep_model_ready=self.keep_ready.isChecked())
         s["keyword_min"], s["keyword_max"] = core.keyword_range(self.kmin.value(), self.kmax.value())
         return s
 
@@ -983,6 +998,16 @@ class MainWindow(QMainWindow):
         self.stats = {"photos": 0, "seconds": 0.0, "kept": 0}
         self.ai = {"version": None, "models": []}
         self.ollama_wait = 0                          # checks left while Ollama starts up
+        self.model_state: dict = {}                   # last answer from Ollama: running / installed / loaded
+        self.model_for = ""                           # the model that state is about
+        self.model_loading = self.model_polling = False
+        self.model_autoloaded = False                 # the start-up load was tried (once per model)
+        self.model_was_ready = False                  # seen loaded: "keep it ready" reloads it if it drops out
+        self.model_error = ""                         # why the last load failed (no automatic retry after that)
+        self.model_touched = float("-inf")            # when it was last loaded or kept ready (never yet)
+        self.model_signals = JobSignals()             # the load runs on its own thread (see load_model_now)
+        self.model_signals.done.connect(lambda _k, _r: self._model_loaded(""))
+        self.model_signals.failed.connect(lambda _k, msg: self._model_loaded(msg or "unknown problem"))
         self.previews: dict[str, QPixmap] = {}   # recent large previews for the review panel
         self._filling = False
         self.exiftool: core.ExifTool | None = None
@@ -998,6 +1023,12 @@ class MainWindow(QMainWindow):
         self._date_options_changed(save=False)
         self._setup_exiftool()
         self._check_ai()
+        self.model_timer = QTimer(self)               # is the model loaded? (Ollama unloads it when idle)
+        self.model_timer.setInterval(10_000)
+        self.model_timer.timeout.connect(self._poll_model)
+        if not os.environ.get("IPTC_TAGGER_OFFLINE"):
+            self.model_timer.start()
+            self._poll_model()
         self._refresh_buttons()
         if core.debugging():
             self.status.setText(f"Debug mode is on: details are written to {core.debug_log_path()}")
@@ -1356,7 +1387,12 @@ class MainWindow(QMainWindow):
         self.btn_stop.hide()
         self.status = QLabel("")
         self.status.setStyleSheet("color:#6b7280")
+        self.model_light = QLabel("<span style='color:#8a8f98'>●</span> Checking the AI model…")
+        self.model_light.setTextFormat(Qt.RichText)
+        self.model_light.linkActivated.connect(self._model_link)
         bottom = QHBoxLayout()
+        bottom.addWidget(self.model_light)
+        bottom.addSpacing(12)
         bottom.addWidget(self.status, 1)
         bottom.addWidget(self.progress, 1)
         bottom.addWidget(self.btn_stop)
@@ -1435,6 +1471,8 @@ class MainWindow(QMainWindow):
         if info["version"] is not None:
             self.ollama_wait = 0
         self.ai = info
+        if (info["version"] is not None) != bool(self.model_state.get("running")) and hasattr(self, "model_timer"):
+            self._poll_model()                        # Ollama started or stopped: update the light now
         model = self.settings["model"]
         if info["version"] is None and self.ollama_wait > 1:
             self.ollama_wait -= 1      # still starting up
@@ -1457,6 +1495,113 @@ class MainWindow(QMainWindow):
             self.ai_banner.show()
         else:
             self.ai_banner.hide()
+
+    # ---------- model status light
+    MODEL_TOUCH_EVERY = 5 * 60   # "keep it ready": renew Ollama's 15-minute timer this often (seconds)
+
+    def _poll_model(self):
+        if self.model_polling:
+            return
+        self.model_polling = True
+        url, model = self.settings["ollama_url"], self.settings["model"]
+        run_job(self, Job("model-state", core.model_state, url, model), self.io_pool,
+                lambda _k, st: self._model_polled(model, st),
+                lambda _k, _m: self._model_polled(model, {"running": False}))
+
+    def _model_polled(self, model, st):
+        self.model_polling = False
+        if model != self.settings["model"]:
+            return self._poll_model()                 # the model was changed in Settings meanwhile
+        if model != self.model_for:                   # a different model: start afresh
+            self.model_for, self.model_autoloaded, self.model_was_ready, self.model_error = model, False, False, ""
+        if bool(st.get("running")) != (self.ai.get("version") is not None) and not self.ollama_wait:
+            self._check_ai()                          # Ollama started or stopped: refresh the banner too
+        self.model_state = st
+        ai_busy = any(p.busy and p.status == "identifying" for p in self.photos)
+        if not ai_busy:
+            self.models_loaded = bool(st.get("loaded"))   # unloaded while idle: the next photo gets load time
+        if st.get("loaded"):
+            self.model_was_ready, self.model_error = True, ""
+            if (self.settings.get("keep_model_ready", True) and not ai_busy and not self.model_loading
+                    and time.monotonic() - self.model_touched > self.MODEL_TOUCH_EVERY):
+                self.load_model_now(quiet=True)       # instant: it only renews the timer
+        elif st.get("installed") and not self.model_loading and not self.model_error and not ai_busy:
+            if self.settings.get("preload_model", True) and not self.model_autoloaded:
+                self.load_model_now()
+            elif self.settings.get("keep_model_ready", True) and self.model_was_ready:
+                self.load_model_now()                 # dropped out of memory (Ollama restarted…): load it again
+        self._show_model_light()
+
+    def load_model_now(self, quiet: bool = False):
+        """Load the model in the background. It runs on its own thread rather than the AI queue, so
+        closing the app never waits for it."""
+        if self.model_loading:
+            return
+        self.model_loading, self.model_autoloaded, self.model_error = True, True, ""
+        self.model_touched = time.monotonic()
+        url, model, sig = self.settings["ollama_url"], self.settings["model"], self.model_signals
+        if not quiet:
+            core.debug(f"loading {model} into memory")
+            self._show_model_light()
+
+        def work():
+            try:
+                core.load_model(url, model)
+                sig.done.emit("load", None)
+            except Exception as e:
+                sig.failed.emit("load", str(e))
+        threading.Thread(target=work, name="load-model", daemon=True).start()
+
+    def _model_loaded(self, error: str):
+        self.model_loading = False
+        self.model_touched = time.monotonic()
+        if error:
+            self.model_error = error
+            core.debug(f"couldn't load {self.settings['model']}: {error}", always=True)
+        else:
+            self.model_state = dict(self.model_state, running=True, installed=True, loaded=True)
+            self.model_was_ready = True
+            if not any(p.busy and p.status == "identifying" for p in self.photos):
+                self.models_loaded = True
+        self._show_model_light()
+        self._poll_model()                            # (also reads where it was loaded: graphics card or not)
+
+    def _show_model_light(self):
+        st, model = self.model_state, self.settings["model"]
+        dot = lambda color: f"<span style='color:{color};font-size:15px'>●</span>&nbsp;"
+        green, amber, red = "#2e9d57", "#d4a017", "#d64545"
+        if self.model_loading and not st.get("loaded"):   # (renewing a loaded model stays green)
+            text, tip = dot(amber) + f"Loading {model}…", "Loading the model into memory. This takes a little while."
+        elif not st.get("running"):
+            text = dot(red) + "Ollama isn't running &nbsp;<a href='open-ollama'>Open it</a>"
+            tip = "The AI runs on your computer with Ollama."
+        elif st.get("loaded"):
+            gpu = st.get("on_gpu")
+            where = ("" if gpu is None else " on the graphics card" if gpu > 0.95
+                     else " on the processor (slower)" if gpu < 0.05 else f", {gpu:.0%} on the graphics card")
+            text = dot(green) + f"{model} ready"
+            tip = (f"{model} is loaded{where}: photos start right away."
+                   + (" It's kept ready while the app is open." if self.settings.get("keep_model_ready", True)
+                      else " Ollama unloads it after 15 minutes without a photo."))
+        elif not st.get("installed"):
+            text = dot(red) + f"{model} isn't downloaded &nbsp;<a href='settings'>Settings</a>"
+            tip = "Download the model in Settings (free, one click)."
+        elif self.model_error:
+            text = dot(red) + f"Couldn't load {model} &nbsp;<a href='load'>Try again</a>"
+            tip = f"Ollama said: {self.model_error}"
+        else:
+            text = dot(red) + f"{model} not loaded &nbsp;<a href='load'>Load now</a>"
+            tip = "The model isn't in memory, so the first photo waits while it loads. Load it now to skip that."
+        self.model_light.setText(text)
+        self.model_light.setToolTip(tip)
+
+    def _model_link(self, link):
+        if link == "load":
+            self.load_model_now()
+        elif link == "open-ollama":
+            self._open_ollama()
+        elif link == "settings":
+            self.open_settings()
 
     def _show_whats_new_once(self):
         """After an update (or the first start), show what's new, once."""
@@ -1694,6 +1839,7 @@ class MainWindow(QMainWindow):
             self._setup_exiftool()
             self.refresh_type_combos()
         self._check_ai()   # a model may have been downloaded even if Settings was cancelled
+        self._poll_model()
         self._refresh_buttons()
 
     # ---------- adding photos

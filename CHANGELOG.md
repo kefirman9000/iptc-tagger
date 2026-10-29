@@ -1,5 +1,12 @@
 # What's new
 
+## 2026.10.28.3
+
+- **Model status light:** the bottom left of the window shows whether the AI model is ready. **Green**: it's loaded and photos start right away (hover to see whether it's on the graphics card or the processor). **Amber**: it's loading. **Red**: it isn't loaded (click **Load now**), it isn't downloaded, or Ollama isn't running (click **Open it**).
+- **Load the model when the app starts:** the model now loads in the background as soon as the app opens, so the first photo no longer waits while it loads.
+- **Keep it ready:** Ollama unloads a model after 15 minutes without a photo. While the app is open, it's now kept loaded, and it's unloaded 15 minutes after you close the app. Both options are in **Settings → AI → Model in memory**.
+- **Fewer time-outs after a break:** the first photo after the model was unloaded gets the extra loading time again, as the very first photo does. Before, it could run out of time.
+
 ## 2026.10.28.2
 
 - **Check for Updates button:** a **Check for Updates** button now sits next to **Settings** at the top of the window. It answers in the blue banner: the new version with *Yes, download it*, *You have the latest version ✓*, or *GitHub couldn't be reached* with **Try again**. When a new version is found, the button changes to **Update Available**, and once it's downloaded, to **Restart to Update**. **Settings → General → Check now** also says now whether you're up to date or the check couldn't get through, instead of one message for both.
