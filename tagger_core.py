@@ -39,7 +39,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.10.28.1"
+APP_VERSION = "2026.10.28.2"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 
 # Free vision models (run locally with Ollama) offered for one-click download:
@@ -396,10 +396,14 @@ def is_newer(latest: str, current: str = APP_VERSION) -> bool:
     return version_tuple(latest) > version_tuple(current)
 
 
-def check_for_update(current: str = APP_VERSION, opener=None, timeout: float = 6) -> dict | None:
+def check_for_update(current: str = APP_VERSION, opener=None, timeout: float = 6,
+                     status: dict | None = None) -> dict | None:
     """Ask GitHub for the latest release. Returns {'version', 'url', 'notes'} if it's newer than
     `current`, else None. Only the public release info is fetched; nothing is sent about you or your
-    photos. Any problem (offline, GitHub unreachable, no releases) just means 'no update'."""
+    photos. Any problem (offline, GitHub unreachable, no releases) just means 'no update'.
+    `status`, if given, gets 'reached' (could GitHub be asked?) and 'latest' (its newest version)."""
+    if status is not None:
+        status.update(reached=False, latest="")
     req = urllib.request.Request(UPDATE_API, headers={"User-Agent": f"{APP_NAME}/{current}",
                                                      "Accept": "application/vnd.github+json"})
     try:
@@ -411,6 +415,8 @@ def check_for_update(current: str = APP_VERSION, opener=None, timeout: float = 6
     tag = str(info.get("tag_name") or "")
     version = tag.lstrip("vV")
     debug(f"update check: running {current}, latest release {version or '?'}")
+    if status is not None:
+        status.update(reached=True, latest=version)
     if not version or info.get("draft") or info.get("prerelease") or not is_newer(version, current):
         return None
     assets = {a.get("name", ""): a.get("browser_download_url", "") for a in info.get("assets") or []

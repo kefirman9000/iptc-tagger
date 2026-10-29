@@ -1,5 +1,9 @@
 # What's new
 
+## 2026.10.28.2
+
+- **Check for Updates button:** a **Check for Updates** button now sits next to **Settings** at the top of the window. It answers in the blue banner: the new version with *Yes, download it*, *You have the latest version ✓*, or *GitHub couldn't be reached* with **Try again**. When a new version is found, the button changes to **Update Available**, and once it's downloaded, to **Restart to Update**. **Settings → General → Check now** also says now whether you're up to date or the check couldn't get through, instead of one message for both.
+
 ## 2026.10.28.1
 
 - **Open Ollama from the app:** when Ollama isn't running, the banner, **Settings** and the *Detect* message now offer **Open Ollama** as well as the download link. It starts Ollama if it's installed and checks again by itself every couple of seconds until it's ready. If Ollama can't be found on the computer, the app offers to download it instead.
