@@ -83,3 +83,7 @@ python build_standalone.py --out build-output
 ```
 
 To run without building, use `python iptc_tagger.py`. Releases are built automatically by [GitHub Actions](.github/workflows/release.yml) whenever `main` changes; the release is named after `APP_VERSION` in `tagger_core.py`.
+
+## Support IPTC Tagger
+
+IPTC Tagger is free and open source. If it saves you keywording time, you can support its development on **[GitHub Sponsors](https://github.com/sponsors/kefirman9000)**. It helps keep new features and fixes coming. Starring the repo and reporting problems help too.
