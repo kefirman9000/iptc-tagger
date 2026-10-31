@@ -86,4 +86,14 @@ To run without building, use `python iptc_tagger.py`. Releases are built automat
 
 ## Support IPTC Tagger
 
-IPTC Tagger is free and open source. If it saves you keywording time, you can support its development on **[GitHub Sponsors](https://github.com/sponsors/kefirman9000)**. It helps keep new features and fixes coming. Starring the repo and reporting problems help too.
+IPTC Tagger is free. If it saves you keywording time, you can support its development on **[GitHub Sponsors](https://github.com/sponsors/kefirman9000)**. It helps keep new features and fixes coming. Starring the repo and reporting problems help too.
+
+## License and disclaimer
+
+Copyright © 2026 kefirman9000. All rights reserved. IPTC Tagger is free to use for any lawful purpose, including your own professional work. Selling it, redistributing the code or publishing modified versions requires written permission. Third-party components keep their own licenses.
+
+- AI-written titles and keywords can be wrong, misleading or include names and brands that agencies reject. Review them before submitting.
+
+IPTC Tagger is provided **as is**, without warranty of any kind. Use it at your own risk; the author is not liable for any damage, data loss or other loss arising from its use.
+
+IPTC Tagger is an independent project and is not affiliated with, endorsed by or sponsored by any of the companies or products named here. Adobe Stock, Lightroom, Bridge and Photoshop are trademarks of Adobe Inc. Shutterstock is a trademark of Shutterstock, Inc. Photo Mechanic is a trademark of Camera Bits, Inc. Ollama and ExifTool belong to their respective owners.
