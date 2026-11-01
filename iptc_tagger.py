@@ -37,6 +37,8 @@ STATUS_COLORS = {
     "edited": "#b8860b", "saving": "#2f7ddd", "saved": "#2e9d57", "error": "#d64545",
 }
 OLLAMA_DOWNLOAD = "https://ollama.com/download"
+WARN_BG = (255, 176, 0, 60)   # amber tint (RGBA) for titles and keywords that break a stock site's rule
+WARN_FG = "#c98a00"
 
 
 # --------------------------------------------------------------------------- background jobs
@@ -113,10 +115,11 @@ class NoWheelComboBox(QComboBox):
 
 def make_image(path: str, size: int) -> QImage:
     """Upright preview, made from a reduced decode so big photos stay fast."""
-    from PIL import Image, ImageOps
-    with Image.open(path) as im:
+    from PIL import ImageOps
+    src, needs_turn = core.open_image(path)          # RAW files: their embedded JPEG preview
+    with src as im:
         im.draft("RGB", (size * 2, size * 2))
-        im = ImageOps.exif_transpose(im).convert("RGB")
+        im = (ImageOps.exif_transpose(im) if needs_turn else im).convert("RGB")
         im.thumbnail((size, size))
         data = im.tobytes("raw", "RGB")
         qimg = QImage(data, im.width, im.height, im.width * 3, QImage.Format_RGB888)
@@ -179,10 +182,11 @@ FILTERS = [
     ("unchecked", "Not checked"),
     ("no_date", "No date taken"),
     ("has_note", "With photo notes or Avoid"),
+    ("site_problems", "Breaks a stock site's rules"),
 ]
 
 
-def photo_matches(ph, key: str, search: str = "", keyword_min: int = 0) -> bool:
+def photo_matches(ph, key: str, search: str = "", keyword_min: int = 0, sites=()) -> bool:
     """Does this photo pass the Show filter and the search? The search looks in the file name,
     title and keywords; every word typed must appear somewhere (in any order, any case)."""
     ok = {
@@ -198,6 +202,7 @@ def photo_matches(ph, key: str, search: str = "", keyword_min: int = 0) -> bool:
         "unchecked": not ph.checked,
         "no_date": not ph.taken,
         "has_note": bool(ph.note.strip() or ph.avoid.strip()),
+        "site_problems": bool(core.site_problems(ph.title, ph.keywords, sites)) if key == "site_problems" else True,
     }.get(key, True)
     if not ok:
         return False
@@ -317,7 +322,7 @@ class SettingsDialog(QDialog):
         ai_lay.addLayout(adv)
 
         # ----- the other settings, one form per page
-        f_ai, f_text, f_save, f_types, f_general = (QFormLayout() for _ in range(5))
+        f_ai, f_text, f_save, f_types, f_general, f_sites = (QFormLayout() for _ in range(6))
         kmin, kmax = core.keyword_range(settings.get("keyword_min"), settings.get("keyword_max"))
         self.kmin, self.kmax = QSpinBox(), QSpinBox()
         for box, val in ((self.kmin, kmin), (self.kmax, kmax)):
@@ -558,10 +563,49 @@ class SettingsDialog(QDialog):
                                      "flash (Windows) or the Dock icon bounce (Mac). Not after you press Stop.")
         f_general.addRow("When a batch finishes", self.finish_alert)
 
+        # ----- stock sites: whose title and keyword rules to check
+        f_sites.addRow(QLabel("Titles and keywords that break a site's rules are marked in amber, listed in the side "
+                              "panel, and found with <b>Show → Breaks a stock site's rules</b>. These are the same "
+                              "rules StockUp checks before uploading."))
+        f_sites.itemAt(f_sites.rowCount() - 1, QFormLayout.SpanningRole).widget().setWordWrap(True)
+        from_su = core.stockup_sites()
+        self.sites_from_su = QCheckBox("Use the sites ticked in StockUp" + (
+            f" ({', '.join(core.STOCK_SITES[k]['label'] for k in from_su)})" if from_su else
+            " (StockUp isn't set up on this computer yet)"))
+        self.sites_from_su.setChecked(bool(settings.get("stock_sites_from_stockup", True)))
+        self.sites_from_su.setEnabled(bool(from_su))
+        f_sites.addRow(self.sites_from_su)
+        chosen = settings.get("stock_sites")
+        chosen = core.DEFAULT_STOCK_SITES if not isinstance(chosen, list) else chosen
+        sgrid = QGridLayout()
+        self.site_boxes = {}
+        for i, (key, rule) in enumerate(core.STOCK_SITES.items()):
+            cb = QCheckBox(rule["label"])
+            cb.setChecked(key in chosen)
+            limits = []
+            if rule.get("title_max"):
+                limits.append(f"title up to {rule['title_max']} characters")
+            if rule.get("desc_max"):
+                limits.append(f"description up to {rule['desc_max']} characters")
+            if rule.get("desc_min_words"):
+                limits.append(f"at least {rule['desc_min_words']} words")
+            if rule.get("kw_min") or rule.get("kw_max"):
+                limits.append(f"{rule.get('kw_min', 1)}–{rule['kw_max']} keywords" if rule.get("kw_max")
+                              else f"at least {rule['kw_min']} keywords")
+            cb.setToolTip(", ".join(limits).capitalize() if limits else "No title or keyword limits")
+            self.site_boxes[key] = cb
+            sgrid.addWidget(cb, i // 2, i % 2)
+        self.sites_grid = QWidget()
+        self.sites_grid.setLayout(sgrid)
+        f_sites.addRow("Sites I sell on", self.sites_grid)
+        sync = lambda *_: self.sites_grid.setEnabled(not (self.sites_from_su.isChecked() and bool(from_su)))
+        self.sites_from_su.toggled.connect(sync)
+        sync()
+
         # ----- pages
         self.pages = QTabWidget()
         for title, widgets in (("AI", [ai, f_ai]), ("Titles && keywords", [f_text]), ("Saving", [f_save]),
-                               ("Photo types", [f_types]), ("General", [f_general])):
+                               ("Stock sites", [f_sites]), ("Photo types", [f_types]), ("General", [f_general])):
             page = QWidget()
             pl = QVBoxLayout(page)
             for w in widgets:
@@ -743,7 +787,9 @@ class SettingsDialog(QDialog):
                  preload_model=self.preload.isChecked(), keep_model_ready=self.keep_ready.isChecked(),
                  finish_alert=self.finish_alert.currentData() or "both",
                  never_use=self.never_use.toPlainText().strip(), never_use_titles=self.never_titles.isChecked(),
-                 stockup_path=self.stockup.text().strip(), stockup_after_save=self.stockup_after.isChecked())
+                 stockup_path=self.stockup.text().strip(), stockup_after_save=self.stockup_after.isChecked(),
+                 stock_sites=[k for k, cb in self.site_boxes.items() if cb.isChecked()],
+                 stock_sites_from_stockup=self.sites_from_su.isChecked())
         s["keyword_min"], s["keyword_max"] = core.keyword_range(self.kmin.value(), self.kmax.value())
         return s
 
@@ -794,6 +840,8 @@ class ReviewPanel(QWidget):
         self.keywords.setTabChangesFocus(True)
         self.kw_info = QLabel()
         self.kw_info.setStyleSheet(f"color:{GREY}")
+        self.kw_info.setWordWrap(True)
+        self.kw_info.setTextFormat(Qt.RichText)
 
         def lbl(text):
             l = QLabel(f"<b>{text}</b>")
@@ -930,8 +978,12 @@ class ReviewPanel(QWidget):
         status = self.win.status_text(ph)
         self.state.setText(f"<span style='color:{status[1]}'>{status[0]}</span>")
         info = f"{len(ph.title)} characters"
+        problems = self.win.site_problems(ph)
         self.title_info.setText(info)
-        self.kw_info.setText(f"{len(ph.keywords)} keyword{'s' if len(ph.keywords) != 1 else ''}")
+        kw = f"{len(ph.keywords)} keyword{'s' if len(ph.keywords) != 1 else ''}"
+        if problems:
+            kw += "".join(f"<br><span style='color:{WARN_FG}'>⚠ {p}</span>" for p in problems)
+        self.kw_info.setText(kw)
         can_write = self.win.exiftool is not None
         self.b_save.setEnabled(ph.changed and not busy and can_write)
         self.b_save_next.setEnabled(not busy and (can_write or not ph.changed))
@@ -992,7 +1044,7 @@ class DropPage(QLabel):
         super().__init__()
         self.setAlignment(Qt.AlignCenter)
         self.setWordWrap(True)
-        self.setText("<div style='font-size:22px;font-weight:600'>Drop JPEG photos or folders here</div>"
+        self.setText("<div style='font-size:22px;font-weight:600'>Drop JPEG or RAW photos or folders here</div>"
                      f"<div style='margin-top:10px;color:{GREY}'>Folders are searched including subfolders.<br>"
                      "Or use Add Photos / Add Folder above.</div>")
         self.setStyleSheet("QLabel{border:2px dashed #9aa3ad;border-radius:14px;margin:18px;padding:40px}")
@@ -1018,6 +1070,76 @@ def show_whats_new(parent, since: str = "", full: bool = False) -> bool:
     lay.addWidget(ok)
     dlg.exec()
     return True
+
+
+def scan_watch_folder(folder: str) -> dict:
+    """Every JPEG and RAW photo in a watched folder (subfolders included) -> (size, modified time).
+    StockUp's own output folders are left out, so its copies never come back in."""
+    found = {}
+    for root, dirs, files in os.walk(folder):
+        dirs[:] = [d for d in dirs if not d.startswith(".") and d.lower() not in ("stockup_output", ".update_backup")]
+        for f in files:
+            path = os.path.join(root, f)
+            if core.is_jpeg(path) or core.is_raw(path):
+                try:
+                    st = os.stat(path)
+                except OSError:
+                    continue
+                found[os.path.abspath(path)] = (st.st_size, st.st_mtime)
+    return found
+
+
+class WatchDialog(QDialog):
+    """Watch a folder (e.g. Lightroom's export folder): new photos are added to the list as they arrive."""
+
+    def __init__(self, parent, folder: str, detect: bool, watching: bool):
+        super().__init__(parent)
+        self.setWindowTitle("Watch a folder")
+        self.setMinimumWidth(520)
+        lay = QVBoxLayout(self)
+        hint = QLabel("New JPEG and RAW photos that appear in this folder (or its subfolders) are added to the list "
+                      "by themselves, a few seconds after they're finished writing. Point it at the folder Lightroom "
+                      "exports to, and every export lands here ready to tag. Photos already in the folder aren't "
+                      "added: use Add Folder for those.")
+        hint.setWordWrap(True)
+        lay.addWidget(hint)
+        row = QHBoxLayout()
+        self.folder = QLineEdit(folder)
+        self.folder.setPlaceholderText("Choose a folder…")
+        browse = QPushButton("Browse…")
+        browse.clicked.connect(lambda *_: self._browse())
+        row.addWidget(self.folder, 1)
+        row.addWidget(browse)
+        lay.addLayout(row)
+        self.detect = QCheckBox("Run Detect on new photos that don't have a title and keywords yet")
+        self.detect.setChecked(detect)
+        lay.addWidget(self.detect)
+        self.buttons = QDialogButtonBox()
+        self.start_btn = self.buttons.addButton("Watch this folder" if not watching else "Keep watching",
+                                                QDialogButtonBox.AcceptRole)
+        self.stop_btn = self.buttons.addButton("Stop watching", QDialogButtonBox.DestructiveRole) if watching else None
+        self.buttons.addButton(QDialogButtonBox.Cancel)
+        self.choice = ""
+        self.buttons.clicked.connect(self._clicked)
+        lay.addWidget(self.buttons)
+
+    def _browse(self):
+        d = QFileDialog.getExistingDirectory(self, "Folder to watch", self.folder.text() or os.path.expanduser("~"))
+        if d:
+            self.folder.setText(d)
+
+    def _clicked(self, btn):
+        if btn is self.start_btn:
+            if not os.path.isdir(self.folder.text().strip()):
+                QMessageBox.warning(self, "Watch a folder", "Choose a folder that exists first.")
+                return
+            self.choice = "start"
+            self.accept()
+        elif btn is self.stop_btn:
+            self.choice = "stop"
+            self.accept()
+        else:
+            self.reject()
 
 
 class LocationDialog(QDialog):
@@ -1210,6 +1332,7 @@ class MainWindow(QMainWindow):
         self.setAcceptDrops(True)
 
         self.settings = core.load_settings()
+        self._sites = None                 # stock sites whose rules are checked (worked out when first needed)
         core.set_debug(self.settings.get("debug_log", False))
         self.photos: list[Photo] = []
         self.rows: dict[str, int] = {}
@@ -1274,6 +1397,13 @@ class MainWindow(QMainWindow):
         if self.settings.get("check_updates", True) and not os.environ.get("IPTC_TAGGER_OFFLINE"):
             self.check_updates()
         QTimer.singleShot(400, self._startup_dialogs)  # once the window is on screen
+        self.watch_timer = QTimer(self)
+        self.watch_timer.setInterval(4000)
+        self.watch_timer.timeout.connect(self._watch_scan)
+        self.watch_scanning, self.watch_folder, self.watch_baseline = False, "", None
+        self.watch_last, self.watch_added, self.watch_detect_pending = {}, set(), set()
+        if self.settings.get("watch_on") and os.path.isdir(self.settings.get("watch_folder", "")):
+            QTimer.singleShot(1500, lambda: self.start_watching(self.settings["watch_folder"]))
         if self.custom_date_value():
             self.status.setText("Custom date is on: titles use "
                                 + core.format_date(self.custom_date_value(), "long")
@@ -1294,6 +1424,9 @@ class MainWindow(QMainWindow):
 
         self.btn_add = button("Add Photos…", self.add_photos_dialog, QStyle.SP_FileIcon)
         self.btn_folder = button("Add Folder…", self.add_folder_dialog, QStyle.SP_DirOpenIcon)
+        self.btn_watch = button("Watch Folder…", self.watch_dialog, QStyle.SP_DirLinkIcon)
+        self.btn_watch.setToolTip("Add new photos by themselves as they appear in a folder,\n"
+                                  "e.g. the folder Lightroom exports to (and optionally Detect them)")
         self.btn_identify = button("Detect", self.identify, primary=True)
         self.btn_save = button("Save Metadata", self.save, QStyle.SP_DialogSaveButton, primary=True)
         self.btn_remove = button("Remove", self.remove_checked, QStyle.SP_TrashIcon)
@@ -1325,7 +1458,7 @@ class MainWindow(QMainWindow):
                                     "version is out.\nNothing is downloaded unless you say so.")
 
         top = QHBoxLayout()
-        for w in (self.btn_add, self.btn_folder):
+        for w in (self.btn_add, self.btn_folder, self.btn_watch):
             top.addWidget(w)
         top.addSpacing(16)
         for w in (self.btn_identify, self.btn_redo_checked, self.btn_save, self.btn_export):
@@ -1722,6 +1855,7 @@ class MainWindow(QMainWindow):
             try:
                 ver = core.ExifTool(exe).version()
                 self.exiftool = core.ExifTool(exe)
+                core.set_preview_exiftool(self.exiftool)
                 self.status.setText(f"ExifTool {ver} ready.")
             except core.ExifToolError as e:
                 self.status.setText(f"ExifTool problem: {e}")
@@ -1905,8 +2039,11 @@ class MainWindow(QMainWindow):
         if photos is None:
             photos = self.targets()[0]
         photos = [p for p in photos if not p.busy and p.status != "reading"]
+        raws = [p for p in photos if core.is_raw(p.path)]
+        photos = [p for p in photos if not core.is_raw(p.path)]   # stock sites take JPEGs: export RAWs first
         if not photos:
-            self.status.setText("No photos to open in StockUp: add some, or wait until they're done.")
+            self.status.setText("No JPEGs to open in StockUp: RAW files go to Lightroom first, then export JPEGs."
+                                if raws else "No photos to open in StockUp: add some, or wait until they're done.")
             return
         unsaved = [p for p in photos if p.changed]
         ready = [p for p in photos if not p.changed and p.status != "error"]
@@ -1999,6 +2136,92 @@ class MainWindow(QMainWindow):
             + (f" ({note})" if note else
                " (from several folders, so StockUp copies them into a new batch)" if folders > 1 else "")
             + "." + (f" {failed} couldn't be saved and weren't sent: see the Status column." if failed else ""))
+
+    # ---------- watch a folder (Lightroom exports)
+    def watch_dialog(self):
+        s = self.settings
+        dlg = WatchDialog(self, s.get("watch_folder", ""), bool(s.get("watch_detect", True)), self.watching())
+        if not dlg.exec():
+            return
+        s["watch_detect"] = dlg.detect.isChecked()
+        if dlg.choice == "stop":
+            self.stop_watching()
+        else:
+            s["watch_folder"] = os.path.abspath(dlg.folder.text().strip())
+            self.start_watching(s["watch_folder"])
+        core.save_settings(s)
+
+    def watching(self) -> bool:
+        return self.watch_timer.isActive()
+
+    def start_watching(self, folder: str):
+        self.watch_folder = folder
+        self.watch_baseline = None            # filled in by the first scan: what's already there is left alone
+        self.watch_last = {}
+        self.watch_added = set()
+        self.settings["watch_on"] = True
+        self.watch_timer.start()
+        self._watch_scan()
+        name = os.path.basename(folder.rstrip("\\/")) or folder
+        self.btn_watch.setText(f"Watching: {name}")
+        self.btn_watch.setToolTip(f"Watching {folder}\nNew photos there are added by themselves. Click to change or stop.")
+        self.status.setText(f"Watching {folder} for new photos.")
+
+    def stop_watching(self):
+        self.watch_timer.stop()
+        self.settings["watch_on"] = False
+        self.btn_watch.setText("Watch Folder…")
+        self.btn_watch.setToolTip("Add new photos by themselves as they appear in a folder,\n"
+                                  "e.g. the folder Lightroom exports to (and optionally Detect them)")
+        self.status.setText("Stopped watching the folder.")
+
+    def _watch_scan(self):
+        if self.watch_scanning or not self.watching():
+            return
+        folder = self.watch_folder
+        if not os.path.isdir(folder):
+            self.status.setText(f"The watched folder isn't there right now: {folder}")
+            return
+        self.watch_scanning = True
+        run_job(self, Job("watch", scan_watch_folder, folder), self.io_pool, self._watch_scanned,
+                lambda *_: setattr(self, "watch_scanning", False))
+
+    def _watch_scanned(self, _key, found: dict):
+        self.watch_scanning = False
+        if not self.watching():
+            return
+        if self.watch_baseline is None:
+            self.watch_baseline = set(found)
+            self.watch_last = found
+            return
+        now = time.time()
+        ready = []
+        for path, sig in found.items():
+            if path in self.watch_baseline or path in self.rows or path in self.watch_added:
+                continue
+            # finished writing: the same size and date as the last look, and not touched for 2 seconds
+            if self.watch_last.get(path) == sig and now - sig[1] > 2 and sig[0] > 0:
+                ready.append(path)
+        self.watch_last = found
+        if not ready:
+            return
+        ready.sort()
+        self.watch_added.update(ready)
+        if self.settings.get("watch_detect", True):
+            self.watch_detect_pending.update(ready)
+        self.add_paths(ready)
+
+    def _watch_detect(self, paths):
+        """New photos from the watched folder: Detect the ones that came without a title and keywords."""
+        todo = []
+        for p in paths:
+            if p in self.watch_detect_pending:
+                self.watch_detect_pending.discard(p)
+                ph = self._photo(p)
+                if ph and not ph.busy and not ph.title.strip() and not ph.keywords and ph.status != "error":
+                    todo.append(ph)
+        if todo:
+            self.identify_photos(todo)
 
     def _startup_dialogs(self):
         """One after the other, never stacked: bring back the list, then what's new."""
@@ -2167,7 +2390,9 @@ class MainWindow(QMainWindow):
             path += ".csv"
         fmt = next((k for (k, label), flt in zip(core.CSV_FORMATS, filters) if flt == chosen), "shutterstock")
         labels = dict(self.type_items())
-        rows = [{"file": os.path.basename(p.path), "folder": os.path.dirname(p.path), "title": p.title,
+        # a RAW's titles are exported for the JPEG Lightroom will make from it (photo.CR3 -> photo.jpg)
+        rows = [{"file": (os.path.splitext(os.path.basename(p.path))[0] + ".jpg") if core.is_raw(p.path)
+                 else os.path.basename(p.path), "folder": os.path.dirname(p.path), "title": p.title,
                  "keywords": list(p.keywords), "editorial": self.is_editorial(p),
                  "type": labels.get(self.effective_type(p), ""), "note": p.note, "taken": p.taken,
                  "saved": not p.changed} for p in photos]
@@ -2370,6 +2595,9 @@ class MainWindow(QMainWindow):
         dlg = SettingsDialog(self, self.settings, core.find_exiftool(""))
         if dlg.exec():
             self.settings = dlg.values()
+            self._sites = None
+            for ph in self.photos:
+                self._show(ph)
             core.set_debug(self.settings.get("debug_log", False))
             self._remember_options()
             self._setup_exiftool()
@@ -2394,7 +2622,8 @@ class MainWindow(QMainWindow):
             self.add_paths(paths)
 
     def add_photos_dialog(self):
-        files, _ = QFileDialog.getOpenFileNames(self, "Add photos", "", "JPEG images (*.jpg *.jpeg *.jpe *.jfif)")
+        files, _ = QFileDialog.getOpenFileNames(self, "Add photos", "", "Photos (*.jpg *.jpeg *.jpe *.jfif " + " ".join("*" + e for e in sorted(core.RAW_EXTS)) + ");;"
+                                                "JPEG images (*.jpg *.jpeg *.jpe *.jfif)")
         if files:
             self.add_paths(files)
 
@@ -2404,8 +2633,8 @@ class MainWindow(QMainWindow):
             self.add_paths([d])
 
     def add_paths(self, paths):
-        self.status.setText("Looking for JPEG photos…")
-        run_job(self, Job("collect", core.collect_jpegs, paths), self.io_pool, self._collected,
+        self.status.setText("Looking for photos…")
+        run_job(self, Job("collect", core.collect_photos, paths), self.io_pool, self._collected,
                 lambda _k, msg: self.status.setText(f"Couldn't read those files: {msg}"))
 
     def _collected(self, _key, result):
@@ -2475,7 +2704,7 @@ class MainWindow(QMainWindow):
         if len(files) - len(new):
             bits.append(f"{len(files) - len(new)} already in the list")
         if skipped:
-            bits.append(f"skipped {skipped} non-JPEG file{'s' if skipped != 1 else ''}")
+            bits.append(f"skipped {skipped} file{'s' if skipped != 1 else ''} that aren't JPEG or RAW photos")
         self.status.setText(", ".join(bits) + ".")
         if new:
             self._read_metadata(new)
@@ -2493,6 +2722,8 @@ class MainWindow(QMainWindow):
                     ph.status, ph.message = "ready", "Ready (existing metadata not read)"
                     self._apply_restore(ph)
                     self._show(ph)
+            if self.watch_detect_pending:
+                self._watch_detect(paths)
             return
         for i in range(0, len(paths), 50):
             chunk = paths[i:i + 50]
@@ -2511,6 +2742,8 @@ class MainWindow(QMainWindow):
             self._apply_restore(ph)
             self._show(ph)
         self._refresh_buttons()
+        if self.watch_detect_pending:
+            self._watch_detect(list(result))
 
     def _metadata_failed(self, key, msg):
         for path in key:
@@ -2529,6 +2762,12 @@ class MainWindow(QMainWindow):
     def _photo(self, path) -> Photo | None:
         row = self.rows.get(path)
         return self.photos[row] if row is not None else None
+
+    def site_problems(self, ph: Photo) -> list[str]:
+        """What the stock sites you sell on would reject in this photo's title and keywords."""
+        if self._sites is None:
+            self._sites = core.stock_sites(self.settings)
+        return core.site_problems(ph.title, ph.keywords, self._sites)
 
     def status_text(self, ph: Photo) -> tuple[str, str]:
         if ph.busy or ph.status in ("error", "saved", "reading"):
@@ -2549,7 +2788,12 @@ class MainWindow(QMainWindow):
                                                              if loc else ""))
         self.table.item(row, COL_TITLE).setText(ph.title)
         self.table.item(row, COL_KEYWORDS).setText(core.keywords_to_text(ph.keywords))
-        self.table.item(row, COL_KEYWORDS).setToolTip(f"{len(ph.keywords)} keywords")
+        problems = self.site_problems(ph)
+        warn = ("\n\n⚠ " + "\n⚠ ".join(problems)) if problems else ""
+        self.table.item(row, COL_TITLE).setToolTip((f"{len(ph.title)} characters" if ph.title else "") + warn)
+        self.table.item(row, COL_KEYWORDS).setToolTip(f"{len(ph.keywords)} keywords" + warn)
+        for col in (COL_TITLE, COL_KEYWORDS):
+            self.table.item(row, col).setBackground(QColor(*WARN_BG) if problems else QColor(0, 0, 0, 0))
         status = self.table.item(row, COL_STATUS)
         text, color = self.status_text(ph)
         status.setText(text)
@@ -3315,7 +3559,8 @@ class MainWindow(QMainWindow):
         key = self.filter_box.currentData() or "all"
         text = self.search.text()
         kmin = core.keyword_range(self.settings.get("keyword_min"), self.settings.get("keyword_max"))[0]
-        hidden = {p.path for p in self.photos if not photo_matches(p, key, text, kmin)}
+        sites = core.stock_sites(self.settings) if key == "site_problems" else ()
+        hidden = {p.path for p in self.photos if not photo_matches(p, key, text, kmin, sites)}
         for p in self.photos:
             self.table.setRowHidden(self.rows[p.path], p.path in hidden)
         newly_hidden = hidden - self.hidden
@@ -4062,9 +4307,14 @@ class MainWindow(QMainWindow):
             if ph.changed:   # file doesn't match what we asked for
                 ph.status, ph.message = "error", "Saved, but the file reads back differently"
             else:
-                synced = " · other XMP copied to IPTC" if self.settings.get("xmp2iptc_on_save", False) else ""
-                ph.status, ph.message = "saved", f"Saved ✓ (image verified unchanged){synced}"
-                self.status.setText(f"Saved {os.path.basename(path)}. Image verified unchanged.")
+                if core.is_raw(path):
+                    car = os.path.basename(core.sidecar_path(path))
+                    ph.status, ph.message = "saved", f"Saved ✓ to {car} (RAW verified unchanged)"
+                    self.status.setText(f"Saved {os.path.basename(path)} into {car}. The RAW file wasn't touched.")
+                else:
+                    synced = " · other XMP copied to IPTC" if self.settings.get("xmp2iptc_on_save", False) else ""
+                    ph.status, ph.message = "saved", f"Saved ✓ (image verified unchanged){synced}"
+                    self.status.setText(f"Saved {os.path.basename(path)}. Image verified unchanged.")
             self._show(ph)
         self._tick()
 

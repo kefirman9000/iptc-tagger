@@ -39,8 +39,12 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.10.29.3"
+APP_VERSION = "2026.11.01.1"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
+# camera RAW files: titles and keywords go into the Lightroom sidecar next to them (photo.xmp), never the RAW.
+# DNG is left out: Lightroom ignores sidecars for DNG and keeps its metadata inside the file itself.
+RAW_EXTS = {".cr2", ".cr3", ".crw", ".nef", ".nrw", ".arw", ".srf", ".sr2", ".raf", ".orf", ".rw2", ".rwl",
+            ".pef", ".srw", ".x3f", ".3fr", ".fff", ".iiq", ".erf", ".mef", ".mos", ".mrw", ".kdc", ".dcr"}
 
 # Free vision models (run locally with Ollama) offered for one-click download:
 # (Ollama model name, label, download size, memory guidance)
@@ -69,19 +73,36 @@ def is_jpeg(path: str) -> bool:
     return (not name.startswith(".")) and os.path.splitext(name)[1].lower() in JPEG_EXTS
 
 
-def collect_jpegs(paths) -> tuple[list[str], int]:
+def is_raw(path: str) -> bool:
+    name = os.path.basename(path)
+    return (not name.startswith(".")) and os.path.splitext(name)[1].lower() in RAW_EXTS
+
+
+def sidecar_path(path: str) -> str:
+    """Lightroom's sidecar for a RAW file: photo.CR3 -> photo.xmp, in the same folder."""
+    return os.path.splitext(path)[0] + ".xmp"
+
+
+def metadata_target(path: str) -> str:
+    """The file titles and keywords are read from and written to: the photo itself for a JPEG, the .xmp sidecar
+    for a RAW file (the RAW is never written to)."""
+    return sidecar_path(path) if is_raw(path) else path
+
+
+def collect_photos(paths, raws: bool = True) -> tuple[list[str], int]:
     """Expand dropped files/folders (folders searched including subfolders).
-    Returns (sorted unique JPEG paths, number of non-JPEG files skipped)."""
+    Returns (sorted unique JPEG and, with raws=True, camera RAW paths, number of other files skipped).
+    Lightroom .xmp sidecars are not counted as skipped: they belong to a RAW file."""
     found, skipped, seen = [], 0, set()
 
     def add(p):
         nonlocal skipped
-        if is_jpeg(p):
+        if is_jpeg(p) or (raws and is_raw(p)):
             key = os.path.normcase(os.path.abspath(p))
             if key not in seen:
                 seen.add(key)
                 found.append(os.path.abspath(p))
-        elif not os.path.basename(p).startswith("."):
+        elif not os.path.basename(p).startswith(".") and not p.lower().endswith(".xmp"):
             skipped += 1
 
     for p in paths:
@@ -93,6 +114,70 @@ def collect_jpegs(paths) -> tuple[list[str], int]:
         elif os.path.isfile(p):
             add(p)
     return found, skipped
+
+
+def collect_jpegs(paths) -> tuple[list[str], int]:
+    """JPEGs only (older callers)."""
+    return collect_photos(paths, raws=False)
+
+
+def file_fingerprint(path: str) -> tuple:
+    """Size, modified time and SHA-256 of a whole file: used to prove a RAW file is never changed."""
+    st = os.stat(path)
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            h.update(block)
+    return st.st_size, st.st_mtime_ns, h.hexdigest()
+
+
+# the embedded JPEGs a RAW file carries, largest first (ExifTool tag names)
+RAW_PREVIEW_TAGS = ["JpgFromRaw", "PreviewImage", "OtherImage", "ThumbnailImage"]
+_preview_et = {"et": None}
+
+
+def set_preview_exiftool(et) -> None:
+    """The ExifTool used to pull the embedded preview out of RAW files (for thumbnails and the AI)."""
+    _preview_et["et"] = et
+
+
+def raw_preview_jpeg(path: str, et=None) -> tuple[bytes, int]:
+    """(the biggest embedded JPEG in a RAW file, the RAW's EXIF orientation 1-8). Read-only."""
+    et = et or _preview_et["et"]
+    if et is None:
+        raise ExifToolError("ExifTool is needed to show RAW files")
+    best = b""
+    for tag in RAW_PREVIEW_TAGS:
+        data = et.binary(tag, path)
+        if data[:2] == b"\xff\xd8" and len(data) > len(best):
+            best = data
+            if tag != "ThumbnailImage" and len(best) > 200_000:
+                break                                   # a full-size preview: good enough
+    if not best:
+        raise ExifToolError("this RAW file has no embedded preview")
+    try:
+        orient = int((et._run(["-n", "-s3", "-Orientation", path], timeout=30).strip() or "1").split()[0])
+    except (ValueError, ExifToolError):
+        orient = 1
+    return best, orient
+
+
+def open_image(path: str):
+    """A Pillow image for any supported photo, already turned upright. RAW files use their embedded JPEG."""
+    from PIL import Image, ImageOps
+    if not is_raw(path):
+        im = Image.open(path)
+        return im, True
+    data, orient = raw_preview_jpeg(path)
+    im = Image.open(io.BytesIO(data))
+    im.load()
+    if im.getexif().get(0x0112, 1) != 1:
+        return im, True                                  # the preview carries its own orientation
+    turn = {3: Image.Transpose.ROTATE_180, 6: Image.Transpose.ROTATE_270, 8: Image.Transpose.ROTATE_90,
+            2: Image.Transpose.FLIP_LEFT_RIGHT, 4: Image.Transpose.FLIP_TOP_BOTTOM}.get(orient)
+    if turn is not None:
+        im = im.transpose(turn)
+    return im, False
 
 
 def jpeg_image_data_hash(path: str) -> str:
@@ -297,6 +382,11 @@ DEFAULT_SETTINGS = {
     "read_label": True,       # read the text on packaging and signs first (one quick extra step per photo)
     "tidy_keywords": True,    # remove filler keywords and put the title's words first
     "auto_download": False,   # download new versions without asking first (installed on restart)
+    "stock_sites": None,      # sites whose title and keyword rules are checked (None = Shutterstock + Adobe Stock)
+    "stock_sites_from_stockup": True,  # use the sites ticked in StockUp, when StockUp is set up on this computer
+    "watch_folder": "",       # folder watched for new photos (e.g. Lightroom's export folder)
+    "watch_on": False,        # watching it now (resumed when the app starts)
+    "watch_detect": True,     # run Detect on new photos that have no title and keywords yet
 }
 
 
@@ -826,6 +916,21 @@ def meta_fields(settings: dict) -> list[str]:
     return [k for k in chosen if k in known]
 
 
+def xmp_only(args: list[str]) -> list[str]:
+    """Drop the IPTC and EXIF writes from an ExifTool argument list: a .xmp sidecar only holds XMP."""
+    keep = []
+    for a in args:
+        if a.startswith(("-IPTC:", "-EXIF:")) or a in ("-charset", "iptc=UTF8"):
+            continue
+        keep.append(a)
+    return keep
+
+
+def wrote_one(out: str) -> bool:
+    """ExifTool's report says it updated (or created, for a new sidecar) the one file."""
+    return any(f"1 image files {w}" in out for w in ("updated", "unchanged", "created"))
+
+
 class ExifTool:
     """Runs ExifTool with an argument file, so any file name or Unicode text is safe."""
 
@@ -867,8 +972,37 @@ class ExifTool:
     def version(self) -> str:
         return self._run(["-ver"], timeout=30).strip()
 
+    def binary(self, tag: str, path: str) -> bytes:
+        """One binary tag (an embedded preview) read straight from a file. Read-only."""
+        kw = {"creationflags": 0x08000000} if os.name == "nt" else {}
+        try:
+            proc = subprocess.run([self.exe, "-charset", "filename=utf8", "-b", "-" + tag, path],
+                                  capture_output=True, stdin=subprocess.DEVNULL, timeout=60, **kw)
+        except (subprocess.TimeoutExpired, OSError) as e:
+            raise ExifToolError(f"couldn't read the preview: {e}")
+        return proc.stdout or b""
+
     def read(self, paths: list[str]) -> dict[str, dict]:
-        """Current title and keywords for each file, keyed by the path given."""
+        """Current title and keywords for each file, keyed by the path given. For a RAW file they come from its
+        .xmp sidecar when it has one (the date taken still comes from the RAW itself, read-only)."""
+        raws = [p for p in paths if is_raw(p)]
+        if not raws:
+            return self._read_files(paths)
+        result = self._read_files(paths)
+        cars = {p: sidecar_path(p) for p in raws if os.path.isfile(sidecar_path(p))}
+        if cars:
+            from_cars = self._read_files(list(cars.values()))
+            for raw, car in cars.items():
+                meta = from_cars.get(car) or {}
+                result[raw] = {"title": meta.get("title", ""), "keywords": list(meta.get("keywords", [])),
+                               "taken": result.get(raw, {}).get("taken", "") or meta.get("taken", "")}
+        for raw in raws:
+            if raw not in cars:                  # no sidecar yet: nothing of ours, only the date taken
+                taken = result.get(raw, {}).get("taken", "")
+                result[raw] = {"title": "", "keywords": [], "taken": taken}
+        return result
+
+    def _read_files(self, paths: list[str]) -> dict[str, dict]:
         result = {}
         for start in range(0, len(paths), 200):
             chunk = paths[start:start + 200]
@@ -940,8 +1074,10 @@ class ExifTool:
         for f in METADATA_FIELDS:
             if f["key"] in fields:
                 args += f["args"](title, keywords, desc, location)
+        if path.lower().endswith(".xmp"):
+            args = xmp_only(args)
         out = self._run(args + [path])
-        if "1 image files updated" not in out and "1 image files unchanged" not in out:
+        if not wrote_one(out):
             raise ExifToolError(out.strip() or "ExifTool did not update the file")
 
 
@@ -964,8 +1100,11 @@ UNDO_PHOTOS = 3000          # photos remembered in the undo file
 
 def snapshot_metadata(et: "ExifTool", path: str) -> dict:
     """Every field a save can change, exactly as it is in the file now ({write name: value or list})."""
+    target = metadata_target(path)
+    if is_raw(path) and not os.path.isfile(target):
+        return {}                                     # no sidecar yet: undo empties the fields again
     out = et._run(["-j", "-G1", "-a", "-api", "struct=0", "-charset", "iptc=UTF8"]
-                  + ["-" + t.split(":", 1)[1] for t, _ in UNDO_TAGS] + [path])
+                  + ["-" + t.split(":", 1)[1] for t, _ in UNDO_TAGS] + [target])
     try:
         rows = json.loads(out) if out.strip() else []
     except ValueError:
@@ -996,8 +1135,11 @@ def restore_metadata(et: "ExifTool", path: str, snap: dict) -> None:
             args.append(f"-{tag}={single_line(v)}")
 
     def run():
-        out = et._run(args + [path])
-        if "1 image files updated" not in out and "1 image files unchanged" not in out:
+        target = metadata_target(path)
+        if is_raw(path) and not os.path.isfile(target):
+            return                                    # no sidecar: nothing to put back
+        out = et._run((xmp_only(args) if target.lower().endswith(".xmp") else args) + [target])
+        if not wrote_one(out):
             raise ExifToolError(out.strip() or "ExifTool did not update the file")
     _guarded(path, run)
 
@@ -1106,6 +1248,83 @@ def open_in_stockup(app_path: str, paths: list[str], new_window: bool = False) -
 
 
 # The photo list, kept as you work so nothing is lost if the app closes unexpectedly ----------------
+# Stock-site text rules, the same ones StockUp checks (from each site's contributor help pages) ---------------
+STOCK_SITES = {
+    "shutterstock": {"label": "Shutterstock", "kw_min": 7, "kw_max": 50, "desc_max": 200, "desc_min_words": 5},
+    "adobe": {"label": "Adobe Stock", "kw_min": 5, "kw_max": 49, "title_max": 70},
+    "dreamstime": {"label": "Dreamstime"},
+    "alamy": {"label": "Alamy"},
+    "istock": {"label": "iStock"},
+    "depositphotos": {"label": "Depositphotos", "kw_min": 8, "kw_max": 50, "desc_max": 250},
+    "123rf": {"label": "123RF", "kw_min": 7, "desc_max": 180},
+    "pond5": {"label": "Pond5", "kw_min": 5, "kw_max": 50, "title_max": 80},
+}
+DEFAULT_STOCK_SITES = ["shutterstock", "adobe"]
+
+
+def stockup_options_path() -> str:
+    """Where StockUp keeps its options (including the sites you sell on)."""
+    if sys.platform == "darwin":
+        d = os.path.expanduser("~/Library/Application Support/StockUp")
+    elif os.name == "nt":
+        d = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), "StockUp")
+    else:
+        d = os.path.join(os.path.expanduser("~"), ".config", "stockup")
+    return os.path.join(d, "stockup_options.json")
+
+
+def stockup_sites() -> list[str] | None:
+    """The sites ticked in StockUp's Settings, or None if StockUp hasn't been set up on this computer."""
+    try:
+        with open(stockup_options_path(), encoding="utf-8") as f:
+            sites = json.load(f).get("my_sites")
+    except (OSError, ValueError, AttributeError):
+        return None
+    if not isinstance(sites, list):
+        return None
+    return [k for k in STOCK_SITES if k in sites] or None
+
+
+def stock_sites(settings: dict) -> list[str]:
+    """The sites whose rules titles and keywords are checked against."""
+    if settings.get("stock_sites_from_stockup", True):
+        found = stockup_sites()
+        if found:
+            return found
+    chosen = settings.get("stock_sites")
+    if not isinstance(chosen, list):
+        chosen = DEFAULT_STOCK_SITES
+    return [k for k in STOCK_SITES if k in chosen]
+
+
+def site_problems(title: str, keywords, sites) -> list[str]:
+    """What a stock site would reject or cut in this title and these keywords, one short line each.
+    The title is also the description/caption (that's what this app saves), so both limits apply to it."""
+    title = (title or "").strip()
+    n = len(keywords or [])
+    out = []
+    if not title and not n:
+        return out                                  # nothing written yet: "No title" says it already
+    for key in sites:
+        r = STOCK_SITES.get(key)
+        if not r:
+            continue
+        bits = []
+        if r.get("title_max") and len(title) > r["title_max"]:
+            bits.append(f"title {len(title)} characters (most {r['title_max']})")
+        if r.get("desc_max") and len(title) > r["desc_max"]:
+            bits.append(f"description {len(title)} characters (most {r['desc_max']})")
+        if r.get("desc_min_words") and title and len(title.split()) < r["desc_min_words"]:
+            bits.append(f"description under {r['desc_min_words']} words")
+        if r.get("kw_min") and n < r["kw_min"]:
+            bits.append(f"{n} keyword{'s' if n != 1 else ''} (at least {r['kw_min']})")
+        if r.get("kw_max") and n > r["kw_max"]:
+            bits.append(f"{n} keywords (most {r['kw_max']})")
+        if bits:
+            out.append(f"{r['label']}: " + ", ".join(bits))
+    return out
+
+
 SUGGESTIONS_PER_PHOTO = 5   # earlier AI suggestions remembered per photo
 
 
@@ -1212,9 +1431,25 @@ def undo_last_save(et: "ExifTool", path: str) -> None:
             _undo_save(data)
 
 
+def _guarded_raw(path: str, action) -> None:
+    """Run a sidecar change for a RAW file, then prove the RAW itself is byte-for-byte the same. Nothing is ever
+    written to the RAW, so this only checks; the sidecar is the only file that changes."""
+    if not is_raw(path):
+        raise ExifToolError("not a RAW file")
+    target = sidecar_path(path)
+    if is_raw(target) or is_jpeg(target):            # never let a photo file be the write target
+        raise ExifToolError("refused: the sidecar name looks like a photo file")
+    before = file_fingerprint(path)
+    action()
+    if file_fingerprint(path) != before:
+        raise ExifToolError("the RAW file changed while saving, which should never happen. Please report this")
+
+
 def _guarded(path: str, action) -> None:
     """Run a metadata change, then prove the picture itself is untouched. If the image data ever
-    differs, the original file is restored exactly and an error raised."""
+    differs, the original file is restored exactly and an error raised. RAW files: see _guarded_raw."""
+    if is_raw(path):
+        return _guarded_raw(path, action)
     before = jpeg_image_data_hash(path)
     st = os.stat(path)
     with open(path, "rb") as f:
@@ -1244,7 +1479,16 @@ def _guarded(path: str, action) -> None:
 def safe_write(et: "ExifTool", path: str, title: str, keywords: list[str], description: str | None = None,
                xmp2iptc_args: str | None = None, fields=None, location: str = "") -> None:
     """Write metadata, then prove the picture itself is untouched. If the image
-    data ever differs, the original file is restored exactly and an error raised."""
+    data ever differs, the original file is restored exactly and an error raised.
+    RAW files: the title and keywords go into the .xmp sidecar only; the RAW is verified unchanged."""
+    if is_raw(path):
+        def to_sidecar():
+            target = sidecar_path(path)
+            if fields is None:
+                et.write(target, title, keywords, description)
+            else:
+                et.write(target, title, keywords, description, fields=fields, location=location)
+        return _guarded_raw(path, to_sidecar)
     before = jpeg_image_data_hash(path)
     st = os.stat(path)
     with open(path, "rb") as f:
@@ -2308,9 +2552,11 @@ def build_revision_prompt(draft_title: str, draft_keywords, keyword_min: int, ke
 def prepare_image(path: str, max_edge: int = PREVIEW_MAX_EDGE) -> str:
     """Small upright JPEG copy for the AI model, made in memory only. Returns base64."""
     from PIL import Image, ImageOps   # imported here so the rest works without Pillow
-    with Image.open(path) as im:
+    src, needs_turn = open_image(path)
+    with src as im:
         im.draft("RGB", (max_edge, max_edge))       # fast reduced-size JPEG decode
-        im = ImageOps.exif_transpose(im)
+        if needs_turn:
+            im = ImageOps.exif_transpose(im)
         im = im.convert("RGB")
         im.thumbnail((max_edge, max_edge), Image.LANCZOS)
         buf = io.BytesIO()

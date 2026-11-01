@@ -1,6 +1,6 @@
 # IPTC Tagger
 
-A free desktop app that writes AI-generated **titles** and **keywords** into the metadata of JPEG photos (IPTC and XMP), ready for Lightroom, Bridge, Photo Mechanic and stock photo sites.
+A free desktop app that writes AI-generated **titles** and **keywords** into the metadata of JPEG photos (IPTC and XMP), and into the Lightroom sidecars of camera RAW files, ready for Lightroom, Bridge, Photo Mechanic and stock photo sites.
 
 The AI runs locally through [Ollama](https://ollama.com): no account, no subscription, no API key, and photos never leave the computer.
 
@@ -28,7 +28,10 @@ No installation and no Python needed. ExifTool is included.
 
 ## Features
 
-- **Drag and drop** JPEGs or whole folders, including subfolders.
+- **Drag and drop** JPEGs, camera RAW files or whole folders, including subfolders.
+- **RAW files:** titles and keywords go into Lightroom's `.xmp` sidecar next to the RAW, so Lightroom carries them into every export. The RAW itself is never written to (it's verified byte for byte), and edits and ratings already in the sidecar are kept. DNG isn't supported, because Lightroom keeps DNG metadata inside the file.
+- **Watch Folder:** point it at Lightroom's export folder and new photos are added (and optionally detected) as they arrive.
+- **Stock-site rules:** titles and keywords that Shutterstock, Adobe Stock or the other sites you sell on would reject are marked in amber with the reason, using the same rules as StockUp.
 - **Detect:** the AI suggests a full, descriptive, SEO-friendly title in Title Case (short, standard or detailed, as you choose) and 30–40 lowercase keywords per photo.
 - **Review and edit** in a table or a side panel with a large preview. Save one photo at a time or many at once.
 - **Instructions for the AI:** one box for facts about the batch and how titles and keywords should be written, plus a note per photo and an optional **Avoid** column (tick *Avoid column*) for what the AI shouldn't say about it. A **Never use** list keeps words like *beautiful* out of every title and keyword.
@@ -67,9 +70,15 @@ The usual fields are written by default. Choose exactly which in **Settings → 
 Everything is written in one ExifTool step. The IPTC title and keywords are written in full, past IPTC's official 64-byte limit, so they match XMP. Optionally, every other XMP field (creator, copyright…) can also be copied to IPTC with ExifTool's `xmp2iptc.args`. This is off by default.
 
 **The image itself is never changed.**
+- RAW files are never written to at all: only `photo.xmp` next to `photo.CR3` is created or updated, and the RAW is compared byte for byte before and after.
 - Only the metadata is rewritten; the image data is never re-encoded.
 - Every file is checked after saving, and restored if the image data differs.
 - File dates are kept, and no backup copies are left behind.
+
+### RAW files and Lightroom
+
+- **Photos you haven't imported yet:** import them; Lightroom reads the titles and keywords from the sidecars.
+- **Photos already in your catalog:** in Lightroom, first select them and use *Metadata → Save Metadata to File*, so the sidecar holds your edits too, then tag them here, then *Metadata → Read Metadata from Files*. Reading a sidecar that has no edits in it would reset those photos' develop settings in Lightroom.
 
 ## Settings and logs
 
@@ -90,7 +99,7 @@ IPTC Tagger is free. If it saves you keywording time, you can support its develo
 
 ## License and disclaimer
 
-Copyright © 2026 kefirman9000. All rights reserved. IPTC Tagger is free to use for any lawful purpose, including your own professional work. Selling it, redistributing the code or publishing modified versions requires written permission. Third-party components keep their own licenses.
+Copyright © 2026 kefirman9000. All rights reserved. See [LICENSE](LICENSE) for the full terms. IPTC Tagger is free to use for any lawful purpose, including your own professional work. Selling it, redistributing the code or publishing modified versions requires written permission. Third-party components keep their own licenses.
 
 - AI-written titles and keywords can be wrong, misleading or include names and brands that agencies reject. Review them before submitting.
 

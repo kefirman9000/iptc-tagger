@@ -1,5 +1,12 @@
 # What's new
 
+## 2026.11.01.1
+
+- **RAW files:** drop CR3, CR2, NEF, ARW, RAF, ORF, RW2 and other camera RAW files in, alongside your JPEGs. Their titles and keywords are saved into Lightroom's **.xmp sidecar** next to the RAW (photo.CR3 → photo.xmp), so Lightroom picks them up and carries them into every JPEG you export. The RAW file itself is never written to: it's checked byte for byte before and after every save. Anything else in the sidecar, like Lightroom or RAW Review edits and star ratings, is kept. The AI and the thumbnails use the preview the camera stores inside the RAW. RAW files aren't sent to StockUp (export JPEGs first), and Export CSV lists them by the name of the JPEG Lightroom will make (photo.jpg). DNG files aren't included: Lightroom keeps their metadata inside the file. For RAW photos already in your Lightroom catalog, see *RAW files and Lightroom* in the README first.
+- **Watch Folder:** a new **Watch Folder…** button next to *Add Folder*. Point it at the folder Lightroom exports to and every new photo that lands there is added to the list by itself, a few seconds after it's finished writing. Tick *Run Detect on new photos* and they get titles and keywords straight away too. Watching carries on after a restart until you stop it.
+- **Stock-site rules while you edit:** titles and keywords that a stock site would reject are tinted amber, with the reason in the tooltip and under the keywords in the side panel (e.g. *Adobe Stock: title 84 characters (most 70)*). **Show → Breaks a stock site's rules** lists them all. The rules are the same ones StockUp checks. Choose your sites in the new **Settings → Stock sites** page, or let it use the sites you ticked in StockUp.
+- A Sponsor button, license and security policy on the GitHub page.
+
 ## 2026.10.29.3
 
 - **Send to StockUp buttons:** two buttons at the bottom right of the window replace *Open in StockUp*: **Send All to StockUp** sends every photo in the list when you're done, and **Send Checked to StockUp** sends only the photos you ticked. They show how many photos they'll send (*Send All 24 to StockUp*, *Send 3 Checked to StockUp*). As before, photos with unsaved changes can be saved first in the same click.
