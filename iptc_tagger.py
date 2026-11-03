@@ -1378,6 +1378,11 @@ class RewordDialog(QDialog):
     def __init__(self, parent, count: int, settings: dict, current=None, kept: str = ""):
         super().__init__(parent)
         self.setWindowTitle("Reword / Double-check")
+        # its own window (title bar, resizable, can be maximised), always on top of the main window
+        self.setWindowFlags(Qt.Window | Qt.WindowTitleHint | Qt.WindowCloseButtonHint
+                            | Qt.WindowMinMaxButtonsHint | Qt.WindowSystemMenuHint)
+        self.setWindowModality(Qt.WindowModal)
+        self.setSizeGripEnabled(True)
         self.setMinimumWidth(620)
         lay = QVBoxLayout(self)
         if count == 1 and current:
