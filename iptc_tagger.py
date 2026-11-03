@@ -916,7 +916,8 @@ class ReviewPanel(QWidget):
         b.addWidget(lbl("Title"))
         b.addWidget(self.title)
         b.addWidget(self.title_info)
-        b.addWidget(lbl("Description"))
+        self.desc_label = lbl("Description")
+        b.addWidget(self.desc_label)
         b.addWidget(self.desc)
         b.addWidget(self.desc_info)
         b.addWidget(lbl("Keywords"))
@@ -995,6 +996,8 @@ class ReviewPanel(QWidget):
         if self.avoid.text() != ph.avoid:
             self.avoid.setText(ph.avoid)
         self.refresh_location()
+        for w in (self.desc, self.desc_info, self.desc_label):
+            w.setVisible(Photo.track_description)
         if core.clean_title(self.title.text()) != ph.title or new_photo:
             self.title.setText(ph.title)
         if core.norm_description(self.desc.toPlainText()) != ph.description or new_photo:
@@ -3338,10 +3341,17 @@ class MainWindow(QMainWindow):
         if not s.get("editorial_on"):
             return text
         d = self.photo_date(ph)
-        return core.norm_description(core.compose_title(
-            text, "", core.format_date(d, s.get("title_date_format", "long")) if d else "",
-            "start" if s.get("title_date_pos", "off") != "off" else "off", s.get("title_date_sep", "dash"),
-            self.location_for(ph), s.get("title_loc_sep", "dash")))
+
+        def build(t):
+            return core.norm_description(core.compose_title(
+                t, "", core.format_date(d, s.get("title_date_format", "long")) if d else "",
+                "start" if s.get("title_date_pos", "off") != "off" else "off", s.get("title_date_sep", "dash"),
+                self.location_for(ph), s.get("title_loc_sep", "dash")))
+        out = build(text)
+        if len(out) > core.DESCRIPTION_MAX:           # make room for the place and date: shorten the sentence part
+            room = len(text) - (len(out) - core.DESCRIPTION_MAX)
+            out = build(core.clean_description(text, max_len=room))
+        return out
 
     # ---------- previously used locations
     CLEAR_LOCATIONS = "Clear this list…"
@@ -4118,7 +4128,7 @@ class MainWindow(QMainWindow):
     def _release(self, photos, message: str):
         for ph in photos:
             self._restore_after_redo(ph)
-            ph.busy, ph.status, ph.message, ph.redo = False, "ready", message, None
+            ph.busy, ph.status, ph.message, ph.redo, ph.rewording = False, "ready", message, None, False
             self._show(ph)
         self._refresh_buttons()
 
@@ -4176,7 +4186,7 @@ class MainWindow(QMainWindow):
         kmin, kmax = core.keyword_range(self.settings.get("keyword_min"), self.settings.get("keyword_max"))
         if ph.token is None or ph.token.is_set():
             ph.token = core.CancelToken()
-        ph.ai_started = 0.0
+        ph.ai_started, ph.rewording = 0.0, False
         redo = ph.redo or {}
         old_title, old_keywords = ("", []) if redo else (self.bare_title(ph), list(ph.keywords))
         job = Job(ph.path, functools.partial(core.identify, cancel=ph.token,

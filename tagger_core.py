@@ -2126,7 +2126,7 @@ def build_description_prompt(title: str, keywords, context: str = "", photo_note
     return "\n".join(lines)
 
 
-def clean_description(text: str, symbols: str = "keep", never_use=None) -> str:
+def clean_description(text: str, symbols: str = "keep", never_use=None, max_len: int = DESCRIPTION_MAX) -> str:
     """Tidy the AI's description: one line, no quotes around it, ends with a full stop, and cut at the end of
     a sentence (or a word) so it fits DESCRIPTION_MAX."""
     t = single_line(text or "").strip().strip(_QUOTES).strip()
@@ -2134,10 +2134,12 @@ def clean_description(text: str, symbols: str = "keep", never_use=None) -> str:
     if never_use:
         t = drop_never_from_title(t, never_use)
     t = " ".join(t.split())
-    if len(t) > DESCRIPTION_MAX:
-        cut = t[:DESCRIPTION_MAX]
+    if len(t) > max_len:
+        cut = t[:max_len - 1]                          # (one character kept for the full stop)
         end = max(cut.rfind(". "), cut.rfind("! "), cut.rfind("? "))
-        t = cut[:end + 1] if end >= 40 else cut[:cut.rfind(" ")].rstrip(",;:- ")
+        comma = cut.rfind(", ")
+        t = (cut[:end + 1] if end >= 40 else cut[:comma] if comma >= 40      # a sentence, else a whole clause
+             else cut[:cut.rfind(" ")].rstrip(",;:- "))
     if t and t[-1] not in ".!?":
         t += "."
     return t[:1].upper() + t[1:]
