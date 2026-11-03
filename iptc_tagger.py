@@ -221,6 +221,7 @@ class Photo:
         self.location = ""               # per-photo location for Editorial; "" = the main location
         self.title = ""
         self.description = ""            # own description (caption); "" = the title is saved as the description
+        self.categories: list[str] = []  # Shutterstock categories the AI chose (for the upload CSV only)
         self.keywords: list[str] = []
         self.file_title = ""             # what is currently saved in the file
         self.file_description = ""       # ("" when the file's description is just its title)
@@ -864,6 +865,7 @@ class ReviewPanel(QWidget):
         self.desc_info = QLabel()
         self.desc_info.setStyleSheet(f"color:{GREY}")
         self.desc_info.setWordWrap(True)
+        self.desc_info.setTextFormat(Qt.RichText)
         self.keywords = QPlainTextEdit()
         self.keywords.setPlaceholderText("Keywords, separated by commas")
         self.keywords.setTabChangesFocus(True)
@@ -1017,8 +1019,9 @@ class ReviewPanel(QWidget):
         problems = self.win.site_problems(ph)
         self.title_info.setText(info)
         d = ph.description
-        self.desc_info.setText(f"{len(d)} characters, {len(d.split())} words" if d else
-                               "No description of its own: the title is saved as the description")
+        self.desc_info.setText((f"{len(d)} characters, {len(d.split())} words" if d else
+                                "No description of its own: the title is saved as the description")
+                               + (f"<br>Shutterstock categories: {', '.join(ph.categories)}" if ph.categories else ""))
         kw = f"{len(ph.keywords)} keyword{'s' if len(ph.keywords) != 1 else ''}"
         if problems:
             kw += "".join(f"<br><span style='color:{WARN_FG}'>⚠ {p}</span>" for p in problems)
@@ -1222,7 +1225,7 @@ class LocationDialog(QDialog):
 
 
 class FindReplaceDialog(QDialog):
-    """Find and replace a word or phrase in the titles and keywords of several photos at once."""
+    """Find and replace a word or phrase in the titles, descriptions and keywords of several photos at once."""
 
     def __init__(self, parent, photos, scope: str, find: str = ""):
         super().__init__(parent)
@@ -1249,13 +1252,15 @@ class FindReplaceDialog(QDialog):
         opts = QHBoxLayout()
         self.in_titles = QCheckBox("Titles")
         self.in_titles.setChecked(True)
+        self.in_desc = QCheckBox("Descriptions")
+        self.in_desc.setChecked(True)
         self.in_keywords = QCheckBox("Keywords")
         self.in_keywords.setChecked(True)
         self.whole = QCheckBox("Whole words only")
         self.whole.setChecked(True)
         self.whole.setToolTip("On: 'cat' doesn't change 'category'. Off: it changes any text that matches.")
         self.case = QCheckBox("Match case")
-        for w in (self.in_titles, self.in_keywords, self.whole, self.case):
+        for w in (self.in_titles, self.in_desc, self.in_keywords, self.whole, self.case):
             opts.addWidget(w)
             w.toggled.connect(lambda *_: self._preview())
         opts.addStretch(1)
@@ -1278,7 +1283,7 @@ class FindReplaceDialog(QDialog):
                 self.whole.isChecked(), self.case.isChecked())
 
     def changes(self) -> list[tuple]:
-        """(photo, new title, new keywords) for every photo that would change."""
+        """(photo, new title, new keywords, new description) for every photo that would change."""
         find, repl, in_t, in_k, whole, case = self.values()
         out = []
         if not find.strip():
@@ -1286,8 +1291,10 @@ class FindReplaceDialog(QDialog):
         for ph in self.photos:
             t = core.clean_title(core.find_replace(ph.title, find, repl, whole, case)) if in_t else ph.title
             k = core.find_replace_keywords(ph.keywords, find, repl, whole, case) if in_k else list(ph.keywords)
-            if t != ph.title or k != ph.keywords:
-                out.append((ph, t, k))
+            d = core.norm_description(core.find_replace(ph.description, find, repl, whole, case)) \
+                if self.in_desc.isChecked() and ph.description else ph.description
+            if t != ph.title or k != ph.keywords or d != ph.description:
+                out.append((ph, t, k, d))
         return out
 
     def _preview(self):
@@ -1298,8 +1305,9 @@ class FindReplaceDialog(QDialog):
         elif not ch:
             self.result.setText("Not found in these photos.")
         else:
-            ph, t, _k = ch[0]
-            example = (f"<br>e.g. {os.path.basename(ph.path)}: <i>{t}</i>" if t != ph.title else "")
+            ph, t, _k, d = ch[0]
+            example = (f"<br>e.g. {os.path.basename(ph.path)}: <i>{t}</i>" if t != ph.title else
+                       f"<br>e.g. {os.path.basename(ph.path)}: <i>{d}</i>" if d != ph.description else "")
             self.result.setText(f"<b>{len(ch)} photo{'s' if len(ch) != 1 else ''} will change.</b>{example}")
 
 
@@ -2292,6 +2300,8 @@ class MainWindow(QMainWindow):
                 e["type"] = ph.type_key
             if ph.history:
                 e["history"] = ph.history
+            if ph.categories:
+                e["categories"] = ph.categories
             title, keywords = ph.redo["before"] if (ph.redo and "before" in ph.redo) else (ph.title, ph.keywords)
             desc = ph.redo.get("description", ph.description) if ph.redo else ph.description
             if ph.status != "reading" and ((core.clean_title(title), core.clean_keywords(keywords)) !=
@@ -2338,6 +2348,7 @@ class MainWindow(QMainWindow):
         ph.note = e.get("note", "") or ""
         ph.avoid = e.get("avoid", "") or ""
         ph.location = e.get("location", "") or ""
+        ph.categories = core.shutterstock_categories(e.get("categories"))
         ph.history = [h for h in e.get("history") or [] if isinstance(h, dict)][-core.SUGGESTIONS_PER_PHOTO:]
         if e.get("type"):
             ph.type_key = e["type"]
@@ -2440,15 +2451,16 @@ class MainWindow(QMainWindow):
         if os.path.basename(path) == suggested and fmt != "shutterstock":
             path = os.path.join(os.path.dirname(path), core.csv_file_name(fmt))   # adobe_2026-11-02.csv
         categories = []
-        if fmt == "shutterstock":
-            categories = self._ask_shutterstock_categories(len(photos))
+        missing = [p for p in photos if not p.categories]
+        if fmt == "shutterstock" and missing:         # photos detected with the description on have their own
+            categories = self._ask_shutterstock_categories(len(missing), len(photos))
             if categories is None:
                 return
         labels = dict(self.type_items())
         # a RAW's titles are exported for the JPEG Lightroom will make from it (photo.CR3 -> photo.jpg)
         rows = [{"file": (os.path.splitext(os.path.basename(p.path))[0] + ".jpg") if core.is_raw(p.path)
                  else os.path.basename(p.path), "folder": os.path.dirname(p.path), "title": p.title,
-                 "description": p.description,
+                 "description": p.description, "categories": list(p.categories),
                  "keywords": list(p.keywords), "editorial": self.is_editorial(p),
                  "type": labels.get(self.effective_type(p), ""), "note": p.note, "taken": p.taken,
                  "saved": not p.changed} for p in photos]
@@ -2464,15 +2476,17 @@ class MainWindow(QMainWindow):
                                "into the files yet."
                                if unsaved else ""))
 
-    def _ask_shutterstock_categories(self, count: int) -> list[str] | None:
+    def _ask_shutterstock_categories(self, count: int, total: int | None = None) -> list[str] | None:
         """Shutterstock rejects an upload CSV without categories: ask for 1 or 2 (remembered for next time).
         None = cancelled."""
         dlg = QDialog(self)
         dlg.setWindowTitle("Shutterstock categories")
         lay = QVBoxLayout(dlg)
-        info = QLabel(f"Shutterstock needs one or two categories for each photo. These go on all {count} "
-                      f"photo{'s' if count != 1 else ''} in this CSV; you can change single photos on the site "
-                      "after the upload.")
+        n = f"{count} photo{'s' if count != 1 else ''}"
+        info = QLabel(f"Shutterstock needs one or two categories for each photo. "
+                      + (f"These go on all {n} in this CSV" if not total or total == count else
+                         f"The AI chose them for {total - count} of the photos; these go on the other {n}")
+                      + ". You can change single photos on the site after the upload.")
         info.setWordWrap(True)
         lay.addWidget(info)
         last = [c for c in self.settings.get("shutterstock_categories") or [] if c in core.SHUTTERSTOCK_CATEGORIES]
@@ -3017,8 +3031,8 @@ class MainWindow(QMainWindow):
             return
         changes = dlg.changes()
         find, repl = dlg.values()[:2]
-        for ph, t, k in changes:
-            ph.title, ph.keywords = t, k
+        for ph, t, k, d in changes:
+            ph.title, ph.keywords, ph.description = t, k, d
             if ph.status == "saved":
                 ph.status = "ready"
             ph.message = "Find and replace, not saved yet"
@@ -3176,20 +3190,21 @@ class MainWindow(QMainWindow):
         return self.custom_date_value() or ph.taken
 
     # ---------- text before titles
-    def bare_title(self, ph: Photo, strip_date: bool = True, extra_locations=()) -> str:
+    def bare_title(self, ph: Photo, strip_date: bool = True, extra_locations=(), text: str | None = None,
+                   with_prefix: bool = True) -> str:
         """The photo's title without your text before titles, the location or the date: what the AI may see.
         Both the custom date and the metadata date are taken off, so switching between them never leaves
         an old date behind."""
         s = self.settings
-        t = ph.title
+        t = ph.title if text is None else text
         locs = list(dict.fromkeys(x for x in [ph.location, s.get("title_location", ""), *extra_locations] if x)) or [""]
         for d in dict.fromkeys([self.photo_date(ph), ph.title_date, ph.taken]):
             fd = core.format_date(d, s.get("title_date_format", "long")) if strip_date else ""
             for loc in locs:
                 # any_location: a location next to the date is taken off even when it isn't one of these
                 # (a title saved before the location was changed), so it's never in the title twice
-                t = core.strip_title_extras(t, core.expand_title_prefix(s.get("title_prefix", ""), d), fd, loc,
-                                            any_location=bool(fd))
+                t = core.strip_title_extras(t, core.expand_title_prefix(s.get("title_prefix", ""), d)
+                                            if with_prefix else "", fd, loc, any_location=bool(fd))
         return t
 
     def compose_title(self, ph: Photo, title: str) -> str:
@@ -3350,9 +3365,13 @@ class MainWindow(QMainWindow):
             n_lead += 1
         new_kw = core.place_editorial_keywords(kws, self.editorial_keywords(ph), s.get("editorial_pos", "before"),
                                                after=n_lead, title=base)
-        if new_title == ph.title and new_kw == core.clean_keywords(ph.keywords):
+        new_desc = ph.description
+        if ph.description:                            # the caption's "Place - Date:" in front, swapped the same way
+            bare = self.bare_title(ph, strip_date=True, extra_locations=olds, text=ph.description, with_prefix=False)
+            new_desc = self.compose_description(ph, bare or ph.description)
+        if new_title == ph.title and new_kw == core.clean_keywords(ph.keywords) and new_desc == ph.description:
             return False
-        ph.title, ph.keywords = new_title, new_kw
+        ph.title, ph.keywords, ph.description = new_title, new_kw, new_desc
         if ph.status == "saved":
             ph.status = "ready"
         return True
@@ -3502,7 +3521,9 @@ class MainWindow(QMainWindow):
         if ph is None:
             self.status.setText("Select one photo to copy its title and keywords.")
             return
-        QApplication.clipboard().setText(ph.title + "\n" + core.keywords_to_text(ph.keywords))
+        text = ph.title + "\n" + core.keywords_to_text(ph.keywords)
+        QApplication.clipboard().setText(text)
+        self.copied = (text, ph.description)          # the description goes along when this text is pasted
         self.status.setText(f"Copied the title and {len(ph.keywords)} keywords from {os.path.basename(ph.path)}. "
                             "Select other photos and paste (Ctrl/⌘+V).")
 
@@ -3526,16 +3547,20 @@ class MainWindow(QMainWindow):
         if not targets:
             self.status.setText("Check or select the photos to paste into first.")
             return
+        copied = getattr(self, "copied", None)
+        desc = copied[1] if copied and copied[0] == clip.text() else None   # copied here, not from elsewhere
         changed = 0
         for ph in targets:
-            before = (ph.title, list(ph.keywords))
+            before = (ph.title, list(ph.keywords), ph.description)
             if mode in ("both", "title") and title is not None:
                 ph.title = title
+                if desc is not None:
+                    ph.description = desc
             if mode in ("both", "keywords") and keywords is not None:
                 ph.keywords = list(keywords)
             if mode == "add" and keywords is not None:
                 ph.keywords = core.merge_keywords(ph.keywords, keywords)
-            if (ph.title, ph.keywords) != before:
+            if (ph.title, ph.keywords, ph.description) != before:
                 changed += 1
                 if ph.status == "saved":
                     ph.status = "ready"
@@ -4177,6 +4202,8 @@ class MainWindow(QMainWindow):
                                                                                self.location_for(ph)))
             if result.get("description") and not (keep_title and ph.description):
                 ph.description = self.compose_description(ph, result["description"])
+            if result.get("categories"):
+                ph.categories = list(result["categories"])
             # order: your "keywords to put first", then existing keywords (if kept), then suggestions
             kmax = core.keyword_range(self.settings.get("keyword_min"), self.settings.get("keyword_max"))[1]
             lead = core.expand_lead_keywords(self.settings.get("lead_keywords", ""), self.photo_date(ph))

@@ -6,6 +6,8 @@
 - **Shutterstock CSV fixed:** Shutterstock rejected the upload CSV because its *Categories* column was empty. Export now asks for one or two Shutterstock categories (remembered for next time), writes *Yes* / *No* the way Shutterstock's sample does, and puts each photo's description in the *Description* column.
 - **Dated CSV names:** Export CSV suggests a name with today's date, like *shutterstock_2026-11-02.csv*. The *All details* CSV also has the description and its length.
 - Dreamstime and Alamy are flagged in the stock-site rules when a photo has no description of its own.
+- **Shutterstock categories per photo:** while writing the description, the AI also picks the one or two Shutterstock categories that fit each photo best, and the upload CSV uses them. You're only asked for categories for photos that don't have their own (photos detected before this version, or with the description turned off). They're shown under the description in the side panel.
+- **The description follows along:** *Find and replace* has a new **Descriptions** box, changing a photo's location swaps it in the description's *Place - Date:* too, and copying a photo's title and keywords and pasting them onto other photos brings its description with them.
 
 ## 2026.11.01.1
 

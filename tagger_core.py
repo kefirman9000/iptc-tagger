@@ -470,7 +470,7 @@ def csv_file_name(fmt: str, day: str = "") -> str:
 def export_csv(path: str, rows: list[dict], fmt: str = "shutterstock", categories=()) -> int:
     """Write the photos to a CSV file. rows: dicts with file, folder, title, description, keywords,
     editorial (bool), and for 'full' also type, note, taken, saved. Returns how many photos were written.
-    categories: the 1-2 Shutterstock categories given to every photo (Shutterstock needs them).
+    categories: the 1-2 Shutterstock categories for photos without their own r["categories"].
     The upload formats match what Shutterstock and Adobe Stock accept: one row per file, the keywords
     comma-separated in one cell. Columns they need that the app doesn't know (categories) are left
     empty to fill in on the site."""
@@ -481,9 +481,10 @@ def export_csv(path: str, rows: list[dict], fmt: str = "shutterstock", categorie
     if fmt == "shutterstock":
         # exactly Shutterstock's sample file: these headers in this order, Yes/No capitalised, and 1-2
         # categories (an empty Categories column gets the whole CSV rejected)
-        cats = ",".join(c for c in list(categories or [])[:2] if c in SHUTTERSTOCK_CATEGORIES)
+        default = shutterstock_categories(list(categories or []))
+        cats = lambda r: ",".join(shutterstock_categories(r.get("categories")) or default)
         head = ["Filename", "Description", "Keywords", "Categories", "Illustration", "Mature Content", "Editorial"]
-        body = [[r["file"], desc(r), ",".join(r["keywords"]), cats, "No", "No",
+        body = [[r["file"], desc(r), ",".join(r["keywords"]), cats(r), "No", "No",
                  "Yes" if r.get("editorial") else "No"] for r in rows]
         enc = "utf-8"
     elif fmt == "adobe":
@@ -2064,10 +2065,25 @@ TITLE_SCHEMA = {
 
 DESCRIPTION_SCHEMA = {
     "type": "object",
-    "properties": {"description": {"type": "string"}},
-    "required": ["description"],
+    "properties": {"description": {"type": "string"},
+                   # the Shutterstock categories, chosen while the model is looking at the photo anyway
+                   "categories": {"type": "array", "items": {"type": "string", "enum": SHUTTERSTOCK_CATEGORIES}}},
+    "required": ["description", "categories"],
 }
 DESCRIPTION_MAX = 200       # Shutterstock's limit for the description; Alamy and Dreamstime take this too
+
+
+def shutterstock_categories(value) -> list[str]:
+    """Up to two valid Shutterstock category names from whatever the model (or a saved list) gave,
+    matched without caring about case or spacing."""
+    known = {re.sub(r"[^a-z]", "", c.casefold()): c for c in SHUTTERSTOCK_CATEGORIES}
+    items = value if isinstance(value, list) else [value] if isinstance(value, str) else []
+    out = []
+    for v in items:
+        c = known.get(re.sub(r"[^a-z]", "", str(v).casefold()))
+        if c and c not in out:
+            out.append(c)
+    return out[:2]
 
 
 def build_description_prompt(title: str, keywords, context: str = "", photo_note: str = "",
@@ -2098,9 +2114,11 @@ def build_description_prompt(title: str, keywords, context: str = "", photo_note
         lines += ["", "Write words instead of symbols (\"and\" instead of \"&\")."]
     if keywords:
         lines += ["", "Keywords already chosen, for reference only: " + ", ".join(list(keywords)[:20])]
+    lines += ["", "Also choose the one or two Shutterstock categories that fit this photo best, exactly as written in "
+              "this list (the main subject first): " + ", ".join(SHUTTERSTOCK_CATEGORIES) + "."]
     if (direction or "").strip() and direction.strip() != (context or "").strip():
         lines += ["", "PHOTOGRAPHER'S DIRECTIONS (follow them where they apply to a description):", direction.strip()]
-    lines += ["", 'Output only JSON in exactly this form: {"description": "..."}']
+    lines += ["", 'Output only JSON in exactly this form: {"description": "...", "categories": ["..."]}']
     return "\n".join(lines)
 
 
@@ -3218,7 +3236,7 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
     if not title and not keywords:
         debug(f"{name}: FAILED: no title or keywords after {time.monotonic() - started:.1f} s")
         raise ApiError(EMPTY_REPLY)
-    desc = ""
+    desc, cats = "", []
     if description and title:
         # the description (caption) Alamy, Dreamstime and Shutterstock want: written from the finished title,
         # looking at the photo again so it can add what the title leaves out
@@ -3227,6 +3245,7 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
                                                copyright_free, symbols, never_use, photo_avoid),
                       DESCRIPTION_SCHEMA, "description")
             desc = clean_description(str(got.get("description", "") or ""), symbols, never_use)
+            cats = shutterstock_categories(got.get("categories"))
             if len(desc.split()) < 5 or desc.rstrip(".").casefold() == title.casefold():
                 desc = ""                            # nothing better than the title: it stands in for it
             debug(f"{name}: description: {desc!r}")
@@ -3236,7 +3255,7 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
             desc = ""                                # the title is saved as the description instead
     debug(f"{name}: DONE in {time.monotonic() - started:.1f} s: {len(keywords)} keywords, revised={revised}, "
           f"title={title!r}")
-    result = {"title": title, "keywords": keywords, "description": desc,
+    result = {"title": title, "keywords": keywords, "description": desc, "categories": cats,
               "seconds": round(time.monotonic() - started, 1),
               "revised": revised, "label": read}
     if copyright_free:
