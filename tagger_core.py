@@ -39,7 +39,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.11.01.1"
+APP_VERSION = "2026.11.03.1"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 # camera RAW files: titles and keywords go into the Lightroom sidecar next to them (photo.xmp), never the RAW.
 # DNG is left out: Lightroom ignores sidecars for DNG and keeps its metadata inside the file itself.
@@ -241,6 +241,11 @@ def clean_title(text: str) -> str:
     return t[:-1] if t.endswith(".") and not t.endswith("..") else t
 
 
+def norm_description(text: str) -> str:
+    """A description as it is saved: one line, single spaces (its full stop stays)."""
+    return " ".join(single_line(text or "").split())
+
+
 # A model now and then writes its whole answer inside the title, with curly quotes, e.g.
 #   Shelf Display”, “Keywords”: “car care”, “wheel cleaner”, … 16
 _LEAKED = re.compile(r"[\s,;]*[" + _QUOTES + r"]?\s*[,;]?\s*[" + _QUOTES + r"]?\s*\b(?:keywords?|tags)\b\s*["
@@ -381,6 +386,12 @@ DEFAULT_SETTINGS = {
     "confirm_save": True,     # ask before saving with Save metadata
     "read_label": True,       # read the text on packaging and signs first (one quick extra step per photo)
     "tidy_keywords": True,    # remove filler keywords and put the title's words first
+    "ai_description": True,   # also write a separate description (caption): Alamy, Dreamstime, Shutterstock
+    "shutterstock_categories": [],  # the 1-2 categories put in the Shutterstock upload CSV (last used)
+    "reword_fields": ["title", "description", "keywords"],  # Reword / Double-check: what it works on (last used)
+    "reword_options": ["check"],    # ... the clean-up options ticked last time (keys from REWORD_OPTIONS)
+    "reword_text": "",              # ... your own rewording instructions last time
+    "reword_context": True,         # ... tell the AI the location and date in front of the title (never changed)
     "auto_download": False,   # download new versions without asking first (installed on restart)
     "stock_sites": None,      # sites whose title and keyword rules are checked (None = Shutterstock + Adobe Stock)
     "stock_sites_from_stockup": True,  # use the sites ticked in StockUp, when StockUp is set up on this computer
@@ -445,29 +456,50 @@ def _clip(text, n=400) -> str:
 CSV_FORMATS = [("shutterstock", "Shutterstock upload CSV"), ("adobe", "Adobe Stock upload CSV"),
                ("full", "All details (for Excel or your own records)")]
 
+# The category names Shutterstock accepts in its upload CSV (1 or 2 per file; the column is required)
+SHUTTERSTOCK_CATEGORIES = [
+    "Abstract", "Animals/Wildlife", "Arts", "Backgrounds/Textures", "Beauty/Fashion", "Buildings/Landmarks",
+    "Business/Finance", "Celebrities", "Education", "Food and drink", "Healthcare/Medical", "Holidays",
+    "Industrial", "Interiors", "Miscellaneous", "Nature", "Objects", "Parks/Outdoor", "People", "Religion",
+    "Science", "Signs/Symbols", "Sports/Recreation", "Technology", "Transportation", "Vintage",
+]
 
-def export_csv(path: str, rows: list[dict], fmt: str = "shutterstock") -> int:
-    """Write the photos to a CSV file. rows: dicts with file, folder, title, keywords, editorial (bool),
-    and for 'full' also type, note, taken, saved. Returns how many photos were written.
+
+def csv_file_name(fmt: str, day: str = "") -> str:
+    """The suggested name for an exported CSV, with today's date: shutterstock_2026-11-02.csv"""
+    day = day or time.strftime("%Y-%m-%d")
+    return f"{'metadata' if fmt == 'full' else fmt}_{day}.csv"
+
+
+def export_csv(path: str, rows: list[dict], fmt: str = "shutterstock", categories=()) -> int:
+    """Write the photos to a CSV file. rows: dicts with file, folder, title, description, keywords,
+    editorial (bool), and for 'full' also type, note, taken, saved. Returns how many photos were written.
+    categories: the 1-2 Shutterstock categories for photos without their own r["categories"].
     The upload formats match what Shutterstock and Adobe Stock accept: one row per file, the keywords
     comma-separated in one cell. Columns they need that the app doesn't know (categories) are left
     empty to fill in on the site."""
     import csv
     # one keyword may never contain a comma: on upload it would split into two keywords
     rows = [dict(r, keywords=[" ".join(str(k).replace(",", " ").split()) for k in r["keywords"]]) for r in rows]
+    desc = lambda r: single_line(r.get("description") or "") or r["title"]
     if fmt == "shutterstock":
+        # exactly Shutterstock's sample file: these headers in this order, Yes/No capitalised, and 1-2
+        # categories (an empty Categories column gets the whole CSV rejected)
+        default = shutterstock_categories(list(categories or []))
+        cats = lambda r: ",".join(shutterstock_categories(r.get("categories")) or default)
         head = ["Filename", "Description", "Keywords", "Categories", "Illustration", "Mature Content", "Editorial"]
-        body = [[r["file"], r["title"], ",".join(r["keywords"]), "", "no", "no",
-                 "yes" if r.get("editorial") else "no"] for r in rows]
+        body = [[r["file"], desc(r), ",".join(r["keywords"]), cats(r), "No", "No",
+                 "Yes" if r.get("editorial") else "No"] for r in rows]
         enc = "utf-8"
     elif fmt == "adobe":
         head = ["Filename", "Title", "Keywords", "Category", "Releases"]
         body = [[r["file"], r["title"], ",".join(r["keywords"]), "", ""] for r in rows]
         enc = "utf-8"
     else:
-        head = ["File", "Folder", "Title", "Title length", "Keywords", "Keyword count", "Photo type",
-                "Photo notes", "Date taken", "Editorial", "Saved"]
-        body = [[r["file"], r["folder"], r["title"], len(r["title"]), ", ".join(r["keywords"]), len(r["keywords"]),
+        head = ["File", "Folder", "Title", "Title length", "Description", "Description length", "Keywords",
+                "Keyword count", "Photo type", "Photo notes", "Date taken", "Editorial", "Saved"]
+        body = [[r["file"], r["folder"], r["title"], len(r["title"]), desc(r), len(desc(r)),
+                 ", ".join(r["keywords"]), len(r["keywords"]),
                  r.get("type", ""), r.get("note", ""), r.get("taken", ""), "yes" if r.get("editorial") else "no",
                  "yes" if r.get("saved") else "no"] for r in rows]
         enc = "utf-8-sig"                            # so Excel shows accents and other characters correctly
@@ -884,7 +916,8 @@ METADATA_FIELDS = [
      "tip": "The title Windows File Explorer shows in some older versions. Usually not needed.",
      "args": lambda t, k, d, l: _set("EXIF:XPTitle", t)},
     {"key": "description", "group": "Description", "label": "Description / Caption (XMP and IPTC)", "default": True,
-     "tip": "The title is also saved as the description. Shutterstock and other stock sites use it as the title.",
+     "tip": "The photo's description (caption). Alamy, Dreamstime and Shutterstock read it from here.\n"
+            "When a photo has no description of its own, its title is saved here instead.",
      "args": lambda t, k, d, l: _set("XMP-dc:Description", d) + _set("IPTC:Caption-Abstract", truncate_utf8(d, 2000))},
     {"key": "description_exif", "group": "Description", "label": "EXIF Image Description", "default": False,
      "tip": "The camera-style description field. Some older programs read only this one.",
@@ -994,12 +1027,13 @@ class ExifTool:
             from_cars = self._read_files(list(cars.values()))
             for raw, car in cars.items():
                 meta = from_cars.get(car) or {}
-                result[raw] = {"title": meta.get("title", ""), "keywords": list(meta.get("keywords", [])),
+                result[raw] = {"title": meta.get("title", ""), "description": meta.get("description", ""),
+                               "keywords": list(meta.get("keywords", [])),
                                "taken": result.get(raw, {}).get("taken", "") or meta.get("taken", "")}
         for raw in raws:
             if raw not in cars:                  # no sidecar yet: nothing of ours, only the date taken
                 taken = result.get(raw, {}).get("taken", "")
-                result[raw] = {"title": "", "keywords": [], "taken": taken}
+                result[raw] = {"title": "", "description": "", "keywords": [], "taken": taken}
         return result
 
     def _read_files(self, paths: list[str]) -> dict[str, dict]:
@@ -1008,6 +1042,7 @@ class ExifTool:
             chunk = paths[start:start + 200]
             out = self._run(["-j", "-G1", "-a", "-api", "struct=0",
                              "-XMP-dc:Title", "-IPTC:ObjectName",
+                             "-XMP-dc:Description", "-IPTC:Caption-Abstract",
                              "-XMP-dc:Subject", "-IPTC:Keywords",
                              "-EXIF:DateTimeOriginal", "-XMP-exif:DateTimeOriginal", "-EXIF:CreateDate"] + chunk)
             by_norm = {_norm(p): p for p in chunk}
@@ -1028,6 +1063,9 @@ class ExifTool:
                 title = row.get("XMP-dc:Title") or row.get("IPTC:ObjectName") or ""
                 if isinstance(title, list):
                     title = title[0] if title else ""
+                desc = row.get("XMP-dc:Description") or row.get("IPTC:Caption-Abstract") or ""
+                if isinstance(desc, list):
+                    desc = desc[0] if desc else ""
                 xmp_kws = as_list(row.get("XMP-dc:Subject"))
                 # an IPTC keyword that is just the 64-byte-trimmed copy of a longer XMP keyword is the same keyword
                 iptc_kws = [k for k in as_list(row.get("IPTC:Keywords"))
@@ -1041,9 +1079,9 @@ class ExifTool:
                     if m and m.group(1) != "0000":
                         taken = "-".join(m.groups())
                         break
-                result[src] = {"title": str(title), "keywords": kws, "taken": taken}
+                result[src] = {"title": str(title), "description": str(desc), "keywords": kws, "taken": taken}
             for p in chunk:
-                result.setdefault(p, {"title": "", "keywords": [], "taken": ""})
+                result.setdefault(p, {"title": "", "description": "", "keywords": [], "taken": ""})
         return result
 
     def xmp_to_iptc(self, path: str, args_file: str) -> None:
@@ -1067,7 +1105,8 @@ class ExifTool:
             fields = {"title_xmp", "title_iptc", "keywords_xmp", "keywords_iptc"} | (
                 {"description"} if description is not None else set())
         fields = set(fields)
-        desc = clean_title(description if description is not None else title)
+        # an own description keeps its full stop (clean_title would take it off); without one, the title is used
+        desc = norm_description(description) if (description or "").strip() else title
         # -m lets IPTC values go past the official length limits (64 bytes for the title and each keyword), so
         # IPTC gets the full title in this one step, the same as xmp2iptc.args used to give it in a second pass
         args = ["-m", "-P", "-overwrite_original", "-charset", "iptc=UTF8", "-IPTC:CodedCharacterSet=UTF8"]
@@ -1252,8 +1291,8 @@ def open_in_stockup(app_path: str, paths: list[str], new_window: bool = False) -
 STOCK_SITES = {
     "shutterstock": {"label": "Shutterstock", "kw_min": 7, "kw_max": 50, "desc_max": 200, "desc_min_words": 5},
     "adobe": {"label": "Adobe Stock", "kw_min": 5, "kw_max": 49, "title_max": 70},
-    "dreamstime": {"label": "Dreamstime"},
-    "alamy": {"label": "Alamy"},
+    "dreamstime": {"label": "Dreamstime", "own_desc": True},
+    "alamy": {"label": "Alamy", "own_desc": True},
     "istock": {"label": "iStock"},
     "depositphotos": {"label": "Depositphotos", "kw_min": 8, "kw_max": 50, "desc_max": 250},
     "123rf": {"label": "123RF", "kw_min": 7, "desc_max": 180},
@@ -1297,10 +1336,12 @@ def stock_sites(settings: dict) -> list[str]:
     return [k for k in STOCK_SITES if k in chosen]
 
 
-def site_problems(title: str, keywords, sites) -> list[str]:
+def site_problems(title: str, keywords, sites, description: str = "") -> list[str]:
     """What a stock site would reject or cut in this title and these keywords, one short line each.
-    The title is also the description/caption (that's what this app saves), so both limits apply to it."""
+    A photo without its own description has its title saved as the description, so then the
+    description limits apply to the title."""
     title = (title or "").strip()
+    desc = (description or "").strip() or title
     n = len(keywords or [])
     out = []
     if not title and not n:
@@ -1312,10 +1353,12 @@ def site_problems(title: str, keywords, sites) -> list[str]:
         bits = []
         if r.get("title_max") and len(title) > r["title_max"]:
             bits.append(f"title {len(title)} characters (most {r['title_max']})")
-        if r.get("desc_max") and len(title) > r["desc_max"]:
-            bits.append(f"description {len(title)} characters (most {r['desc_max']})")
-        if r.get("desc_min_words") and title and len(title.split()) < r["desc_min_words"]:
+        if r.get("desc_max") and len(desc) > r["desc_max"]:
+            bits.append(f"description {len(desc)} characters (most {r['desc_max']})")
+        if r.get("desc_min_words") and desc and len(desc.split()) < r["desc_min_words"]:
             bits.append(f"description under {r['desc_min_words']} words")
+        if r.get("own_desc") and title and not (description or "").strip():
+            bits.append("no description of its own (the title is used)")
         if r.get("kw_min") and n < r["kw_min"]:
             bits.append(f"{n} keyword{'s' if n != 1 else ''} (at least {r['kw_min']})")
         if r.get("kw_max") and n > r["kw_max"]:
@@ -2024,6 +2067,84 @@ TITLE_SCHEMA = {
     "required": ["title"],
 }
 
+DESCRIPTION_SCHEMA = {
+    "type": "object",
+    "properties": {"description": {"type": "string"},
+                   # the Shutterstock categories, chosen while the model is looking at the photo anyway
+                   "categories": {"type": "array", "items": {"type": "string", "enum": SHUTTERSTOCK_CATEGORIES}}},
+    "required": ["description", "categories"],
+}
+DESCRIPTION_MAX = 200       # Shutterstock's limit for the description; Alamy and Dreamstime take this too
+
+
+def shutterstock_categories(value) -> list[str]:
+    """Up to two valid Shutterstock category names from whatever the model (or a saved list) gave,
+    matched without caring about case or spacing."""
+    known = {re.sub(r"[^a-z]", "", c.casefold()): c for c in SHUTTERSTOCK_CATEGORIES}
+    items = value if isinstance(value, list) else [value] if isinstance(value, str) else []
+    out = []
+    for v in items:
+        c = known.get(re.sub(r"[^a-z]", "", str(v).casefold()))
+        if c and c not in out:
+            out.append(c)
+    return out[:2]
+
+
+def build_description_prompt(title: str, keywords, context: str = "", photo_note: str = "",
+                             direction: str = "", title_location: str = "", copyright_free: bool = False,
+                             symbols: str = "keep", never_use=None, photo_avoid: str = "") -> str:
+    """Ask for the description (caption) of a photo whose title is already written."""
+    lines = ["Write the description (caption) for this stock photo. Its title is: "
+             + json.dumps(title, ensure_ascii=False) + ".",
+             "",
+             "The description is one or two complete, plain sentences of 12 to 30 words (never more than "
+             f"{DESCRIPTION_MAX - 20} characters) that say what the photo shows: the subject, what is happening, the "
+             "setting and the most useful visible details. Add information the title doesn't have instead of "
+             "repeating it word for word. Normal sentence capitalisation with a full stop at the end, no keyword "
+             "lists, no hashtags, no opinions or marketing words such as stunning or beautiful."]
+    if (context or "").strip():
+        lines += ["", "Facts from the photographer (true; use them where they fit):", context.strip()]
+    if (photo_note or "").strip():
+        lines += ["", "About this photo (true):", photo_note.strip()]
+    if (title_location or "").strip():
+        lines += ["", f"The photo was taken in {title_location.strip()}. The photographer adds the place and date "
+                  "in front of the description themselves, so don't put them in."]
+    lines += ["", COPYRIGHT_FREE_RULES if copyright_free else BRAND_RULES]
+    if never_use:
+        lines += ["", "Never use these words or phrases: " + ", ".join(never_use) + "."]
+    if (photo_avoid or "").strip():
+        lines += ["", "Don't use these words, names or ideas: " + single_line(photo_avoid)]
+    if symbols in ("convert", "remove"):
+        lines += ["", "Write words instead of symbols (\"and\" instead of \"&\")."]
+    if keywords:
+        lines += ["", "Keywords already chosen, for reference only: " + ", ".join(list(keywords)[:20])]
+    lines += ["", "Also choose the one or two Shutterstock categories that fit this photo best, exactly as written in "
+              "this list (the main subject first): " + ", ".join(SHUTTERSTOCK_CATEGORIES) + "."]
+    if (direction or "").strip() and direction.strip() != (context or "").strip():
+        lines += ["", "PHOTOGRAPHER'S DIRECTIONS (follow them where they apply to a description):", direction.strip()]
+    lines += ["", 'Output only JSON in exactly this form: {"description": "...", "categories": ["..."]}']
+    return "\n".join(lines)
+
+
+def clean_description(text: str, symbols: str = "keep", never_use=None, max_len: int = DESCRIPTION_MAX) -> str:
+    """Tidy the AI's description: one line, no quotes around it, ends with a full stop, and cut at the end of
+    a sentence (or a word) so it fits DESCRIPTION_MAX."""
+    t = single_line(text or "").strip().strip(_QUOTES).strip()
+    t = tidy_symbols(t, symbols)
+    if never_use:
+        t = drop_never_from_title(t, never_use)
+    t = " ".join(t.split())
+    if len(t) > max_len:
+        cut = t[:max_len - 1]                          # (one character kept for the full stop)
+        end = max(cut.rfind(". "), cut.rfind("! "), cut.rfind("? "))
+        comma = cut.rfind(", ")
+        t = (cut[:end + 1] if end >= 40 else cut[:comma] if comma >= 40      # a sentence, else a whole clause
+             else cut[:cut.rfind(" ")].rstrip(",;:- "))
+    if t and t[-1] not in ".!?":
+        t += "."
+    return t[:1].upper() + t[1:]
+
+
 MORE_KEYWORDS_SCHEMA = {
     "type": "object",
     "properties": {"keywords": {"type": "array", "items": {"type": "string"}}},
@@ -2548,6 +2669,182 @@ def build_revision_prompt(draft_title: str, draft_keywords, keyword_min: int, ke
               "", 'Output only JSON in exactly this form: {"title": "...", "keywords": ["...", "..."]}']
     return "\n".join(lines)
 
+# Reword / Double-check: a text-only pass over the title, description and keywords already written ---------
+REWORD_TEXT_OPTIONS = [   # (key, label, what the AI is told)
+    ("check", "Just double-check (fix mistakes only)",
+     "Only fix real mistakes: spelling, grammar, capitalisation, a wrong or doubled word, something that contradicts "
+     "the rest of the text. Keep everything else exactly as it is. If nothing is wrong, give it back unchanged."),
+    ("shorter", "Make it shorter",
+     "Make the title noticeably shorter, keeping only the most important details."),
+    ("longer", "Make it fuller",
+     "Make the title noticeably fuller and more descriptive, using only the details already in the text."),
+    ("plain", "Plainer words, no marketing language",
+     "Use plain, simple, descriptive words. Remove flowery or marketing words such as stunning, breathtaking, "
+     "beautiful, amazing or perfect."),
+    ("repeats", "Remove repeated words",
+     "Don't use the same word twice in the title, and don't let the description just repeat the title."),
+    ("specific", "More specific",
+     "Make it more specific: name the exact subject, kind or variety instead of general words, using only what the "
+     "text already says."),
+    ("order", "Main subject first",
+     "Put the main subject at the start of the title, then the action or setting, then the details."),
+    ("editorial", "Factual editorial tone",
+     "Write it as a factual, neutral editorial caption: who, what, where and when, without opinion or marketing words."),
+    ("commercial", "Concept words for commercial buyers",
+     "Bring out the concept the photo could illustrate for commercial buyers (for example teamwork, freedom, healthy "
+     "living) where it fits."),
+    ("no_names", "No brands, products or people's names",
+     "Remove every brand, trademark, product, company or person's name and describe them in generic words."),
+]
+REWORD_KEYWORD_OPTIONS = [
+    ("kw_dupes", "Remove duplicates and near-duplicates",
+     "Remove duplicate and near-duplicate keywords (singular and plural, the same word in many phrases)."),
+    ("kw_off", "Remove keywords that don't fit",
+     "Remove keywords that don't describe what the title and description say is in the photo."),
+    ("kw_general", "Swap vague keywords for specific ones",
+     "Replace vague, general keywords with more specific ones (exact kind, material, place, technique)."),
+    ("kw_order", "Most important first",
+     "Order the keywords by importance: what the title names first, then setting, concepts and the rest."),
+    ("kw_more", "Add more keywords",
+     "Add more relevant keywords (likely search terms, concepts, related subjects) up to the maximum."),
+    ("kw_spell", "Fix spelling and make them all lowercase",
+     "Fix any misspelled keyword and write every keyword in lowercase, letters and numbers only."),
+]
+REWORD_OPTIONS = REWORD_TEXT_OPTIONS + REWORD_KEYWORD_OPTIONS
+REWORD_FIELDS = [("title", "Title"), ("description", "Description"), ("keywords", "Keywords")]
+
+
+def build_reword_prompt(title: str, description: str, keywords, fields, options=(), instruction: str = "",
+                        dateline: str = "", fixed_keywords=(), keyword_min: int = 7, keyword_max: int = 50,
+                        context: str = "", photo_note: str = "", direction: str = "", copyright_free: bool = False,
+                        symbols: str = "keep", never_use=None, photo_avoid: str = "") -> str:
+    """The instructions for rewording one photo's text (no image). dateline: the location / date put in front
+    of the title, given only as background; the AI must leave it out of what it writes."""
+    fields = [f for f, _ in REWORD_FIELDS if f in set(fields or [])]
+    chosen = [text for key, _, text in REWORD_OPTIONS if key in set(options or [])
+              and (key.startswith("kw_") and "keywords" in fields or not key.startswith("kw_")
+                   and ({"title", "description"} & set(fields)))]
+    what = " and ".join(dict(REWORD_FIELDS)[f].lower() for f in fields)
+    lines = [f"Here is the text already written for a stock photo. Improve its {what} as asked below. You can't see "
+             "the photo: work only from this text and the facts given, and never add details that aren't there."]
+    lines += ["", "Current text:", json.dumps({"title": title, "description": description,
+                                                "keywords": list(keywords or [])}, ensure_ascii=False)]
+    if (dateline or "").strip():
+        lines += ["", f"The photographer puts \"{dateline.strip()}\" in front of the title and description themselves. "
+                  "Use it only to understand where and when the photo was taken. Don't write it, the place or the "
+                  "date in your title or description, and don't change it."]
+    if fixed_keywords:
+        lines += ["", "These keywords are kept as they are and added separately, so leave them out of your list "
+                  "(they're background only): " + ", ".join(fixed_keywords)]
+    if (context or "").strip():
+        lines += ["", "Facts from the photographer (true):", context.strip()]
+    if (photo_note or "").strip():
+        lines += ["", "About this photo (true):", photo_note.strip()]
+    if chosen:
+        lines += ["", "What to do:"] + ["- " + c for c in chosen]
+    if (instruction or "").strip():
+        lines += ["", "THE PHOTOGRAPHER'S REWORDING INSTRUCTIONS (highest priority, follow them exactly):",
+                  instruction.strip()]
+    if not chosen and not (instruction or "").strip():
+        lines += ["", "What to do:", "- " + REWORD_TEXT_OPTIONS[0][2]]
+    rules = []
+    if "title" in fields:
+        rules.append("Title: one line in Title Case, no quotation marks, no full stop at the end.")
+    if "description" in fields:
+        rules.append(f"Description: one or two complete sentences in normal sentence case ending with a full stop, "
+                     f"at most {DESCRIPTION_MAX - 20} characters. If it is empty, write one from the title.")
+    if "keywords" in fields:
+        rules.append(f"Keywords: between {keyword_min} and {keyword_max} unique keywords, most relevant first, "
+                     + ("" if keyword_case_overridden(direction) else "lowercase, ")
+                     + "no hashtags or punctuation.")
+    lines += ["", "Rules:"] + ["- " + r for r in rules]
+    if copyright_free:
+        lines += ["", COPYRIGHT_FREE_RULES]
+    if never_use:
+        lines += ["", "Never use these words or phrases: " + ", ".join(never_use) + "."]
+    if (photo_avoid or "").strip():
+        lines += ["", "Don't use these words, names or ideas: " + single_line(photo_avoid)]
+    if symbols in ("convert", "remove"):
+        lines += ["", "Write words instead of symbols (\"and\" instead of \"&\")."]
+    if (direction or "").strip() and direction.strip() != (context or "").strip():
+        lines += ["", "The photographer's general directions (follow them where they apply):", direction.strip()]
+    keep = [dict(REWORD_FIELDS)[f].lower() for f, _ in REWORD_FIELDS if f not in fields]
+    if keep:
+        lines += ["", "Give the " + " and ".join(keep) + " back exactly as they are."]
+    lines += ["", 'Output only JSON in exactly this form: {"title": "...", "description": "...", "keywords": ["..."]}']
+    return "\n".join(lines)
+
+
+REWORD_SCHEMA = {
+    "type": "object",
+    "properties": {"title": {"type": "string"}, "description": {"type": "string"},
+                   "keywords": {"type": "array", "items": {"type": "string"}}},
+    "required": ["title", "description", "keywords"],
+}
+
+
+def reword(url: str, model: str, title: str, description: str, keywords, fields, options=(), instruction: str = "",
+           dateline: str = "", fixed_keywords=(), keyword_min: int = 7, keyword_max: int = 50, context: str = "",
+           photo_note: str = "", direction: str = "", copyright_free: bool = False, symbols: str = "keep",
+           never_use=None, photo_avoid: str = "", opener=None, cancel: CancelToken | None = None,
+           name: str = "") -> dict:
+    """Reword / double-check a photo's text with the AI, text only (no image, so it's quick). Only the fields
+    asked for change; anything the AI leaves empty keeps its old value. title is the bare title (without the
+    location, date or text before titles) and keywords leave out fixed_keywords: the caller puts those back.
+    Returns {'title', 'description', 'keywords', 'seconds'}."""
+    fields = set(fields or [])
+    keyword_min, keyword_max = keyword_range(keyword_min, keyword_max)
+    room_min = max(1, keyword_min - len(fixed_keywords or []))
+    room_max = max(room_min, keyword_max - len(fixed_keywords or []))
+    prompt = build_reword_prompt(title, description, keywords, fields, options, instruction, dateline,
+                                 fixed_keywords, room_min, room_max, context, photo_note, direction,
+                                 copyright_free, symbols, never_use, photo_avoid)
+    t0 = time.monotonic()
+    debug(f"{name}: reword: fields={sorted(fields)} options={list(options or [])} instruction={_clip(instruction or '', 120)!r}")
+    parsed = {}
+    for attempt, temperature in ((1, 0.1 if set(options or []) <= {"check"} and not instruction else 0.3), (2, 0.5)):
+        if cancel is not None and cancel.is_set():
+            raise Stopped(STOPPED)
+        body = {"model": model, "stream": False, "format": REWORD_SCHEMA, "keep_alive": AI_KEEP_ALIVE,
+                "options": {"temperature": temperature, "num_ctx": AI_NUM_CTX, "num_predict": MAX_REPLY_TOKENS},
+                "messages": [{"role": "system", "content": "You edit the titles, descriptions and keywords of stock "
+                              "photos. Reply with JSON only, no explanations."},
+                             {"role": "user", "content": prompt}]}
+        resp = _chat(url, body, opener, cancel)
+        content = (resp.get("message") or {}).get("content", "") or ""
+        parsed = _parse_json(content)
+        debug(f"{name}: reword: attempt {attempt}, {time.monotonic() - t0:.1f} s: {_clip(content, 300)}")
+        if resp.get("done_reason") != "length" and any(parsed.get(f) for f in fields):
+            break
+    never = list(never_use or []) + avoid_terms(photo_avoid)
+    new_title, new_desc, new_kws = title, description, list(keywords or [])
+    if "title" in fields:
+        t = split_leaked_keywords(str(parsed.get("title", "") or "").strip())[0]
+        t = drop_sizes(tidy_symbols(t, symbols))
+        t = clean_title(t) if title_case_overridden(direction) else title_case(t)
+        t = drop_never_from_title(t, never) if never else t
+        if len(t.split()) >= 2:
+            new_title = t
+    if "description" in fields:
+        d = clean_description(str(parsed.get("description", "") or ""), symbols, never)
+        if len(d.split()) >= 5 and d.rstrip(".").casefold() != new_title.casefold():
+            new_desc = d
+    if "keywords" in fields:
+        k = drop_never_keywords(drop_size_keywords([tidy_symbols(str(x), symbols)
+                                                    for x in _as_list(parsed.get("keywords", []))]), never)
+        if copyright_free or "no_names" in set(options or []):
+            k = drop_brand_keywords(k)
+        fixed = {x.casefold() for x in fixed_keywords or []}
+        k = [x for x in seo_keywords(k, lower=not keyword_case_overridden(direction),
+                                     protect=" ".join([direction or "", context or "", photo_note or ""]))
+             if x.casefold() not in fixed][:room_max]
+        if len(k) >= min(room_min, len(new_kws)) and k:
+            new_kws = k
+    if (new_title, new_desc, new_kws) == (title, description, list(keywords or [])) and not parsed:
+        raise ApiError(EMPTY_REPLY)
+    return {"title": new_title, "description": new_desc, "keywords": new_kws,
+            "seconds": round(time.monotonic() - t0, 1)}
+
 
 def prepare_image(path: str, max_edge: int = PREVIEW_MAX_EDGE) -> str:
     """Small upright JPEG copy for the AI model, made in memory only. Returns base64."""
@@ -2905,10 +3202,11 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
              symbols: str = "keep", feedback: str = "", rejected_title: str = "",
              title_length: str = "detailed", expand_short: bool = False,
              read_label: bool = False, tidy: bool = False, never_use=None, never_in_title: bool = True,
-             photo_avoid: str = "") -> dict:
+             photo_avoid: str = "", description: bool = False) -> dict:
     """Ask the local vision model for an SEO title and keywords.
     With revise=True and any notes or directions given, a second (text-only) pass checks the draft
-    against them. Returns {'title', 'keywords', 'seconds', 'revised'}."""
+    against them. With description=True a description (caption) is also written, once the title is
+    final. Returns {'title', 'keywords', 'description', 'seconds', 'revised'}."""
     keyword_min, keyword_max = keyword_range(keyword_min, keyword_max)
     name = os.path.basename(path)
     t0 = time.monotonic()
@@ -2950,7 +3248,7 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
         """One request to the model. A reply that comes back cut off or unreadable is asked again once,
         a little more freely (a re-roll almost always fixes a model that got stuck)."""
         need = ("title" if schema in (OUTPUT_SCHEMA, TITLE_SCHEMA) else "brand" if schema is LABEL_SCHEMA
-                else "keywords")                     # what a usable reply must have
+                else "description" if schema is DESCRIPTION_SCHEMA else "keywords")                     # what a usable reply must have
         for attempt in (1, 2):
             if cancel is not None and cancel.is_set():
                 debug(f"{name}: {step}: stopped before sending")
@@ -2978,7 +3276,7 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
             cut_off = resp.get("done_reason") == "length"
             # usable: has a title (main request), or has the keyword list at all (an empty top-up just means
             # "nothing more"). The optional double-check isn't re-asked when it's unreadable: the draft stays.
-            usable = bool(parsed.get("title")) if need == "title" else need in parsed
+            usable = bool(parsed.get(need)) if need in ("title", "description") else need in parsed
             if not cut_off and (usable or step in ("double-check", "read label")):
                 return parsed
             debug(f"{name}: {step}: PROBLEM: reply {'was cut off at the length cap' if cut_off else 'had no ' + need}"
@@ -3120,9 +3418,27 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
     if not title and not keywords:
         debug(f"{name}: FAILED: no title or keywords after {time.monotonic() - started:.1f} s")
         raise ApiError(EMPTY_REPLY)
+    desc, cats = "", []
+    if description and title:
+        # the description (caption) Alamy, Dreamstime and Shutterstock want: written from the finished title,
+        # looking at the photo again so it can add what the title leaves out
+        try:
+            got = ask(build_description_prompt(title, keywords, own_context, photo_note, direction, title_location,
+                                               copyright_free, symbols, never_use, photo_avoid),
+                      DESCRIPTION_SCHEMA, "description")
+            desc = clean_description(str(got.get("description", "") or ""), symbols, never_use)
+            cats = shutterstock_categories(got.get("categories"))
+            if len(desc.split()) < 5 or desc.rstrip(".").casefold() == title.casefold():
+                desc = ""                            # nothing better than the title: it stands in for it
+            debug(f"{name}: description: {desc!r}")
+        except Stopped:
+            raise
+        except ApiError:
+            desc = ""                                # the title is saved as the description instead
     debug(f"{name}: DONE in {time.monotonic() - started:.1f} s: {len(keywords)} keywords, revised={revised}, "
           f"title={title!r}")
-    result = {"title": title, "keywords": keywords, "seconds": round(time.monotonic() - started, 1),
+    result = {"title": title, "keywords": keywords, "description": desc, "categories": cats,
+              "seconds": round(time.monotonic() - started, 1),
               "revised": revised, "label": read}
     if copyright_free:
         names = brand_names_in(title)

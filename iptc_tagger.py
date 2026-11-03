@@ -202,7 +202,7 @@ def photo_matches(ph, key: str, search: str = "", keyword_min: int = 0, sites=()
         "unchecked": not ph.checked,
         "no_date": not ph.taken,
         "has_note": bool(ph.note.strip() or ph.avoid.strip()),
-        "site_problems": bool(core.site_problems(ph.title, ph.keywords, sites)) if key == "site_problems" else True,
+        "site_problems": bool(core.site_problems(ph.title, ph.keywords, sites, ph.description)) if key == "site_problems" else True,
     }.get(key, True)
     if not ok:
         return False
@@ -220,8 +220,12 @@ class Photo:
         self.avoid = ""                  # per-photo: what the AI must not say (not saved to the file)
         self.location = ""               # per-photo location for Editorial; "" = the main location
         self.title = ""
+        self.description = ""            # own description (caption); "" = the title is saved as the description
+        self.categories: list[str] = []  # Shutterstock categories the AI chose (for the upload CSV only)
+        self.rewording = False           # the AI is rewording the text (not looking at the photo)
         self.keywords: list[str] = []
         self.file_title = ""             # what is currently saved in the file
+        self.file_description = ""       # ("" when the file's description is just its title)
         self.file_keywords: list[str] = []
         self.status = "reading"
         self.message = ""
@@ -243,10 +247,21 @@ class Photo:
         self.title_date = ""                          # the date last put into this title (custom or own)
         self.type_combo: QComboBox | None = None      # the row's Type dropdown
 
+    track_description = True     # False while the Description field isn't saved (Settings → Saving)
+
     @property
     def changed(self) -> bool:
-        return (core.clean_title(self.title), core.clean_keywords(self.keywords)) != \
+        desc = Photo.track_description and \
+            core.norm_description(self.description) != core.norm_description(self.file_description)
+        return desc or (core.clean_title(self.title), core.clean_keywords(self.keywords)) != \
                (core.clean_title(self.file_title), core.clean_keywords(self.file_keywords))
+
+    def load_file(self, meta: dict):
+        """Take what was read from the file as the saved state. A description that is just the title (what
+        a save without a description of its own writes) counts as no description."""
+        self.file_title, self.file_keywords = meta["title"], list(meta["keywords"])
+        d = core.norm_description(meta.get("description", ""))
+        self.file_description = "" if core.clean_title(d) == core.clean_title(self.file_title) else d
 
 
 # --------------------------------------------------------------------------- settings dialog
@@ -380,6 +395,13 @@ class SettingsDialog(QDialog):
                                    "packaging or sign (brand, product, flavour, size). The title and keywords then use\n"
                                    "those exact spellings. Adds one quick step per photo. Not used for Copyright-free.")
         f_text.addRow("Labels", self.read_label)
+        self.ai_desc = QCheckBox("Also write a description (caption) for each photo")
+        self.ai_desc.setChecked(bool(settings.get("ai_description", True)))
+        self.ai_desc.setToolTip("After the title, the AI writes one or two sentences describing the photo (up to 200\n"
+                                "characters). Saved as the Description / Caption, which Alamy, Dreamstime and Shutterstock\n"
+                                "read, and used in the Shutterstock CSV. Adds one quick step per photo. Off: the title is\n"
+                                "saved as the description, as before.")
+        f_text.addRow("Description", self.ai_desc)
         self.tidy_kw = QCheckBox("Tidy keywords: remove filler words and put the title's words first")
         self.tidy_kw.setChecked(bool(settings.get("tidy_keywords", True)))
         self.tidy_kw.setToolTip("Removes keywords nobody searches for (photo, image, stock, jpeg, high quality…) and long\n"
@@ -783,6 +805,7 @@ class SettingsDialog(QDialog):
                  title_length=self.title_len.currentData() or "detailed",
                  confirm_save=self.confirm_save.isChecked(),
                  read_label=self.read_label.isChecked(), tidy_keywords=self.tidy_kw.isChecked(),
+                 ai_description=self.ai_desc.isChecked(),
                  check_updates=self.updates.isChecked(), auto_download=self.auto_update.isChecked(),
                  preload_model=self.preload.isChecked(), keep_model_ready=self.keep_ready.isChecked(),
                  finish_alert=self.finish_alert.currentData() or "both",
@@ -835,6 +858,15 @@ class ReviewPanel(QWidget):
         self.title_info = QLabel()
         self.title_info.setStyleSheet(f"color:{GREY}")
         self.title_info.setWordWrap(True)
+        self.desc = QPlainTextEdit()
+        self.desc.setPlaceholderText("Description (caption) for Alamy, Dreamstime and Shutterstock. "
+                                     "Empty: the title is used")
+        self.desc.setTabChangesFocus(True)
+        self.desc.setFixedHeight(64)
+        self.desc_info = QLabel()
+        self.desc_info.setStyleSheet(f"color:{GREY}")
+        self.desc_info.setWordWrap(True)
+        self.desc_info.setTextFormat(Qt.RichText)
         self.keywords = QPlainTextEdit()
         self.keywords.setPlaceholderText("Keywords, separated by commas")
         self.keywords.setTabChangesFocus(True)
@@ -884,6 +916,10 @@ class ReviewPanel(QWidget):
         b.addWidget(lbl("Title"))
         b.addWidget(self.title)
         b.addWidget(self.title_info)
+        self.desc_label = lbl("Description")
+        b.addWidget(self.desc_label)
+        b.addWidget(self.desc)
+        b.addWidget(self.desc_info)
         b.addWidget(lbl("Keywords"))
         b.addWidget(self.keywords, 2)
         b.addWidget(self.kw_info)
@@ -891,12 +927,17 @@ class ReviewPanel(QWidget):
         self.b_copy.setToolTip("Copy this photo's title and keywords (Ctrl/⌘+C), to paste onto other photos")
         self.b_paste = QPushButton("Paste")
         self.b_paste.setToolTip("Paste a copied title and keywords into this photo (Ctrl/⌘+V)")
+        self.b_reword = QPushButton("Reword…")
+        self.b_reword.setToolTip("Double-check or reword this photo's title, description and keywords, text only:\n"
+                                 "pick clean-up options or type your own instructions. The location and date in\n"
+                                 "front of the title are kept as they are.")
         self.b_redo = QPushButton("Redo with Reasons…")
         self.b_redo.setToolTip("Tell the AI what's wrong with this suggestion (too generic, wrong subject, too long…)\n"
                                "and it tries again with that in mind")
         r1 = QHBoxLayout()
         r1.addWidget(self.b_identify)
         r1.addWidget(self.b_redo)
+        r1.addWidget(self.b_reword)
         r1.addWidget(self.b_revert)
         r1.addWidget(self.b_copy)
         r1.addWidget(self.b_paste)
@@ -919,9 +960,11 @@ class ReviewPanel(QWidget):
         self.avoid.textEdited.connect(self._edited)
         self.type.currentIndexChanged.connect(self._type_chosen)
         self.title.textEdited.connect(self._edited)
+        self.desc.textChanged.connect(self._edited)
         self.keywords.textChanged.connect(self._edited)
         self.b_identify.clicked.connect(lambda *_: self.photo and win.identify_photos([self.photo]))
         self.b_redo.clicked.connect(lambda *_: self.photo and win.redo_photos([self.photo]))
+        self.b_reword.clicked.connect(lambda *_: self.photo and win.reword_photos([self.photo]))
         self.b_revert.clicked.connect(lambda *_: self.photo and win.revert_photos([self.photo]))
         self.b_save.clicked.connect(lambda *_: self.photo and win.save_photos([self.photo]))
         self.b_save_next.clicked.connect(lambda *_: win.save_and_next())
@@ -953,8 +996,12 @@ class ReviewPanel(QWidget):
         if self.avoid.text() != ph.avoid:
             self.avoid.setText(ph.avoid)
         self.refresh_location()
+        for w in (self.desc, self.desc_info, self.desc_label):
+            w.setVisible(Photo.track_description)
         if core.clean_title(self.title.text()) != ph.title or new_photo:
             self.title.setText(ph.title)
+        if core.norm_description(self.desc.toPlainText()) != ph.description or new_photo:
+            self.desc.setPlainText(ph.description)
         if core.parse_keywords_text(self.keywords.toPlainText()) != ph.keywords or new_photo:
             self.keywords.setPlainText(core.keywords_to_text(ph.keywords))
         self._loading = False
@@ -975,11 +1022,16 @@ class ReviewPanel(QWidget):
             w.setReadOnly(busy)
         self.type.setEnabled(not busy)
         self.keywords.setReadOnly(busy)
+        self.desc.setReadOnly(busy)
         status = self.win.status_text(ph)
         self.state.setText(f"<span style='color:{status[1]}'>{status[0]}</span>")
         info = f"{len(ph.title)} characters"
         problems = self.win.site_problems(ph)
         self.title_info.setText(info)
+        d = ph.description
+        self.desc_info.setText((f"{len(d)} characters, {len(d.split())} words" if d else
+                                "No description of its own: the title is saved as the description")
+                               + (f"<br>Shutterstock categories: {', '.join(ph.categories)}" if ph.categories else ""))
         kw = f"{len(ph.keywords)} keyword{'s' if len(ph.keywords) != 1 else ''}"
         if problems:
             kw += "".join(f"<br><span style='color:{WARN_FG}'>⚠ {p}</span>" for p in problems)
@@ -989,6 +1041,7 @@ class ReviewPanel(QWidget):
         self.b_save_next.setEnabled(not busy and (can_write or not ph.changed))
         self.b_identify.setEnabled(not busy)
         self.b_redo.setEnabled(not busy)
+        self.b_reword.setEnabled(not busy and bool(ph.title.strip() or ph.keywords))
         self.b_revert.setEnabled(ph.changed and not busy)
         self.b_paste.setEnabled(not busy)
         row = self.win.rows.get(ph.path, 0)
@@ -1024,12 +1077,13 @@ class ReviewPanel(QWidget):
         if self._loading or self.photo is None or self.photo.busy:
             return
         ph = self.photo
-        before = (ph.title, list(ph.keywords))
+        before = (ph.title, ph.description, list(ph.keywords))
         ph.note = core.single_line(self.note.text())
         ph.avoid = core.single_line(self.avoid.text())
         ph.title = core.clean_title(self.title.text())
+        ph.description = core.norm_description(self.desc.toPlainText())
         ph.keywords = core.parse_keywords_text(self.keywords.toPlainText())
-        if (ph.title, ph.keywords) != before:
+        if (ph.title, ph.description, ph.keywords) != before:
             if ph.status == "saved":
                 ph.status = "ready"
             ph.message = ""
@@ -1182,7 +1236,7 @@ class LocationDialog(QDialog):
 
 
 class FindReplaceDialog(QDialog):
-    """Find and replace a word or phrase in the titles and keywords of several photos at once."""
+    """Find and replace a word or phrase in the titles, descriptions and keywords of several photos at once."""
 
     def __init__(self, parent, photos, scope: str, find: str = ""):
         super().__init__(parent)
@@ -1209,13 +1263,15 @@ class FindReplaceDialog(QDialog):
         opts = QHBoxLayout()
         self.in_titles = QCheckBox("Titles")
         self.in_titles.setChecked(True)
+        self.in_desc = QCheckBox("Descriptions")
+        self.in_desc.setChecked(True)
         self.in_keywords = QCheckBox("Keywords")
         self.in_keywords.setChecked(True)
         self.whole = QCheckBox("Whole words only")
         self.whole.setChecked(True)
         self.whole.setToolTip("On: 'cat' doesn't change 'category'. Off: it changes any text that matches.")
         self.case = QCheckBox("Match case")
-        for w in (self.in_titles, self.in_keywords, self.whole, self.case):
+        for w in (self.in_titles, self.in_desc, self.in_keywords, self.whole, self.case):
             opts.addWidget(w)
             w.toggled.connect(lambda *_: self._preview())
         opts.addStretch(1)
@@ -1238,7 +1294,7 @@ class FindReplaceDialog(QDialog):
                 self.whole.isChecked(), self.case.isChecked())
 
     def changes(self) -> list[tuple]:
-        """(photo, new title, new keywords) for every photo that would change."""
+        """(photo, new title, new keywords, new description) for every photo that would change."""
         find, repl, in_t, in_k, whole, case = self.values()
         out = []
         if not find.strip():
@@ -1246,8 +1302,10 @@ class FindReplaceDialog(QDialog):
         for ph in self.photos:
             t = core.clean_title(core.find_replace(ph.title, find, repl, whole, case)) if in_t else ph.title
             k = core.find_replace_keywords(ph.keywords, find, repl, whole, case) if in_k else list(ph.keywords)
-            if t != ph.title or k != ph.keywords:
-                out.append((ph, t, k))
+            d = core.norm_description(core.find_replace(ph.description, find, repl, whole, case)) \
+                if self.in_desc.isChecked() and ph.description else ph.description
+            if t != ph.title or k != ph.keywords or d != ph.description:
+                out.append((ph, t, k, d))
         return out
 
     def _preview(self):
@@ -1258,8 +1316,9 @@ class FindReplaceDialog(QDialog):
         elif not ch:
             self.result.setText("Not found in these photos.")
         else:
-            ph, t, _k = ch[0]
-            example = (f"<br>e.g. {os.path.basename(ph.path)}: <i>{t}</i>" if t != ph.title else "")
+            ph, t, _k, d = ch[0]
+            example = (f"<br>e.g. {os.path.basename(ph.path)}: <i>{t}</i>" if t != ph.title else
+                       f"<br>e.g. {os.path.basename(ph.path)}: <i>{d}</i>" if d != ph.description else "")
             self.result.setText(f"<b>{len(ch)} photo{'s' if len(ch) != 1 else ''} will change.</b>{example}")
 
 
@@ -1312,6 +1371,110 @@ class RedoDialog(QDialog):
         return core.redo_feedback([k for k, cb in self.boxes.items() if cb.isChecked()], self.other.text())
 
 
+class RewordDialog(QDialog):
+    """Reword / Double-check: tick clean-up options and/or type your own instructions, and the AI rewrites the
+    text already written (no image). The location, date and text before titles are kept exactly as they are."""
+
+    def __init__(self, parent, count: int, settings: dict, current=None, kept: str = ""):
+        super().__init__(parent)
+        self.setWindowTitle("Reword / Double-check")
+        # its own window (title bar, resizable, can be maximised), always on top of the main window
+        self.setWindowFlags(Qt.Window | Qt.WindowTitleHint | Qt.WindowCloseButtonHint
+                            | Qt.WindowMinMaxButtonsHint | Qt.WindowSystemMenuHint)
+        self.setWindowModality(Qt.WindowModal)
+        self.setSizeGripEnabled(True)
+        self.setMinimumWidth(620)
+        lay = QVBoxLayout(self)
+        if count == 1 and current:
+            head = QLabel(f"<b>Title:</b> {current[0]}" + (f"<br><b>Description:</b> {current[1]}" if current[1] else ""))
+        else:
+            head = QLabel(f"<b>{count} photos</b>. Each one is reworded on its own.")
+        head.setWordWrap(True)
+        lay.addWidget(head)
+        if kept:
+            k = QLabel(f"Kept exactly as it is, in front of the title: <b>{kept}</b>")
+            k.setWordWrap(True)
+            k.setStyleSheet(f"color:{GREY}")
+            lay.addWidget(k)
+
+        row = QHBoxLayout()
+        row.addWidget(QLabel("<b>Work on:</b>"))
+        self.fields = {}
+        last_fields = set(settings.get("reword_fields") or [f for f, _ in core.REWORD_FIELDS])
+        for key, label in core.REWORD_FIELDS:
+            cb = QCheckBox(label)
+            cb.setChecked(key in last_fields)
+            cb.toggled.connect(lambda *_: self._update())
+            self.fields[key] = cb
+            row.addWidget(cb)
+        row.addStretch(1)
+        lay.addLayout(row)
+
+        last = set(settings.get("reword_options") or [])
+        self.boxes = {}
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(24)
+        for col, (heading, opts) in enumerate((("Title and description", core.REWORD_TEXT_OPTIONS),
+                                               ("Keywords", core.REWORD_KEYWORD_OPTIONS))):
+            grid.addWidget(QLabel(f"<b>{heading}</b>"), 0, col)
+            for r, (key, label, text) in enumerate(opts, start=1):
+                cb = QCheckBox(label)
+                cb.setToolTip(text)                   # what the AI is told
+                cb.setChecked(key in last)
+                cb.toggled.connect(lambda *_: self._update())
+                self.boxes[key] = cb
+                grid.addWidget(cb, r, col)
+        grid.setRowStretch(len(core.REWORD_TEXT_OPTIONS) + 1, 1)
+        lay.addLayout(grid)
+
+        lay.addWidget(QLabel("<b>Your own instructions</b> (optional):"))
+        self.text = QPlainTextEdit(settings.get("reword_text", "") or "")
+        self.text.setPlaceholderText("e.g. call it a heron, not a crane / start with the product name / "
+                                     "mention the cherry blossoms / British spelling")
+        self.text.setFixedHeight(64)
+        self.text.setTabChangesFocus(True)
+        self.text.textChanged.connect(self._update)
+        lay.addWidget(self.text)
+        self.context = QCheckBox("Tell the AI the location and date, so the wording fits them (they're never changed)")
+        self.context.setChecked(bool(settings.get("reword_context", True)))
+        self.context.setVisible(bool(kept))
+        lay.addWidget(self.context)
+        tip = QLabel("Only the text is sent, not the photo, so this is quick. Your Avoid words, Never use list and "
+                     "instructions still apply. The text before is kept under Earlier suggestions (right-click), and "
+                     "nothing is saved into the files until you save.")
+        tip.setWordWrap(True)
+        tip.setStyleSheet(f"color:{GREY}")
+        lay.addWidget(tip)
+        self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        self.buttons.accepted.connect(self.accept)
+        self.buttons.rejected.connect(self.reject)
+        lay.addWidget(self.buttons)
+        self._update()
+
+    def chosen_fields(self) -> list[str]:
+        return [k for k, cb in self.fields.items() if cb.isChecked()]
+
+    def options(self) -> list[str]:
+        return [k for k, cb in self.boxes.items() if cb.isChecked()]
+
+    def instruction(self) -> str:
+        return self.text.toPlainText().strip()
+
+    def _update(self):
+        fields = set(self.chosen_fields())
+        for key, cb in self.boxes.items():
+            cb.setEnabled("keywords" in fields if key.startswith("kw_") else bool({"title", "description"} & fields))
+        ok = bool(fields)
+        b = self.buttons.button(QDialogButtonBox.Ok)
+        b.setEnabled(ok)
+        only_check = set(self.options()) <= {"check"} and not self.instruction()
+        b.setText("Double-check" if only_check else "Reword")
+
+    def remember(self, settings: dict):
+        settings.update(reword_fields=self.chosen_fields(), reword_options=self.options(),
+                        reword_text=self.instruction(), reword_context=self.context.isChecked())
+
+
 UPDATE_LINK = "#0b3a82"        # links on the light blue update banner
 
 
@@ -1333,6 +1496,7 @@ class MainWindow(QMainWindow):
 
         self.settings = core.load_settings()
         self._sites = None                 # stock sites whose rules are checked (worked out when first needed)
+        Photo.track_description = "description" in core.meta_fields(self.settings)
         core.set_debug(self.settings.get("debug_log", False))
         self.photos: list[Photo] = []
         self.rows: dict[str, int] = {}
@@ -1440,6 +1604,9 @@ class MainWindow(QMainWindow):
         self.btn_redo_checked = button("Redo Checked…", lambda: self.redo_photos(
             [p for p in self.checked_photos() if not p.busy]))
         self.btn_redo_checked.setToolTip("Redo the checked photos with reasons: tell the AI what's wrong and it tries again")
+        self.btn_reword = button("Reword…", lambda: self.reword_photos(self.targets()[0]))
+        self.btn_reword.setToolTip("Double-check or reword the titles, descriptions and keywords already written, text\n"
+                                   "only (quick). Uses the checked photos, else the selected, else all shown.")
         self.btn_export = button("Export CSV…", self.export_csv)
         self.btn_stockup_all = button("Send All to StockUp", lambda: self.open_in_stockup(list(self.photos)),
                                       QStyle.SP_ArrowRight, primary=True)
@@ -1461,7 +1628,7 @@ class MainWindow(QMainWindow):
         for w in (self.btn_add, self.btn_folder, self.btn_watch):
             top.addWidget(w)
         top.addSpacing(16)
-        for w in (self.btn_identify, self.btn_redo_checked, self.btn_save, self.btn_export):
+        for w in (self.btn_identify, self.btn_redo_checked, self.btn_reword, self.btn_save, self.btn_export):
             top.addWidget(w)
         top.addSpacing(16)
         for w in (self.btn_check_all, self.btn_uncheck_all):
@@ -2251,10 +2418,15 @@ class MainWindow(QMainWindow):
                 e["type"] = ph.type_key
             if ph.history:
                 e["history"] = ph.history
+            if ph.categories:
+                e["categories"] = ph.categories
             title, keywords = ph.redo["before"] if (ph.redo and "before" in ph.redo) else (ph.title, ph.keywords)
-            if ph.status != "reading" and (core.clean_title(title), core.clean_keywords(keywords)) != \
-                    (core.clean_title(ph.file_title), core.clean_keywords(ph.file_keywords)):
+            desc = ph.redo.get("description", ph.description) if ph.redo else ph.description
+            if ph.status != "reading" and ((core.clean_title(title), core.clean_keywords(keywords)) !=
+                                           (core.clean_title(ph.file_title), core.clean_keywords(ph.file_keywords))
+                                           or desc != ph.file_description):
                 e["title"], e["keywords"] = title, list(keywords)   # only what isn't saved in the file yet
+                e["description"] = desc
             entries.append(e)
         try:
             if entries:
@@ -2294,6 +2466,7 @@ class MainWindow(QMainWindow):
         ph.note = e.get("note", "") or ""
         ph.avoid = e.get("avoid", "") or ""
         ph.location = e.get("location", "") or ""
+        ph.categories = core.shutterstock_categories(e.get("categories"))
         ph.history = [h for h in e.get("history") or [] if isinstance(h, dict)][-core.SUGGESTIONS_PER_PHOTO:]
         if e.get("type"):
             ph.type_key = e["type"]
@@ -2301,6 +2474,7 @@ class MainWindow(QMainWindow):
                 self.fill_type_combo(ph.type_combo, ph.type_key)
         if "title" in e:
             ph.title, ph.keywords = str(e.get("title") or ""), [str(k) for k in e.get("keywords") or []]
+            ph.description = core.norm_description(str(e.get("description", ph.file_description) or ""))
             if ph.status != "error":
                 ph.status, ph.message = "ready", "Brought back, not saved yet"
 
@@ -2345,9 +2519,10 @@ class MainWindow(QMainWindow):
         if not ph.title.strip() and not ph.keywords:
             return
         last = ph.history[-1] if ph.history else None
-        if last and last["title"] == ph.title and last["keywords"] == ph.keywords:
+        if last and last["title"] == ph.title and last["keywords"] == ph.keywords \
+                and last.get("description", "") == ph.description:
             return
-        ph.history.append({"title": ph.title, "keywords": list(ph.keywords), "how": how,
+        ph.history.append({"title": ph.title, "description": ph.description, "keywords": list(ph.keywords), "how": how,
                            "time": time.strftime("%H:%M")})
         del ph.history[:-core.SUGGESTIONS_PER_PHOTO]
 
@@ -2355,6 +2530,7 @@ class MainWindow(QMainWindow):
         if ph.busy:
             return
         ph.title, ph.keywords = entry["title"], list(entry["keywords"])
+        ph.description = entry.get("description", "")
         ph.status = "suggested" if ph.changed else "ready"
         ph.message = f"{entry['how']} from {entry['time']} put back" + (", not saved yet" if ph.changed else "")
         self._show(ph)
@@ -2382,22 +2558,32 @@ class MainWindow(QMainWindow):
             return
         folder = os.path.dirname(photos[0].path)
         filters = [label + " (*.csv)" for _, label in core.CSV_FORMATS]
+        suggested = core.csv_file_name("shutterstock")          # e.g. shutterstock_2026-11-02.csv
         path, chosen = QFileDialog.getSaveFileName(self, f"Export {len(photos)} photo{'s' if len(photos) != 1 else ''} "
-                                                   "to CSV", os.path.join(folder, "metadata.csv"), ";;".join(filters))
+                                                   "to CSV", os.path.join(folder, suggested), ";;".join(filters))
         if not path:
             return
         if not path.lower().endswith(".csv"):
             path += ".csv"
         fmt = next((k for (k, label), flt in zip(core.CSV_FORMATS, filters) if flt == chosen), "shutterstock")
+        if os.path.basename(path) == suggested and fmt != "shutterstock":
+            path = os.path.join(os.path.dirname(path), core.csv_file_name(fmt))   # adobe_2026-11-02.csv
+        categories = []
+        missing = [p for p in photos if not p.categories]
+        if fmt == "shutterstock" and missing:         # photos detected with the description on have their own
+            categories = self._ask_shutterstock_categories(len(missing), len(photos))
+            if categories is None:
+                return
         labels = dict(self.type_items())
         # a RAW's titles are exported for the JPEG Lightroom will make from it (photo.CR3 -> photo.jpg)
         rows = [{"file": (os.path.splitext(os.path.basename(p.path))[0] + ".jpg") if core.is_raw(p.path)
                  else os.path.basename(p.path), "folder": os.path.dirname(p.path), "title": p.title,
+                 "description": p.description, "categories": list(p.categories),
                  "keywords": list(p.keywords), "editorial": self.is_editorial(p),
                  "type": labels.get(self.effective_type(p), ""), "note": p.note, "taken": p.taken,
                  "saved": not p.changed} for p in photos]
         try:
-            n = core.export_csv(path, rows, fmt)
+            n = core.export_csv(path, rows, fmt, categories)
         except OSError as e:
             QMessageBox.warning(self, "Export CSV", f"The CSV couldn't be saved:\n{e}")
             return
@@ -2407,6 +2593,44 @@ class MainWindow(QMainWindow):
                             + (f" {unsaved} of them {'has' if unsaved == 1 else 'have'} changes that aren't saved "
                                "into the files yet."
                                if unsaved else ""))
+
+    def _ask_shutterstock_categories(self, count: int, total: int | None = None) -> list[str] | None:
+        """Shutterstock rejects an upload CSV without categories: ask for 1 or 2 (remembered for next time).
+        None = cancelled."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Shutterstock categories")
+        lay = QVBoxLayout(dlg)
+        n = f"{count} photo{'s' if count != 1 else ''}"
+        info = QLabel(f"Shutterstock needs one or two categories for each photo. "
+                      + (f"These go on all {n} in this CSV" if not total or total == count else
+                         f"The AI chose them for {total - count} of the photos; these go on the other {n}")
+                      + ". You can change single photos on the site after the upload.")
+        info.setWordWrap(True)
+        lay.addWidget(info)
+        last = [c for c in self.settings.get("shutterstock_categories") or [] if c in core.SHUTTERSTOCK_CATEGORIES]
+        combos = []
+        form = QFormLayout()
+        for i, label in enumerate(("Category 1", "Category 2 (optional)")):
+            cb = QComboBox()
+            if i:
+                cb.addItem("(none)", "")
+            for c in core.SHUTTERSTOCK_CATEGORIES:
+                cb.addItem(c, c)
+            if len(last) > i:
+                cb.setCurrentIndex(max(0, cb.findData(last[i])))
+            form.addRow(label, cb)
+            combos.append(cb)
+        lay.addLayout(form)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        lay.addWidget(buttons)
+        if not dlg.exec():
+            return None
+        cats = list(dict.fromkeys(c for c in (cb.currentData() for cb in combos) if c))
+        self.settings["shutterstock_categories"] = cats
+        core.save_settings(self.settings)
+        return cats
 
     # ---------- update check
     def check_updates(self, on_done=None, status: dict | None = None):
@@ -2596,6 +2820,7 @@ class MainWindow(QMainWindow):
         if dlg.exec():
             self.settings = dlg.values()
             self._sites = None
+            Photo.track_description = "description" in core.meta_fields(self.settings)
             for ph in self.photos:
                 self._show(ph)
             core.set_debug(self.settings.get("debug_log", False))
@@ -2735,8 +2960,8 @@ class MainWindow(QMainWindow):
             ph = self._photo(path)
             if not ph:
                 continue
-            ph.file_title, ph.file_keywords = meta["title"], list(meta["keywords"])
-            ph.title, ph.keywords = ph.file_title, list(ph.file_keywords)
+            ph.load_file(meta)
+            ph.title, ph.keywords, ph.description = ph.file_title, list(ph.file_keywords), ph.file_description
             ph.taken = meta.get("taken", "")
             ph.status, ph.message = "ready", ("Has metadata" if (ph.title or ph.keywords) else "No title or keywords yet")
             self._apply_restore(ph)
@@ -2767,7 +2992,7 @@ class MainWindow(QMainWindow):
         """What the stock sites you sell on would reject in this photo's title and keywords."""
         if self._sites is None:
             self._sites = core.stock_sites(self.settings)
-        return core.site_problems(ph.title, ph.keywords, self._sites)
+        return core.site_problems(ph.title, ph.keywords, self._sites, ph.description)
 
     def status_text(self, ph: Photo) -> tuple[str, str]:
         if ph.busy or ph.status in ("error", "saved", "reading"):
@@ -2924,8 +3149,8 @@ class MainWindow(QMainWindow):
             return
         changes = dlg.changes()
         find, repl = dlg.values()[:2]
-        for ph, t, k in changes:
-            ph.title, ph.keywords = t, k
+        for ph, t, k, d in changes:
+            ph.title, ph.keywords, ph.description = t, k, d
             if ph.status == "saved":
                 ph.status = "ready"
             ph.message = "Find and replace, not saved yet"
@@ -2941,7 +3166,7 @@ class MainWindow(QMainWindow):
         for ph in photos:
             if ph.busy or not ph.changed:
                 continue
-            ph.title, ph.keywords = ph.file_title, list(ph.file_keywords)
+            ph.title, ph.keywords, ph.description = ph.file_title, list(ph.file_keywords), ph.file_description
             ph.status, ph.message = "ready", "Reverted to what's saved in the file"
             self._show(ph)
         self.apply_filter()
@@ -2979,6 +3204,9 @@ class MainWindow(QMainWindow):
         a = menu.addAction(f"Redo checked photos with reasons… ({len(checked_idle)})")
         a.setEnabled(bool(checked_idle))
         a.triggered.connect(lambda *_: self.redo_photos(checked_idle))
+        a = menu.addAction("Reword / double-check text…" if one else f"Reword / double-check {len(idle)} photos…")
+        a.setEnabled(any(p.title.strip() or p.keywords for p in idle))
+        a.triggered.connect(lambda *_: self.reword_photos(idle))
         a = menu.addAction("Set location…" if one else f"Set location for {len(idle)} photos…")
         a.setEnabled(bool(idle) and bool(self.settings.get("editorial_on")))
         if not self.settings.get("editorial_on"):
@@ -3083,20 +3311,21 @@ class MainWindow(QMainWindow):
         return self.custom_date_value() or ph.taken
 
     # ---------- text before titles
-    def bare_title(self, ph: Photo, strip_date: bool = True, extra_locations=()) -> str:
+    def bare_title(self, ph: Photo, strip_date: bool = True, extra_locations=(), text: str | None = None,
+                   with_prefix: bool = True) -> str:
         """The photo's title without your text before titles, the location or the date: what the AI may see.
         Both the custom date and the metadata date are taken off, so switching between them never leaves
         an old date behind."""
         s = self.settings
-        t = ph.title
+        t = ph.title if text is None else text
         locs = list(dict.fromkeys(x for x in [ph.location, s.get("title_location", ""), *extra_locations] if x)) or [""]
         for d in dict.fromkeys([self.photo_date(ph), ph.title_date, ph.taken]):
             fd = core.format_date(d, s.get("title_date_format", "long")) if strip_date else ""
             for loc in locs:
                 # any_location: a location next to the date is taken off even when it isn't one of these
                 # (a title saved before the location was changed), so it's never in the title twice
-                t = core.strip_title_extras(t, core.expand_title_prefix(s.get("title_prefix", ""), d), fd, loc,
-                                            any_location=bool(fd))
+                t = core.strip_title_extras(t, core.expand_title_prefix(s.get("title_prefix", ""), d)
+                                            if with_prefix else "", fd, loc, any_location=bool(fd))
         return t
 
     def compose_title(self, ph: Photo, title: str) -> str:
@@ -3109,6 +3338,25 @@ class MainWindow(QMainWindow):
                                   core.format_date(d, s.get("title_date_format", "long")),
                                   s.get("title_date_pos", "off"), s.get("title_date_sep", "dash"),
                                   self.location_for(ph), s.get("title_loc_sep", "dash"))
+
+    def compose_description(self, ph: Photo, text: str) -> str:
+        """The description with the editorial location and date in front, the way Shutterstock and Alamy
+        want editorial captions: "Tokyo, Japan - October 26, 2026: A crowd...". Text before titles isn't added."""
+        s = self.settings
+        if not s.get("editorial_on"):
+            return text
+        d = self.photo_date(ph)
+
+        def build(t):
+            return core.norm_description(core.compose_title(
+                t, "", core.format_date(d, s.get("title_date_format", "long")) if d else "",
+                "start" if s.get("title_date_pos", "off") != "off" else "off", s.get("title_date_sep", "dash"),
+                self.location_for(ph), s.get("title_loc_sep", "dash")))
+        out = build(text)
+        if len(out) > core.DESCRIPTION_MAX:           # make room for the place and date: shorten the sentence part
+            room = len(text) - (len(out) - core.DESCRIPTION_MAX)
+            out = build(core.clean_description(text, max_len=room))
+        return out
 
     # ---------- previously used locations
     CLEAR_LOCATIONS = "Clear this list…"
@@ -3245,9 +3493,13 @@ class MainWindow(QMainWindow):
             n_lead += 1
         new_kw = core.place_editorial_keywords(kws, self.editorial_keywords(ph), s.get("editorial_pos", "before"),
                                                after=n_lead, title=base)
-        if new_title == ph.title and new_kw == core.clean_keywords(ph.keywords):
+        new_desc = ph.description
+        if ph.description:                            # the caption's "Place - Date:" in front, swapped the same way
+            bare = self.bare_title(ph, strip_date=True, extra_locations=olds, text=ph.description, with_prefix=False)
+            new_desc = self.compose_description(ph, bare or ph.description)
+        if new_title == ph.title and new_kw == core.clean_keywords(ph.keywords) and new_desc == ph.description:
             return False
-        ph.title, ph.keywords = new_title, new_kw
+        ph.title, ph.keywords, ph.description = new_title, new_kw, new_desc
         if ph.status == "saved":
             ph.status = "ready"
         return True
@@ -3397,7 +3649,9 @@ class MainWindow(QMainWindow):
         if ph is None:
             self.status.setText("Select one photo to copy its title and keywords.")
             return
-        QApplication.clipboard().setText(ph.title + "\n" + core.keywords_to_text(ph.keywords))
+        text = ph.title + "\n" + core.keywords_to_text(ph.keywords)
+        QApplication.clipboard().setText(text)
+        self.copied = (text, ph.description)          # the description goes along when this text is pasted
         self.status.setText(f"Copied the title and {len(ph.keywords)} keywords from {os.path.basename(ph.path)}. "
                             "Select other photos and paste (Ctrl/⌘+V).")
 
@@ -3421,16 +3675,20 @@ class MainWindow(QMainWindow):
         if not targets:
             self.status.setText("Check or select the photos to paste into first.")
             return
+        copied = getattr(self, "copied", None)
+        desc = copied[1] if copied and copied[0] == clip.text() else None   # copied here, not from elsewhere
         changed = 0
         for ph in targets:
-            before = (ph.title, list(ph.keywords))
+            before = (ph.title, list(ph.keywords), ph.description)
             if mode in ("both", "title") and title is not None:
                 ph.title = title
+                if desc is not None:
+                    ph.description = desc
             if mode in ("both", "keywords") and keywords is not None:
                 ph.keywords = list(keywords)
             if mode == "add" and keywords is not None:
                 ph.keywords = core.merge_keywords(ph.keywords, keywords)
-            if (ph.title, ph.keywords) != before:
+            if (ph.title, ph.keywords, ph.description) != before:
                 changed += 1
                 if ph.status == "saved":
                     ph.status = "ready"
@@ -3619,6 +3877,9 @@ class MainWindow(QMainWindow):
         n_redo = sum(1 for p in self.checked_photos() if not p.busy)
         self.btn_redo_checked.setText(f"Redo Checked… ({n_redo})" if n_redo else "Redo Checked…")
         self.btn_redo_checked.setEnabled(n_redo > 0)
+        n_rw = sum(1 for p in targets if not p.busy and (p.title.strip() or p.keywords))
+        self.btn_reword.setText(f"Reword {scope} ({n_rw})…" if self.photos else "Reword…")
+        self.btn_reword.setEnabled(n_rw > 0)
         self.btn_save.setText((f"Save checked ({n_save})" if scope == "checked" else f"Save metadata ({n_save})")
                               if self.photos else "Save Metadata")
         self.btn_save.setToolTip("Confirm the edits on the checked photos and save them into the files"
@@ -3867,11 +4128,12 @@ class MainWindow(QMainWindow):
         """A redo that didn't finish (stopped, failed): put back the title and keywords it cleared."""
         if ph.redo and "before" in ph.redo and not ph.title.strip() and not ph.keywords:
             ph.title, ph.keywords = ph.redo["before"][0], list(ph.redo["before"][1])
+            ph.description = ph.redo.get("description", ph.description)
 
     def _release(self, photos, message: str):
         for ph in photos:
             self._restore_after_redo(ph)
-            ph.busy, ph.status, ph.message, ph.redo = False, "ready", message, None
+            ph.busy, ph.status, ph.message, ph.redo, ph.rewording = False, "ready", message, None, False
             self._show(ph)
         self._refresh_buttons()
 
@@ -3929,7 +4191,7 @@ class MainWindow(QMainWindow):
         kmin, kmax = core.keyword_range(self.settings.get("keyword_min"), self.settings.get("keyword_max"))
         if ph.token is None or ph.token.is_set():
             ph.token = core.CancelToken()
-        ph.ai_started = 0.0
+        ph.ai_started, ph.rewording = 0.0, False
         redo = ph.redo or {}
         old_title, old_keywords = ("", []) if redo else (self.bare_title(ph), list(ph.keywords))
         job = Job(ph.path, functools.partial(core.identify, cancel=ph.token,
@@ -3941,6 +4203,7 @@ class MainWindow(QMainWindow):
                                              never_use=core.parse_word_list(self.settings.get("never_use", "")),
                                              never_in_title=bool(self.settings.get("never_use_titles", True)),
                                              photo_avoid=ph.avoid if self.settings.get("avoid_on") else "",
+                                             description=bool(self.settings.get("ai_description", True)),
                                              tidy=bool(self.settings.get("tidy_keywords", True))),
                   ph.path, url, model, kmin, kmax,
                   context, old_title, old_keywords, direction, ph.note,
@@ -3985,11 +4248,159 @@ class MainWindow(QMainWindow):
             # and reasons. They're kept here so a stopped or failed redo can put them back.
             if not any(h["title"] == ph.title and h["keywords"] == ph.keywords for h in ph.history):
                 self._remember_suggestion(ph, "Before redo")   # so a worse redo can be undone from the menu
-            ph.redo = {"feedback": feedback, "before": (ph.title, list(ph.keywords))}
+            ph.redo = {"feedback": feedback, "before": (ph.title, list(ph.keywords)), "description": ph.description}
             ph.title, ph.keywords = "", []
             self._show(ph)
         core.debug(f"redo with reasons for {len(photos)} photo(s), old title and keywords cleared:\n{feedback}")
         self.identify_photos(photos)
+
+    # ---------- reword / double-check (text only)
+    def _kept_in_front(self, ph: Photo) -> str:
+        """What stays in front of the title untouched: the text before titles, location and date."""
+        bare = self.bare_title(ph)
+        i = ph.title.find(bare) if bare else -1
+        return ph.title[:i].strip() if i > 0 else ""
+
+    def _fixed_keywords(self, ph: Photo) -> list[str]:
+        """Keywords a reword never touches: your keywords to put first and the Editorial place and date."""
+        lead = {k.casefold() for k in core.expand_lead_keywords(self.settings.get("lead_keywords", ""),
+                                                                 self.photo_date(ph))}
+        ed = {k.casefold() for k in self.editorial_keywords(ph)} if self.settings.get("editorial_on") else set()
+        return [k for k in ph.keywords if k.casefold() in lead | ed]
+
+    def reword_photos(self, photos):
+        """Ask how to reword, then run the text-only pass on these photos."""
+        photos = [p for p in photos if not p.busy and (p.title.strip() or p.keywords)]
+        if not photos:
+            self.status.setText("Nothing to reword yet: detect the photos or type a title first.")
+            return
+        one = photos[0] if len(photos) == 1 else None
+        kept = self._kept_in_front(one) if one else (
+            "the location and date" if self.settings.get("editorial_on") else "")
+        dlg = RewordDialog(self, len(photos), self.settings,
+                           (self.bare_title(one), one.description) if one else None, kept)
+        if not dlg.exec():
+            return
+        dlg.remember(self.settings)
+        core.save_settings(self.settings)
+        job_args = {"fields": dlg.chosen_fields(), "options": dlg.options(), "instruction": dlg.instruction(),
+                    "context_on": dlg.context.isChecked()}
+        self._check_then(photos, lambda targets: self._start_reword(targets, job_args))
+
+    def _check_then(self, photos, start):
+        """Mark the photos busy and check Ollama is ready (same check as Detect), then start."""
+        for ph in photos:
+            ph.busy, ph.status, ph.message = True, "identifying", "Checking the AI…"
+            ph.token = core.CancelToken()
+            ph.stop_requested, ph.timed_out, ph.retries = False, False, 0
+            self._show(ph)
+        self.btn_stop.show()
+        self._refresh_buttons()
+        url = self.settings["ollama_url"]
+
+        def ready(_k, info, t=photos):
+            stopped = [p for p in t if p.token is not None and p.token.is_set()]
+            if stopped:
+                self._release(stopped, "Stopped")
+            t = [p for p in t if p in self.photos and p not in stopped]
+            if info.get("version") is None or not any(same_model(self.settings["model"], n)
+                                                      for n in info.get("names", [])):
+                self._release(t, "The AI isn't ready: click Detect to see why")
+                return
+            if t:
+                start(t)
+        run_job(self, Job("ready", core.ai_ready, url), self.io_pool, ready,
+                lambda _k, _m, t=photos: ready(_k, {"version": None, "names": []}, t))
+
+    def _start_reword(self, targets, args):
+        self._begin_batch(len(targets), "Rewording")
+        self.status.setText(f"Rewording with {self.settings['model']} (text only)…")
+        for ph in targets:
+            if not any(h["title"] == ph.title and h["keywords"] == ph.keywords
+                       and h.get("description", "") == ph.description for h in ph.history):
+                self._remember_suggestion(ph, "Before reword")
+            self._queue_reword(ph, args)
+        self.ai_timer.start()
+        self._refresh_buttons()
+
+    def _queue_reword(self, ph, args):
+        s = self.settings
+        fixed = self._fixed_keywords(ph)
+        fixed_set = {k.casefold() for k in fixed}
+        editable = [k for k in ph.keywords if k.casefold() not in fixed_set]
+        bare_desc = self.bare_title(ph, text=ph.description, with_prefix=False) if ph.description else ""
+        dateline = ""
+        if args["context_on"] and s.get("editorial_on"):
+            d = self.photo_date(ph)
+            dateline = core.title_dateline(self.location_for(ph), core.format_date(d, s.get("title_date_format", "long"))
+                                           if d and s.get("title_date_pos", "off") != "off" else "",
+                                           s.get("title_loc_sep", "dash"))
+        kmin, kmax = core.keyword_range(s.get("keyword_min"), s.get("keyword_max"))
+        ph.rewording, ph.ai_started, ph.message = True, 0.0, "Waiting in line…"
+        before = (ph.title, ph.description, list(ph.keywords))
+        job = Job(ph.path, functools.partial(
+            core.reword, s["ollama_url"], s["model"], self.bare_title(ph), bare_desc, editable, args["fields"],
+            args["options"], args["instruction"], dateline, fixed, kmin, kmax, s.get("context", ""), ph.note,
+            s.get("direction", ""), self.effective_type(ph) == core.COPYRIGHT_FREE, s.get("symbols", "convert"),
+            core.parse_word_list(s.get("never_use", "")), ph.avoid if s.get("avoid_on") else "",
+            cancel=ph.token, name=os.path.basename(ph.path)))
+        ph.run += 1
+        ph.queued = True
+        run = ph.run
+        self._show(ph)
+
+        def current(path):
+            p = self._photo(path)
+            if p is not None and p.run == run:
+                p.queued = False
+                return True
+            return False
+        run_job(self, job, self.ai_pool,
+                lambda k, r: self._reworded(k, r, before, fixed) if current(k) else None,
+                lambda k, m: self._reword_failed(k, m) if current(k) else None,
+                on_started=lambda k: self._identify_started(k) if (self._photo(k) and self._photo(k).run == run)
+                else None)
+
+    def _reworded(self, path, result, before, fixed):
+        self.models_loaded = True
+        ph = self._photo(path)
+        if ph:
+            ph.busy, ph.rewording = False, False
+            ph.title = self.compose_title(ph, result["title"]) if result["title"] else ph.title
+            if result["description"]:
+                ph.description = self.compose_description(ph, result["description"])
+            s = self.settings
+            lead = {k.casefold() for k in core.expand_lead_keywords(s.get("lead_keywords", ""), self.photo_date(ph))}
+            head = [k for k in fixed if k.casefold() in lead]
+            extra = [k for k in fixed if k.casefold() not in lead]
+            ph.keywords = core.place_editorial_keywords(head + list(result["keywords"]), extra,
+                                                        s.get("editorial_pos", "before"), after=len(head),
+                                                        title=result["title"])
+            same = (ph.title, ph.description, ph.keywords) == before
+            ph.status = "ready" if same and not ph.changed else "suggested"
+            ph.message = ("Double-checked: nothing needed changing" if same else
+                          "Reworded, not saved yet (the text before is under Earlier suggestions)")
+            if not same:
+                self._remember_suggestion(ph, "Reworded")
+            self._show(ph)
+            if self.review.photo is ph:
+                self.review.show_photo(ph)
+            self.status.setText(f"Reworded {os.path.basename(path)} in {result.get('seconds', 0):.0f} s.")
+        self._tick()
+
+    def _reword_failed(self, path, msg):
+        ph = self._photo(path)
+        if ph:
+            timed = ph.timed_out
+            ph.busy, ph.rewording, ph.timed_out = False, False, False
+            if ph.stop_requested or (msg == core.STOPPED and not timed):
+                ph.status, ph.message = "ready", "Stopped"
+            else:
+                ph.status = "error"
+                ph.message = ("The AI took too long to reword this. Try again, or raise the time limit in Settings."
+                              if timed else f"Not reworded: {msg}")
+            self._show(ph)
+        self._tick()
 
     # ---------- stopping
     def _detect_clicked(self, ph):
@@ -4040,7 +4451,8 @@ class MainWindow(QMainWindow):
                     self._set_status_cell(ph)
                     ph.token.cancel()
                     continue
-                ph.message = (f"The AI is looking at this photo… {secs} s"
+                ph.message = (f"The AI is rewording the text… {secs} s" if ph.rewording else
+                              f"The AI is looking at this photo… {secs} s"
                               + ("" if self.models_loaded else " (loading the model first, this one takes longer)"))
                 self._set_status_cell(ph)
                 waiting = sum(1 for p in working if not p.ai_started)
@@ -4068,6 +4480,10 @@ class MainWindow(QMainWindow):
                 # the location is added to the title for you, so a trailing "in <location>" from the AI goes
                 ph.title = self.compose_title(ph, core.drop_trailing_location(result["title"],
                                                                                self.location_for(ph)))
+            if result.get("description") and not (keep_title and ph.description):
+                ph.description = self.compose_description(ph, result["description"])
+            if result.get("categories"):
+                ph.categories = list(result["categories"])
             # order: your "keywords to put first", then existing keywords (if kept), then suggestions
             kmax = core.keyword_range(self.settings.get("keyword_min"), self.settings.get("keyword_max"))[1]
             lead = core.expand_lead_keywords(self.settings.get("lead_keywords", ""), self.photo_date(ph))
@@ -4221,7 +4637,7 @@ class MainWindow(QMainWindow):
             ph.busy, ph.status, ph.message = True, "saving", "Saving…"
             self._show(ph)
             job = Job(ph.path, self._write_one, ph.path, ph.title, list(ph.keywords), self._save_options(ph),
-                      cancel=self.cancel)
+                      ph.description, cancel=self.cancel)
             run_job(self, job, self.io_pool, self._saved, self._save_failed)
         self._refresh_buttons()
 
@@ -4234,13 +4650,13 @@ class MainWindow(QMainWindow):
         return {"fields": core.meta_fields(s), "xmp2iptc_args": args,
                 "location": self.location_for(ph) if ph is not None else self.editorial_location()}
 
-    def _write_one(self, path, title, keywords, opts):
+    def _write_one(self, path, title, keywords, opts, description=""):
         try:
             before = core.snapshot_metadata(self.exiftool, path)   # so this save can be undone
         except Exception as e:
             before = None
             core.debug(f"{os.path.basename(path)}: couldn't keep a copy for Undo: {e!r}", always=True)
-        core.safe_write(self.exiftool, path, title, keywords, xmp2iptc_args=opts["xmp2iptc_args"],
+        core.safe_write(self.exiftool, path, title, keywords, description or None, xmp2iptc_args=opts["xmp2iptc_args"],
                         fields=opts["fields"], location=opts["location"])
         if before is not None:
             try:
@@ -4281,8 +4697,8 @@ class MainWindow(QMainWindow):
     def _undone(self, path, meta):
         ph = self._photo(path)
         if ph:
-            ph.file_title, ph.file_keywords = meta["title"], list(meta["keywords"])
-            ph.title, ph.keywords = ph.file_title, list(ph.file_keywords)
+            ph.load_file(meta)
+            ph.title, ph.keywords, ph.description = ph.file_title, list(ph.file_keywords), ph.file_description
             ph.busy = False
             more = core.can_undo(path)
             ph.status, ph.message = "ready", "Save undone ✓ (image verified unchanged)" + (
@@ -4302,7 +4718,7 @@ class MainWindow(QMainWindow):
     def _saved(self, path, meta):
         ph = self._photo(path)
         if ph:
-            ph.file_title, ph.file_keywords = meta["title"], list(meta["keywords"])
+            ph.load_file(meta)
             ph.busy = False
             if ph.changed:   # file doesn't match what we asked for
                 ph.status, ph.message = "error", "Saved, but the file reads back differently"
