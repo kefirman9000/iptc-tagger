@@ -45,6 +45,7 @@ No installation and no Python needed. ExifTool is included.
 - **Keywords to put first:** e.g. place or client, with `{year}`, `{month}` and `{date}` filled in from each photo.
 - **Redo with reasons:** tell the AI what's wrong with a suggestion (too generic, wrong subject, too short…) or what to focus on, and it tries again with that in mind. Works on the selected photo, or on every checked photo with **Redo Checked**.
 - **Description:** the AI also writes a one- or two-sentence description (caption) for Alamy, Dreamstime and Shutterstock, which you can edit next to the title.
+- **Reword / Double-check:** a quick text-only pass over titles, descriptions and keywords, with clean-up options or your own instructions. The location and date in front of the title are never changed.
 - **CSV export:** Shutterstock (with categories) or Adobe Stock upload format, or every detail for a spreadsheet, named with the date.
 - **Send to StockUp:** **Send All to StockUp** or **Send Checked to StockUp** hands the saved photos to [StockUp](https://github.com/kefirman9000/stockup) to check them for each stock site and upload them, optionally right after every save.
 - **Working with many photos:** check boxes, filters (no title, no keywords, unsaved, errors…), search, and copy and paste of titles, keywords and notes between photos.

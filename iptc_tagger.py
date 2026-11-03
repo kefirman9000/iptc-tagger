@@ -222,6 +222,7 @@ class Photo:
         self.title = ""
         self.description = ""            # own description (caption); "" = the title is saved as the description
         self.categories: list[str] = []  # Shutterstock categories the AI chose (for the upload CSV only)
+        self.rewording = False           # the AI is rewording the text (not looking at the photo)
         self.keywords: list[str] = []
         self.file_title = ""             # what is currently saved in the file
         self.file_description = ""       # ("" when the file's description is just its title)
@@ -925,12 +926,17 @@ class ReviewPanel(QWidget):
         self.b_copy.setToolTip("Copy this photo's title and keywords (Ctrl/⌘+C), to paste onto other photos")
         self.b_paste = QPushButton("Paste")
         self.b_paste.setToolTip("Paste a copied title and keywords into this photo (Ctrl/⌘+V)")
+        self.b_reword = QPushButton("Reword…")
+        self.b_reword.setToolTip("Double-check or reword this photo's title, description and keywords, text only:\n"
+                                 "pick clean-up options or type your own instructions. The location and date in\n"
+                                 "front of the title are kept as they are.")
         self.b_redo = QPushButton("Redo with Reasons…")
         self.b_redo.setToolTip("Tell the AI what's wrong with this suggestion (too generic, wrong subject, too long…)\n"
                                "and it tries again with that in mind")
         r1 = QHBoxLayout()
         r1.addWidget(self.b_identify)
         r1.addWidget(self.b_redo)
+        r1.addWidget(self.b_reword)
         r1.addWidget(self.b_revert)
         r1.addWidget(self.b_copy)
         r1.addWidget(self.b_paste)
@@ -957,6 +963,7 @@ class ReviewPanel(QWidget):
         self.keywords.textChanged.connect(self._edited)
         self.b_identify.clicked.connect(lambda *_: self.photo and win.identify_photos([self.photo]))
         self.b_redo.clicked.connect(lambda *_: self.photo and win.redo_photos([self.photo]))
+        self.b_reword.clicked.connect(lambda *_: self.photo and win.reword_photos([self.photo]))
         self.b_revert.clicked.connect(lambda *_: self.photo and win.revert_photos([self.photo]))
         self.b_save.clicked.connect(lambda *_: self.photo and win.save_photos([self.photo]))
         self.b_save_next.clicked.connect(lambda *_: win.save_and_next())
@@ -1031,6 +1038,7 @@ class ReviewPanel(QWidget):
         self.b_save_next.setEnabled(not busy and (can_write or not ph.changed))
         self.b_identify.setEnabled(not busy)
         self.b_redo.setEnabled(not busy)
+        self.b_reword.setEnabled(not busy and bool(ph.title.strip() or ph.keywords))
         self.b_revert.setEnabled(ph.changed and not busy)
         self.b_paste.setEnabled(not busy)
         row = self.win.rows.get(ph.path, 0)
@@ -1360,6 +1368,105 @@ class RedoDialog(QDialog):
         return core.redo_feedback([k for k, cb in self.boxes.items() if cb.isChecked()], self.other.text())
 
 
+class RewordDialog(QDialog):
+    """Reword / Double-check: tick clean-up options and/or type your own instructions, and the AI rewrites the
+    text already written (no image). The location, date and text before titles are kept exactly as they are."""
+
+    def __init__(self, parent, count: int, settings: dict, current=None, kept: str = ""):
+        super().__init__(parent)
+        self.setWindowTitle("Reword / Double-check")
+        self.setMinimumWidth(620)
+        lay = QVBoxLayout(self)
+        if count == 1 and current:
+            head = QLabel(f"<b>Title:</b> {current[0]}" + (f"<br><b>Description:</b> {current[1]}" if current[1] else ""))
+        else:
+            head = QLabel(f"<b>{count} photos</b>. Each one is reworded on its own.")
+        head.setWordWrap(True)
+        lay.addWidget(head)
+        if kept:
+            k = QLabel(f"Kept exactly as it is, in front of the title: <b>{kept}</b>")
+            k.setWordWrap(True)
+            k.setStyleSheet(f"color:{GREY}")
+            lay.addWidget(k)
+
+        row = QHBoxLayout()
+        row.addWidget(QLabel("<b>Work on:</b>"))
+        self.fields = {}
+        last_fields = set(settings.get("reword_fields") or [f for f, _ in core.REWORD_FIELDS])
+        for key, label in core.REWORD_FIELDS:
+            cb = QCheckBox(label)
+            cb.setChecked(key in last_fields)
+            cb.toggled.connect(lambda *_: self._update())
+            self.fields[key] = cb
+            row.addWidget(cb)
+        row.addStretch(1)
+        lay.addLayout(row)
+
+        last = set(settings.get("reword_options") or [])
+        self.boxes = {}
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(24)
+        for col, (heading, opts) in enumerate((("Title and description", core.REWORD_TEXT_OPTIONS),
+                                               ("Keywords", core.REWORD_KEYWORD_OPTIONS))):
+            grid.addWidget(QLabel(f"<b>{heading}</b>"), 0, col)
+            for r, (key, label, text) in enumerate(opts, start=1):
+                cb = QCheckBox(label)
+                cb.setToolTip(text)                   # what the AI is told
+                cb.setChecked(key in last)
+                cb.toggled.connect(lambda *_: self._update())
+                self.boxes[key] = cb
+                grid.addWidget(cb, r, col)
+        grid.setRowStretch(len(core.REWORD_TEXT_OPTIONS) + 1, 1)
+        lay.addLayout(grid)
+
+        lay.addWidget(QLabel("<b>Your own instructions</b> (optional):"))
+        self.text = QPlainTextEdit(settings.get("reword_text", "") or "")
+        self.text.setPlaceholderText("e.g. call it a heron, not a crane / start with the product name / "
+                                     "mention the cherry blossoms / British spelling")
+        self.text.setFixedHeight(64)
+        self.text.setTabChangesFocus(True)
+        self.text.textChanged.connect(self._update)
+        lay.addWidget(self.text)
+        self.context = QCheckBox("Tell the AI the location and date, so the wording fits them (they're never changed)")
+        self.context.setChecked(bool(settings.get("reword_context", True)))
+        self.context.setVisible(bool(kept))
+        lay.addWidget(self.context)
+        tip = QLabel("Only the text is sent, not the photo, so this is quick. Your Avoid words, Never use list and "
+                     "instructions still apply. The text before is kept under Earlier suggestions (right-click), and "
+                     "nothing is saved into the files until you save.")
+        tip.setWordWrap(True)
+        tip.setStyleSheet(f"color:{GREY}")
+        lay.addWidget(tip)
+        self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        self.buttons.accepted.connect(self.accept)
+        self.buttons.rejected.connect(self.reject)
+        lay.addWidget(self.buttons)
+        self._update()
+
+    def chosen_fields(self) -> list[str]:
+        return [k for k, cb in self.fields.items() if cb.isChecked()]
+
+    def options(self) -> list[str]:
+        return [k for k, cb in self.boxes.items() if cb.isChecked()]
+
+    def instruction(self) -> str:
+        return self.text.toPlainText().strip()
+
+    def _update(self):
+        fields = set(self.chosen_fields())
+        for key, cb in self.boxes.items():
+            cb.setEnabled("keywords" in fields if key.startswith("kw_") else bool({"title", "description"} & fields))
+        ok = bool(fields)
+        b = self.buttons.button(QDialogButtonBox.Ok)
+        b.setEnabled(ok)
+        only_check = set(self.options()) <= {"check"} and not self.instruction()
+        b.setText("Double-check" if only_check else "Reword")
+
+    def remember(self, settings: dict):
+        settings.update(reword_fields=self.chosen_fields(), reword_options=self.options(),
+                        reword_text=self.instruction(), reword_context=self.context.isChecked())
+
+
 UPDATE_LINK = "#0b3a82"        # links on the light blue update banner
 
 
@@ -1489,6 +1596,9 @@ class MainWindow(QMainWindow):
         self.btn_redo_checked = button("Redo Checked…", lambda: self.redo_photos(
             [p for p in self.checked_photos() if not p.busy]))
         self.btn_redo_checked.setToolTip("Redo the checked photos with reasons: tell the AI what's wrong and it tries again")
+        self.btn_reword = button("Reword…", lambda: self.reword_photos(self.targets()[0]))
+        self.btn_reword.setToolTip("Double-check or reword the titles, descriptions and keywords already written, text\n"
+                                   "only (quick). Uses the checked photos, else the selected, else all shown.")
         self.btn_export = button("Export CSV…", self.export_csv)
         self.btn_stockup_all = button("Send All to StockUp", lambda: self.open_in_stockup(list(self.photos)),
                                       QStyle.SP_ArrowRight, primary=True)
@@ -1510,7 +1620,7 @@ class MainWindow(QMainWindow):
         for w in (self.btn_add, self.btn_folder, self.btn_watch):
             top.addWidget(w)
         top.addSpacing(16)
-        for w in (self.btn_identify, self.btn_redo_checked, self.btn_save, self.btn_export):
+        for w in (self.btn_identify, self.btn_redo_checked, self.btn_reword, self.btn_save, self.btn_export):
             top.addWidget(w)
         top.addSpacing(16)
         for w in (self.btn_check_all, self.btn_uncheck_all):
@@ -3086,6 +3196,9 @@ class MainWindow(QMainWindow):
         a = menu.addAction(f"Redo checked photos with reasons… ({len(checked_idle)})")
         a.setEnabled(bool(checked_idle))
         a.triggered.connect(lambda *_: self.redo_photos(checked_idle))
+        a = menu.addAction("Reword / double-check text…" if one else f"Reword / double-check {len(idle)} photos…")
+        a.setEnabled(any(p.title.strip() or p.keywords for p in idle))
+        a.triggered.connect(lambda *_: self.reword_photos(idle))
         a = menu.addAction("Set location…" if one else f"Set location for {len(idle)} photos…")
         a.setEnabled(bool(idle) and bool(self.settings.get("editorial_on")))
         if not self.settings.get("editorial_on"):
@@ -3749,6 +3862,9 @@ class MainWindow(QMainWindow):
         n_redo = sum(1 for p in self.checked_photos() if not p.busy)
         self.btn_redo_checked.setText(f"Redo Checked… ({n_redo})" if n_redo else "Redo Checked…")
         self.btn_redo_checked.setEnabled(n_redo > 0)
+        n_rw = sum(1 for p in targets if not p.busy and (p.title.strip() or p.keywords))
+        self.btn_reword.setText(f"Reword {scope} ({n_rw})…" if self.photos else "Reword…")
+        self.btn_reword.setEnabled(n_rw > 0)
         self.btn_save.setText((f"Save checked ({n_save})" if scope == "checked" else f"Save metadata ({n_save})")
                               if self.photos else "Save Metadata")
         self.btn_save.setToolTip("Confirm the edits on the checked photos and save them into the files"
@@ -4123,6 +4239,154 @@ class MainWindow(QMainWindow):
         core.debug(f"redo with reasons for {len(photos)} photo(s), old title and keywords cleared:\n{feedback}")
         self.identify_photos(photos)
 
+    # ---------- reword / double-check (text only)
+    def _kept_in_front(self, ph: Photo) -> str:
+        """What stays in front of the title untouched: the text before titles, location and date."""
+        bare = self.bare_title(ph)
+        i = ph.title.find(bare) if bare else -1
+        return ph.title[:i].strip() if i > 0 else ""
+
+    def _fixed_keywords(self, ph: Photo) -> list[str]:
+        """Keywords a reword never touches: your keywords to put first and the Editorial place and date."""
+        lead = {k.casefold() for k in core.expand_lead_keywords(self.settings.get("lead_keywords", ""),
+                                                                 self.photo_date(ph))}
+        ed = {k.casefold() for k in self.editorial_keywords(ph)} if self.settings.get("editorial_on") else set()
+        return [k for k in ph.keywords if k.casefold() in lead | ed]
+
+    def reword_photos(self, photos):
+        """Ask how to reword, then run the text-only pass on these photos."""
+        photos = [p for p in photos if not p.busy and (p.title.strip() or p.keywords)]
+        if not photos:
+            self.status.setText("Nothing to reword yet: detect the photos or type a title first.")
+            return
+        one = photos[0] if len(photos) == 1 else None
+        kept = self._kept_in_front(one) if one else (
+            "the location and date" if self.settings.get("editorial_on") else "")
+        dlg = RewordDialog(self, len(photos), self.settings,
+                           (self.bare_title(one), one.description) if one else None, kept)
+        if not dlg.exec():
+            return
+        dlg.remember(self.settings)
+        core.save_settings(self.settings)
+        job_args = {"fields": dlg.chosen_fields(), "options": dlg.options(), "instruction": dlg.instruction(),
+                    "context_on": dlg.context.isChecked()}
+        self._check_then(photos, lambda targets: self._start_reword(targets, job_args))
+
+    def _check_then(self, photos, start):
+        """Mark the photos busy and check Ollama is ready (same check as Detect), then start."""
+        for ph in photos:
+            ph.busy, ph.status, ph.message = True, "identifying", "Checking the AI…"
+            ph.token = core.CancelToken()
+            ph.stop_requested, ph.timed_out, ph.retries = False, False, 0
+            self._show(ph)
+        self.btn_stop.show()
+        self._refresh_buttons()
+        url = self.settings["ollama_url"]
+
+        def ready(_k, info, t=photos):
+            stopped = [p for p in t if p.token is not None and p.token.is_set()]
+            if stopped:
+                self._release(stopped, "Stopped")
+            t = [p for p in t if p in self.photos and p not in stopped]
+            if info.get("version") is None or not any(same_model(self.settings["model"], n)
+                                                      for n in info.get("names", [])):
+                self._release(t, "The AI isn't ready: click Detect to see why")
+                return
+            if t:
+                start(t)
+        run_job(self, Job("ready", core.ai_ready, url), self.io_pool, ready,
+                lambda _k, _m, t=photos: ready(_k, {"version": None, "names": []}, t))
+
+    def _start_reword(self, targets, args):
+        self._begin_batch(len(targets), "Rewording")
+        self.status.setText(f"Rewording with {self.settings['model']} (text only)…")
+        for ph in targets:
+            if not any(h["title"] == ph.title and h["keywords"] == ph.keywords
+                       and h.get("description", "") == ph.description for h in ph.history):
+                self._remember_suggestion(ph, "Before reword")
+            self._queue_reword(ph, args)
+        self.ai_timer.start()
+        self._refresh_buttons()
+
+    def _queue_reword(self, ph, args):
+        s = self.settings
+        fixed = self._fixed_keywords(ph)
+        fixed_set = {k.casefold() for k in fixed}
+        editable = [k for k in ph.keywords if k.casefold() not in fixed_set]
+        bare_desc = self.bare_title(ph, text=ph.description, with_prefix=False) if ph.description else ""
+        dateline = ""
+        if args["context_on"] and s.get("editorial_on"):
+            d = self.photo_date(ph)
+            dateline = core.title_dateline(self.location_for(ph), core.format_date(d, s.get("title_date_format", "long"))
+                                           if d and s.get("title_date_pos", "off") != "off" else "",
+                                           s.get("title_loc_sep", "dash"))
+        kmin, kmax = core.keyword_range(s.get("keyword_min"), s.get("keyword_max"))
+        ph.rewording, ph.ai_started, ph.message = True, 0.0, "Waiting in line…"
+        before = (ph.title, ph.description, list(ph.keywords))
+        job = Job(ph.path, functools.partial(
+            core.reword, s["ollama_url"], s["model"], self.bare_title(ph), bare_desc, editable, args["fields"],
+            args["options"], args["instruction"], dateline, fixed, kmin, kmax, s.get("context", ""), ph.note,
+            s.get("direction", ""), self.effective_type(ph) == core.COPYRIGHT_FREE, s.get("symbols", "convert"),
+            core.parse_word_list(s.get("never_use", "")), ph.avoid if s.get("avoid_on") else "",
+            cancel=ph.token, name=os.path.basename(ph.path)))
+        ph.run += 1
+        ph.queued = True
+        run = ph.run
+        self._show(ph)
+
+        def current(path):
+            p = self._photo(path)
+            if p is not None and p.run == run:
+                p.queued = False
+                return True
+            return False
+        run_job(self, job, self.ai_pool,
+                lambda k, r: self._reworded(k, r, before, fixed) if current(k) else None,
+                lambda k, m: self._reword_failed(k, m) if current(k) else None,
+                on_started=lambda k: self._identify_started(k) if (self._photo(k) and self._photo(k).run == run)
+                else None)
+
+    def _reworded(self, path, result, before, fixed):
+        self.models_loaded = True
+        ph = self._photo(path)
+        if ph:
+            ph.busy, ph.rewording = False, False
+            ph.title = self.compose_title(ph, result["title"]) if result["title"] else ph.title
+            if result["description"]:
+                ph.description = self.compose_description(ph, result["description"])
+            s = self.settings
+            lead = {k.casefold() for k in core.expand_lead_keywords(s.get("lead_keywords", ""), self.photo_date(ph))}
+            head = [k for k in fixed if k.casefold() in lead]
+            extra = [k for k in fixed if k.casefold() not in lead]
+            ph.keywords = core.place_editorial_keywords(head + list(result["keywords"]), extra,
+                                                        s.get("editorial_pos", "before"), after=len(head),
+                                                        title=result["title"])
+            same = (ph.title, ph.description, ph.keywords) == before
+            ph.status = "ready" if same and not ph.changed else "suggested"
+            ph.message = ("Double-checked: nothing needed changing" if same else
+                          "Reworded, not saved yet (the text before is under Earlier suggestions)")
+            if not same:
+                self._remember_suggestion(ph, "Reworded")
+            self._show(ph)
+            if self.review.photo is ph:
+                self.review.show_photo(ph)
+            self.status.setText(f"Reworded {os.path.basename(path)} in {result.get('seconds', 0):.0f} s.")
+        self._tick()
+
+    def _reword_failed(self, path, msg):
+        ph = self._photo(path)
+        if ph:
+            timed = ph.timed_out
+            ph.busy, ph.rewording, ph.timed_out = False, False, False
+            if ph.stop_requested or (msg == core.STOPPED and not timed):
+                ph.status, ph.message = "ready", "Stopped"
+            else:
+                ph.status = "error"
+                ph.message = ("The AI took too long to reword this. Try again, or raise the time limit in Settings."
+                              if timed else f"Not reworded: {msg}")
+            self._show(ph)
+        self._tick()
+
     # ---------- stopping
     def _detect_clicked(self, ph):
         if ph.busy and ph.status == "identifying":
@@ -4172,7 +4436,8 @@ class MainWindow(QMainWindow):
                     self._set_status_cell(ph)
                     ph.token.cancel()
                     continue
-                ph.message = (f"The AI is looking at this photo… {secs} s"
+                ph.message = (f"The AI is rewording the text… {secs} s" if ph.rewording else
+                              f"The AI is looking at this photo… {secs} s"
                               + ("" if self.models_loaded else " (loading the model first, this one takes longer)"))
                 self._set_status_cell(ph)
                 waiting = sum(1 for p in working if not p.ai_started)

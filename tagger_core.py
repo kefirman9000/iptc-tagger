@@ -39,7 +39,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.11.02.1"
+APP_VERSION = "2026.11.03.1"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 # camera RAW files: titles and keywords go into the Lightroom sidecar next to them (photo.xmp), never the RAW.
 # DNG is left out: Lightroom ignores sidecars for DNG and keeps its metadata inside the file itself.
@@ -388,6 +388,10 @@ DEFAULT_SETTINGS = {
     "tidy_keywords": True,    # remove filler keywords and put the title's words first
     "ai_description": True,   # also write a separate description (caption): Alamy, Dreamstime, Shutterstock
     "shutterstock_categories": [],  # the 1-2 categories put in the Shutterstock upload CSV (last used)
+    "reword_fields": ["title", "description", "keywords"],  # Reword / Double-check: what it works on (last used)
+    "reword_options": ["check"],    # ... the clean-up options ticked last time (keys from REWORD_OPTIONS)
+    "reword_text": "",              # ... your own rewording instructions last time
+    "reword_context": True,         # ... tell the AI the location and date in front of the title (never changed)
     "auto_download": False,   # download new versions without asking first (installed on restart)
     "stock_sites": None,      # sites whose title and keyword rules are checked (None = Shutterstock + Adobe Stock)
     "stock_sites_from_stockup": True,  # use the sites ticked in StockUp, when StockUp is set up on this computer
@@ -2662,6 +2666,182 @@ def build_revision_prompt(draft_title: str, draft_keywords, keyword_min: int, ke
               + ("" if keyword_case_overridden(direction) else ", lowercase") + ", with no duplicates.",
               "", 'Output only JSON in exactly this form: {"title": "...", "keywords": ["...", "..."]}']
     return "\n".join(lines)
+
+# Reword / Double-check: a text-only pass over the title, description and keywords already written ---------
+REWORD_TEXT_OPTIONS = [   # (key, label, what the AI is told)
+    ("check", "Just double-check (fix mistakes only)",
+     "Only fix real mistakes: spelling, grammar, capitalisation, a wrong or doubled word, something that contradicts "
+     "the rest of the text. Keep everything else exactly as it is. If nothing is wrong, give it back unchanged."),
+    ("shorter", "Make it shorter",
+     "Make the title noticeably shorter, keeping only the most important details."),
+    ("longer", "Make it fuller",
+     "Make the title noticeably fuller and more descriptive, using only the details already in the text."),
+    ("plain", "Plainer words, no marketing language",
+     "Use plain, simple, descriptive words. Remove flowery or marketing words such as stunning, breathtaking, "
+     "beautiful, amazing or perfect."),
+    ("repeats", "Remove repeated words",
+     "Don't use the same word twice in the title, and don't let the description just repeat the title."),
+    ("specific", "More specific",
+     "Make it more specific: name the exact subject, kind or variety instead of general words, using only what the "
+     "text already says."),
+    ("order", "Main subject first",
+     "Put the main subject at the start of the title, then the action or setting, then the details."),
+    ("editorial", "Factual editorial tone",
+     "Write it as a factual, neutral editorial caption: who, what, where and when, without opinion or marketing words."),
+    ("commercial", "Concept words for commercial buyers",
+     "Bring out the concept the photo could illustrate for commercial buyers (for example teamwork, freedom, healthy "
+     "living) where it fits."),
+    ("no_names", "No brands, products or people's names",
+     "Remove every brand, trademark, product, company or person's name and describe them in generic words."),
+]
+REWORD_KEYWORD_OPTIONS = [
+    ("kw_dupes", "Remove duplicates and near-duplicates",
+     "Remove duplicate and near-duplicate keywords (singular and plural, the same word in many phrases)."),
+    ("kw_off", "Remove keywords that don't fit",
+     "Remove keywords that don't describe what the title and description say is in the photo."),
+    ("kw_general", "Swap vague keywords for specific ones",
+     "Replace vague, general keywords with more specific ones (exact kind, material, place, technique)."),
+    ("kw_order", "Most important first",
+     "Order the keywords by importance: what the title names first, then setting, concepts and the rest."),
+    ("kw_more", "Add more keywords",
+     "Add more relevant keywords (likely search terms, concepts, related subjects) up to the maximum."),
+    ("kw_spell", "Fix spelling and make them all lowercase",
+     "Fix any misspelled keyword and write every keyword in lowercase, letters and numbers only."),
+]
+REWORD_OPTIONS = REWORD_TEXT_OPTIONS + REWORD_KEYWORD_OPTIONS
+REWORD_FIELDS = [("title", "Title"), ("description", "Description"), ("keywords", "Keywords")]
+
+
+def build_reword_prompt(title: str, description: str, keywords, fields, options=(), instruction: str = "",
+                        dateline: str = "", fixed_keywords=(), keyword_min: int = 7, keyword_max: int = 50,
+                        context: str = "", photo_note: str = "", direction: str = "", copyright_free: bool = False,
+                        symbols: str = "keep", never_use=None, photo_avoid: str = "") -> str:
+    """The instructions for rewording one photo's text (no image). dateline: the location / date put in front
+    of the title, given only as background; the AI must leave it out of what it writes."""
+    fields = [f for f, _ in REWORD_FIELDS if f in set(fields or [])]
+    chosen = [text for key, _, text in REWORD_OPTIONS if key in set(options or [])
+              and (key.startswith("kw_") and "keywords" in fields or not key.startswith("kw_")
+                   and ({"title", "description"} & set(fields)))]
+    what = " and ".join(dict(REWORD_FIELDS)[f].lower() for f in fields)
+    lines = [f"Here is the text already written for a stock photo. Improve its {what} as asked below. You can't see "
+             "the photo: work only from this text and the facts given, and never add details that aren't there."]
+    lines += ["", "Current text:", json.dumps({"title": title, "description": description,
+                                                "keywords": list(keywords or [])}, ensure_ascii=False)]
+    if (dateline or "").strip():
+        lines += ["", f"The photographer puts \"{dateline.strip()}\" in front of the title and description themselves. "
+                  "Use it only to understand where and when the photo was taken. Don't write it, the place or the "
+                  "date in your title or description, and don't change it."]
+    if fixed_keywords:
+        lines += ["", "These keywords are kept as they are and added separately, so leave them out of your list "
+                  "(they're background only): " + ", ".join(fixed_keywords)]
+    if (context or "").strip():
+        lines += ["", "Facts from the photographer (true):", context.strip()]
+    if (photo_note or "").strip():
+        lines += ["", "About this photo (true):", photo_note.strip()]
+    if chosen:
+        lines += ["", "What to do:"] + ["- " + c for c in chosen]
+    if (instruction or "").strip():
+        lines += ["", "THE PHOTOGRAPHER'S REWORDING INSTRUCTIONS (highest priority, follow them exactly):",
+                  instruction.strip()]
+    if not chosen and not (instruction or "").strip():
+        lines += ["", "What to do:", "- " + REWORD_TEXT_OPTIONS[0][2]]
+    rules = []
+    if "title" in fields:
+        rules.append("Title: one line in Title Case, no quotation marks, no full stop at the end.")
+    if "description" in fields:
+        rules.append(f"Description: one or two complete sentences in normal sentence case ending with a full stop, "
+                     f"at most {DESCRIPTION_MAX - 20} characters. If it is empty, write one from the title.")
+    if "keywords" in fields:
+        rules.append(f"Keywords: between {keyword_min} and {keyword_max} unique keywords, most relevant first, "
+                     + ("" if keyword_case_overridden(direction) else "lowercase, ")
+                     + "no hashtags or punctuation.")
+    lines += ["", "Rules:"] + ["- " + r for r in rules]
+    if copyright_free:
+        lines += ["", COPYRIGHT_FREE_RULES]
+    if never_use:
+        lines += ["", "Never use these words or phrases: " + ", ".join(never_use) + "."]
+    if (photo_avoid or "").strip():
+        lines += ["", "Don't use these words, names or ideas: " + single_line(photo_avoid)]
+    if symbols in ("convert", "remove"):
+        lines += ["", "Write words instead of symbols (\"and\" instead of \"&\")."]
+    if (direction or "").strip() and direction.strip() != (context or "").strip():
+        lines += ["", "The photographer's general directions (follow them where they apply):", direction.strip()]
+    keep = [dict(REWORD_FIELDS)[f].lower() for f, _ in REWORD_FIELDS if f not in fields]
+    if keep:
+        lines += ["", "Give the " + " and ".join(keep) + " back exactly as they are."]
+    lines += ["", 'Output only JSON in exactly this form: {"title": "...", "description": "...", "keywords": ["..."]}']
+    return "\n".join(lines)
+
+
+REWORD_SCHEMA = {
+    "type": "object",
+    "properties": {"title": {"type": "string"}, "description": {"type": "string"},
+                   "keywords": {"type": "array", "items": {"type": "string"}}},
+    "required": ["title", "description", "keywords"],
+}
+
+
+def reword(url: str, model: str, title: str, description: str, keywords, fields, options=(), instruction: str = "",
+           dateline: str = "", fixed_keywords=(), keyword_min: int = 7, keyword_max: int = 50, context: str = "",
+           photo_note: str = "", direction: str = "", copyright_free: bool = False, symbols: str = "keep",
+           never_use=None, photo_avoid: str = "", opener=None, cancel: CancelToken | None = None,
+           name: str = "") -> dict:
+    """Reword / double-check a photo's text with the AI, text only (no image, so it's quick). Only the fields
+    asked for change; anything the AI leaves empty keeps its old value. title is the bare title (without the
+    location, date or text before titles) and keywords leave out fixed_keywords: the caller puts those back.
+    Returns {'title', 'description', 'keywords', 'seconds'}."""
+    fields = set(fields or [])
+    keyword_min, keyword_max = keyword_range(keyword_min, keyword_max)
+    room_min = max(1, keyword_min - len(fixed_keywords or []))
+    room_max = max(room_min, keyword_max - len(fixed_keywords or []))
+    prompt = build_reword_prompt(title, description, keywords, fields, options, instruction, dateline,
+                                 fixed_keywords, room_min, room_max, context, photo_note, direction,
+                                 copyright_free, symbols, never_use, photo_avoid)
+    t0 = time.monotonic()
+    debug(f"{name}: reword: fields={sorted(fields)} options={list(options or [])} instruction={_clip(instruction or '', 120)!r}")
+    parsed = {}
+    for attempt, temperature in ((1, 0.1 if set(options or []) <= {"check"} and not instruction else 0.3), (2, 0.5)):
+        if cancel is not None and cancel.is_set():
+            raise Stopped(STOPPED)
+        body = {"model": model, "stream": False, "format": REWORD_SCHEMA, "keep_alive": AI_KEEP_ALIVE,
+                "options": {"temperature": temperature, "num_ctx": AI_NUM_CTX, "num_predict": MAX_REPLY_TOKENS},
+                "messages": [{"role": "system", "content": "You edit the titles, descriptions and keywords of stock "
+                              "photos. Reply with JSON only, no explanations."},
+                             {"role": "user", "content": prompt}]}
+        resp = _chat(url, body, opener, cancel)
+        content = (resp.get("message") or {}).get("content", "") or ""
+        parsed = _parse_json(content)
+        debug(f"{name}: reword: attempt {attempt}, {time.monotonic() - t0:.1f} s: {_clip(content, 300)}")
+        if resp.get("done_reason") != "length" and any(parsed.get(f) for f in fields):
+            break
+    never = list(never_use or []) + avoid_terms(photo_avoid)
+    new_title, new_desc, new_kws = title, description, list(keywords or [])
+    if "title" in fields:
+        t = split_leaked_keywords(str(parsed.get("title", "") or "").strip())[0]
+        t = drop_sizes(tidy_symbols(t, symbols))
+        t = clean_title(t) if title_case_overridden(direction) else title_case(t)
+        t = drop_never_from_title(t, never) if never else t
+        if len(t.split()) >= 2:
+            new_title = t
+    if "description" in fields:
+        d = clean_description(str(parsed.get("description", "") or ""), symbols, never)
+        if len(d.split()) >= 5 and d.rstrip(".").casefold() != new_title.casefold():
+            new_desc = d
+    if "keywords" in fields:
+        k = drop_never_keywords(drop_size_keywords([tidy_symbols(str(x), symbols)
+                                                    for x in _as_list(parsed.get("keywords", []))]), never)
+        if copyright_free or "no_names" in set(options or []):
+            k = drop_brand_keywords(k)
+        fixed = {x.casefold() for x in fixed_keywords or []}
+        k = [x for x in seo_keywords(k, lower=not keyword_case_overridden(direction),
+                                     protect=" ".join([direction or "", context or "", photo_note or ""]))
+             if x.casefold() not in fixed][:room_max]
+        if len(k) >= min(room_min, len(new_kws)) and k:
+            new_kws = k
+    if (new_title, new_desc, new_kws) == (title, description, list(keywords or [])) and not parsed:
+        raise ApiError(EMPTY_REPLY)
+    return {"title": new_title, "description": new_desc, "keywords": new_kws,
+            "seconds": round(time.monotonic() - t0, 1)}
 
 
 def prepare_image(path: str, max_edge: int = PREVIEW_MAX_EDGE) -> str:
