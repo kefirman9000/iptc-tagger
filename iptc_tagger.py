@@ -202,7 +202,7 @@ def photo_matches(ph, key: str, search: str = "", keyword_min: int = 0, sites=()
         "unchecked": not ph.checked,
         "no_date": not ph.taken,
         "has_note": bool(ph.note.strip() or ph.avoid.strip()),
-        "site_problems": bool(core.site_problems(ph.title, ph.keywords, sites)) if key == "site_problems" else True,
+        "site_problems": bool(core.site_problems(ph.title, ph.keywords, sites, ph.description)) if key == "site_problems" else True,
     }.get(key, True)
     if not ok:
         return False
@@ -220,8 +220,10 @@ class Photo:
         self.avoid = ""                  # per-photo: what the AI must not say (not saved to the file)
         self.location = ""               # per-photo location for Editorial; "" = the main location
         self.title = ""
+        self.description = ""            # own description (caption); "" = the title is saved as the description
         self.keywords: list[str] = []
         self.file_title = ""             # what is currently saved in the file
+        self.file_description = ""       # ("" when the file's description is just its title)
         self.file_keywords: list[str] = []
         self.status = "reading"
         self.message = ""
@@ -243,10 +245,21 @@ class Photo:
         self.title_date = ""                          # the date last put into this title (custom or own)
         self.type_combo: QComboBox | None = None      # the row's Type dropdown
 
+    track_description = True     # False while the Description field isn't saved (Settings → Saving)
+
     @property
     def changed(self) -> bool:
-        return (core.clean_title(self.title), core.clean_keywords(self.keywords)) != \
+        desc = Photo.track_description and \
+            core.norm_description(self.description) != core.norm_description(self.file_description)
+        return desc or (core.clean_title(self.title), core.clean_keywords(self.keywords)) != \
                (core.clean_title(self.file_title), core.clean_keywords(self.file_keywords))
+
+    def load_file(self, meta: dict):
+        """Take what was read from the file as the saved state. A description that is just the title (what
+        a save without a description of its own writes) counts as no description."""
+        self.file_title, self.file_keywords = meta["title"], list(meta["keywords"])
+        d = core.norm_description(meta.get("description", ""))
+        self.file_description = "" if core.clean_title(d) == core.clean_title(self.file_title) else d
 
 
 # --------------------------------------------------------------------------- settings dialog
@@ -380,6 +393,13 @@ class SettingsDialog(QDialog):
                                    "packaging or sign (brand, product, flavour, size). The title and keywords then use\n"
                                    "those exact spellings. Adds one quick step per photo. Not used for Copyright-free.")
         f_text.addRow("Labels", self.read_label)
+        self.ai_desc = QCheckBox("Also write a description (caption) for each photo")
+        self.ai_desc.setChecked(bool(settings.get("ai_description", True)))
+        self.ai_desc.setToolTip("After the title, the AI writes one or two sentences describing the photo (up to 200\n"
+                                "characters). Saved as the Description / Caption, which Alamy, Dreamstime and Shutterstock\n"
+                                "read, and used in the Shutterstock CSV. Adds one quick step per photo. Off: the title is\n"
+                                "saved as the description, as before.")
+        f_text.addRow("Description", self.ai_desc)
         self.tidy_kw = QCheckBox("Tidy keywords: remove filler words and put the title's words first")
         self.tidy_kw.setChecked(bool(settings.get("tidy_keywords", True)))
         self.tidy_kw.setToolTip("Removes keywords nobody searches for (photo, image, stock, jpeg, high quality…) and long\n"
@@ -783,6 +803,7 @@ class SettingsDialog(QDialog):
                  title_length=self.title_len.currentData() or "detailed",
                  confirm_save=self.confirm_save.isChecked(),
                  read_label=self.read_label.isChecked(), tidy_keywords=self.tidy_kw.isChecked(),
+                 ai_description=self.ai_desc.isChecked(),
                  check_updates=self.updates.isChecked(), auto_download=self.auto_update.isChecked(),
                  preload_model=self.preload.isChecked(), keep_model_ready=self.keep_ready.isChecked(),
                  finish_alert=self.finish_alert.currentData() or "both",
@@ -835,6 +856,14 @@ class ReviewPanel(QWidget):
         self.title_info = QLabel()
         self.title_info.setStyleSheet(f"color:{GREY}")
         self.title_info.setWordWrap(True)
+        self.desc = QPlainTextEdit()
+        self.desc.setPlaceholderText("Description (caption) for Alamy, Dreamstime and Shutterstock. "
+                                     "Empty: the title is used")
+        self.desc.setTabChangesFocus(True)
+        self.desc.setFixedHeight(64)
+        self.desc_info = QLabel()
+        self.desc_info.setStyleSheet(f"color:{GREY}")
+        self.desc_info.setWordWrap(True)
         self.keywords = QPlainTextEdit()
         self.keywords.setPlaceholderText("Keywords, separated by commas")
         self.keywords.setTabChangesFocus(True)
@@ -884,6 +913,9 @@ class ReviewPanel(QWidget):
         b.addWidget(lbl("Title"))
         b.addWidget(self.title)
         b.addWidget(self.title_info)
+        b.addWidget(lbl("Description"))
+        b.addWidget(self.desc)
+        b.addWidget(self.desc_info)
         b.addWidget(lbl("Keywords"))
         b.addWidget(self.keywords, 2)
         b.addWidget(self.kw_info)
@@ -919,6 +951,7 @@ class ReviewPanel(QWidget):
         self.avoid.textEdited.connect(self._edited)
         self.type.currentIndexChanged.connect(self._type_chosen)
         self.title.textEdited.connect(self._edited)
+        self.desc.textChanged.connect(self._edited)
         self.keywords.textChanged.connect(self._edited)
         self.b_identify.clicked.connect(lambda *_: self.photo and win.identify_photos([self.photo]))
         self.b_redo.clicked.connect(lambda *_: self.photo and win.redo_photos([self.photo]))
@@ -955,6 +988,8 @@ class ReviewPanel(QWidget):
         self.refresh_location()
         if core.clean_title(self.title.text()) != ph.title or new_photo:
             self.title.setText(ph.title)
+        if core.norm_description(self.desc.toPlainText()) != ph.description or new_photo:
+            self.desc.setPlainText(ph.description)
         if core.parse_keywords_text(self.keywords.toPlainText()) != ph.keywords or new_photo:
             self.keywords.setPlainText(core.keywords_to_text(ph.keywords))
         self._loading = False
@@ -975,11 +1010,15 @@ class ReviewPanel(QWidget):
             w.setReadOnly(busy)
         self.type.setEnabled(not busy)
         self.keywords.setReadOnly(busy)
+        self.desc.setReadOnly(busy)
         status = self.win.status_text(ph)
         self.state.setText(f"<span style='color:{status[1]}'>{status[0]}</span>")
         info = f"{len(ph.title)} characters"
         problems = self.win.site_problems(ph)
         self.title_info.setText(info)
+        d = ph.description
+        self.desc_info.setText(f"{len(d)} characters, {len(d.split())} words" if d else
+                               "No description of its own: the title is saved as the description")
         kw = f"{len(ph.keywords)} keyword{'s' if len(ph.keywords) != 1 else ''}"
         if problems:
             kw += "".join(f"<br><span style='color:{WARN_FG}'>⚠ {p}</span>" for p in problems)
@@ -1024,12 +1063,13 @@ class ReviewPanel(QWidget):
         if self._loading or self.photo is None or self.photo.busy:
             return
         ph = self.photo
-        before = (ph.title, list(ph.keywords))
+        before = (ph.title, ph.description, list(ph.keywords))
         ph.note = core.single_line(self.note.text())
         ph.avoid = core.single_line(self.avoid.text())
         ph.title = core.clean_title(self.title.text())
+        ph.description = core.norm_description(self.desc.toPlainText())
         ph.keywords = core.parse_keywords_text(self.keywords.toPlainText())
-        if (ph.title, ph.keywords) != before:
+        if (ph.title, ph.description, ph.keywords) != before:
             if ph.status == "saved":
                 ph.status = "ready"
             ph.message = ""
@@ -1333,6 +1373,7 @@ class MainWindow(QMainWindow):
 
         self.settings = core.load_settings()
         self._sites = None                 # stock sites whose rules are checked (worked out when first needed)
+        Photo.track_description = "description" in core.meta_fields(self.settings)
         core.set_debug(self.settings.get("debug_log", False))
         self.photos: list[Photo] = []
         self.rows: dict[str, int] = {}
@@ -2252,9 +2293,12 @@ class MainWindow(QMainWindow):
             if ph.history:
                 e["history"] = ph.history
             title, keywords = ph.redo["before"] if (ph.redo and "before" in ph.redo) else (ph.title, ph.keywords)
-            if ph.status != "reading" and (core.clean_title(title), core.clean_keywords(keywords)) != \
-                    (core.clean_title(ph.file_title), core.clean_keywords(ph.file_keywords)):
+            desc = ph.redo.get("description", ph.description) if ph.redo else ph.description
+            if ph.status != "reading" and ((core.clean_title(title), core.clean_keywords(keywords)) !=
+                                           (core.clean_title(ph.file_title), core.clean_keywords(ph.file_keywords))
+                                           or desc != ph.file_description):
                 e["title"], e["keywords"] = title, list(keywords)   # only what isn't saved in the file yet
+                e["description"] = desc
             entries.append(e)
         try:
             if entries:
@@ -2301,6 +2345,7 @@ class MainWindow(QMainWindow):
                 self.fill_type_combo(ph.type_combo, ph.type_key)
         if "title" in e:
             ph.title, ph.keywords = str(e.get("title") or ""), [str(k) for k in e.get("keywords") or []]
+            ph.description = core.norm_description(str(e.get("description", ph.file_description) or ""))
             if ph.status != "error":
                 ph.status, ph.message = "ready", "Brought back, not saved yet"
 
@@ -2345,9 +2390,10 @@ class MainWindow(QMainWindow):
         if not ph.title.strip() and not ph.keywords:
             return
         last = ph.history[-1] if ph.history else None
-        if last and last["title"] == ph.title and last["keywords"] == ph.keywords:
+        if last and last["title"] == ph.title and last["keywords"] == ph.keywords \
+                and last.get("description", "") == ph.description:
             return
-        ph.history.append({"title": ph.title, "keywords": list(ph.keywords), "how": how,
+        ph.history.append({"title": ph.title, "description": ph.description, "keywords": list(ph.keywords), "how": how,
                            "time": time.strftime("%H:%M")})
         del ph.history[:-core.SUGGESTIONS_PER_PHOTO]
 
@@ -2355,6 +2401,7 @@ class MainWindow(QMainWindow):
         if ph.busy:
             return
         ph.title, ph.keywords = entry["title"], list(entry["keywords"])
+        ph.description = entry.get("description", "")
         ph.status = "suggested" if ph.changed else "ready"
         ph.message = f"{entry['how']} from {entry['time']} put back" + (", not saved yet" if ph.changed else "")
         self._show(ph)
@@ -2382,22 +2429,31 @@ class MainWindow(QMainWindow):
             return
         folder = os.path.dirname(photos[0].path)
         filters = [label + " (*.csv)" for _, label in core.CSV_FORMATS]
+        suggested = core.csv_file_name("shutterstock")          # e.g. shutterstock_2026-11-02.csv
         path, chosen = QFileDialog.getSaveFileName(self, f"Export {len(photos)} photo{'s' if len(photos) != 1 else ''} "
-                                                   "to CSV", os.path.join(folder, "metadata.csv"), ";;".join(filters))
+                                                   "to CSV", os.path.join(folder, suggested), ";;".join(filters))
         if not path:
             return
         if not path.lower().endswith(".csv"):
             path += ".csv"
         fmt = next((k for (k, label), flt in zip(core.CSV_FORMATS, filters) if flt == chosen), "shutterstock")
+        if os.path.basename(path) == suggested and fmt != "shutterstock":
+            path = os.path.join(os.path.dirname(path), core.csv_file_name(fmt))   # adobe_2026-11-02.csv
+        categories = []
+        if fmt == "shutterstock":
+            categories = self._ask_shutterstock_categories(len(photos))
+            if categories is None:
+                return
         labels = dict(self.type_items())
         # a RAW's titles are exported for the JPEG Lightroom will make from it (photo.CR3 -> photo.jpg)
         rows = [{"file": (os.path.splitext(os.path.basename(p.path))[0] + ".jpg") if core.is_raw(p.path)
                  else os.path.basename(p.path), "folder": os.path.dirname(p.path), "title": p.title,
+                 "description": p.description,
                  "keywords": list(p.keywords), "editorial": self.is_editorial(p),
                  "type": labels.get(self.effective_type(p), ""), "note": p.note, "taken": p.taken,
                  "saved": not p.changed} for p in photos]
         try:
-            n = core.export_csv(path, rows, fmt)
+            n = core.export_csv(path, rows, fmt, categories)
         except OSError as e:
             QMessageBox.warning(self, "Export CSV", f"The CSV couldn't be saved:\n{e}")
             return
@@ -2407,6 +2463,42 @@ class MainWindow(QMainWindow):
                             + (f" {unsaved} of them {'has' if unsaved == 1 else 'have'} changes that aren't saved "
                                "into the files yet."
                                if unsaved else ""))
+
+    def _ask_shutterstock_categories(self, count: int) -> list[str] | None:
+        """Shutterstock rejects an upload CSV without categories: ask for 1 or 2 (remembered for next time).
+        None = cancelled."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Shutterstock categories")
+        lay = QVBoxLayout(dlg)
+        info = QLabel(f"Shutterstock needs one or two categories for each photo. These go on all {count} "
+                      f"photo{'s' if count != 1 else ''} in this CSV; you can change single photos on the site "
+                      "after the upload.")
+        info.setWordWrap(True)
+        lay.addWidget(info)
+        last = [c for c in self.settings.get("shutterstock_categories") or [] if c in core.SHUTTERSTOCK_CATEGORIES]
+        combos = []
+        form = QFormLayout()
+        for i, label in enumerate(("Category 1", "Category 2 (optional)")):
+            cb = QComboBox()
+            if i:
+                cb.addItem("(none)", "")
+            for c in core.SHUTTERSTOCK_CATEGORIES:
+                cb.addItem(c, c)
+            if len(last) > i:
+                cb.setCurrentIndex(max(0, cb.findData(last[i])))
+            form.addRow(label, cb)
+            combos.append(cb)
+        lay.addLayout(form)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        lay.addWidget(buttons)
+        if not dlg.exec():
+            return None
+        cats = list(dict.fromkeys(c for c in (cb.currentData() for cb in combos) if c))
+        self.settings["shutterstock_categories"] = cats
+        core.save_settings(self.settings)
+        return cats
 
     # ---------- update check
     def check_updates(self, on_done=None, status: dict | None = None):
@@ -2596,6 +2688,7 @@ class MainWindow(QMainWindow):
         if dlg.exec():
             self.settings = dlg.values()
             self._sites = None
+            Photo.track_description = "description" in core.meta_fields(self.settings)
             for ph in self.photos:
                 self._show(ph)
             core.set_debug(self.settings.get("debug_log", False))
@@ -2735,8 +2828,8 @@ class MainWindow(QMainWindow):
             ph = self._photo(path)
             if not ph:
                 continue
-            ph.file_title, ph.file_keywords = meta["title"], list(meta["keywords"])
-            ph.title, ph.keywords = ph.file_title, list(ph.file_keywords)
+            ph.load_file(meta)
+            ph.title, ph.keywords, ph.description = ph.file_title, list(ph.file_keywords), ph.file_description
             ph.taken = meta.get("taken", "")
             ph.status, ph.message = "ready", ("Has metadata" if (ph.title or ph.keywords) else "No title or keywords yet")
             self._apply_restore(ph)
@@ -2767,7 +2860,7 @@ class MainWindow(QMainWindow):
         """What the stock sites you sell on would reject in this photo's title and keywords."""
         if self._sites is None:
             self._sites = core.stock_sites(self.settings)
-        return core.site_problems(ph.title, ph.keywords, self._sites)
+        return core.site_problems(ph.title, ph.keywords, self._sites, ph.description)
 
     def status_text(self, ph: Photo) -> tuple[str, str]:
         if ph.busy or ph.status in ("error", "saved", "reading"):
@@ -2941,7 +3034,7 @@ class MainWindow(QMainWindow):
         for ph in photos:
             if ph.busy or not ph.changed:
                 continue
-            ph.title, ph.keywords = ph.file_title, list(ph.file_keywords)
+            ph.title, ph.keywords, ph.description = ph.file_title, list(ph.file_keywords), ph.file_description
             ph.status, ph.message = "ready", "Reverted to what's saved in the file"
             self._show(ph)
         self.apply_filter()
@@ -3109,6 +3202,18 @@ class MainWindow(QMainWindow):
                                   core.format_date(d, s.get("title_date_format", "long")),
                                   s.get("title_date_pos", "off"), s.get("title_date_sep", "dash"),
                                   self.location_for(ph), s.get("title_loc_sep", "dash"))
+
+    def compose_description(self, ph: Photo, text: str) -> str:
+        """The description with the editorial location and date in front, the way Shutterstock and Alamy
+        want editorial captions: "Tokyo, Japan - October 26, 2026: A crowd...". Text before titles isn't added."""
+        s = self.settings
+        if not s.get("editorial_on"):
+            return text
+        d = self.photo_date(ph)
+        return core.norm_description(core.compose_title(
+            text, "", core.format_date(d, s.get("title_date_format", "long")) if d else "",
+            "start" if s.get("title_date_pos", "off") != "off" else "off", s.get("title_date_sep", "dash"),
+            self.location_for(ph), s.get("title_loc_sep", "dash")))
 
     # ---------- previously used locations
     CLEAR_LOCATIONS = "Clear this list…"
@@ -3867,6 +3972,7 @@ class MainWindow(QMainWindow):
         """A redo that didn't finish (stopped, failed): put back the title and keywords it cleared."""
         if ph.redo and "before" in ph.redo and not ph.title.strip() and not ph.keywords:
             ph.title, ph.keywords = ph.redo["before"][0], list(ph.redo["before"][1])
+            ph.description = ph.redo.get("description", ph.description)
 
     def _release(self, photos, message: str):
         for ph in photos:
@@ -3941,6 +4047,7 @@ class MainWindow(QMainWindow):
                                              never_use=core.parse_word_list(self.settings.get("never_use", "")),
                                              never_in_title=bool(self.settings.get("never_use_titles", True)),
                                              photo_avoid=ph.avoid if self.settings.get("avoid_on") else "",
+                                             description=bool(self.settings.get("ai_description", True)),
                                              tidy=bool(self.settings.get("tidy_keywords", True))),
                   ph.path, url, model, kmin, kmax,
                   context, old_title, old_keywords, direction, ph.note,
@@ -3985,7 +4092,7 @@ class MainWindow(QMainWindow):
             # and reasons. They're kept here so a stopped or failed redo can put them back.
             if not any(h["title"] == ph.title and h["keywords"] == ph.keywords for h in ph.history):
                 self._remember_suggestion(ph, "Before redo")   # so a worse redo can be undone from the menu
-            ph.redo = {"feedback": feedback, "before": (ph.title, list(ph.keywords))}
+            ph.redo = {"feedback": feedback, "before": (ph.title, list(ph.keywords)), "description": ph.description}
             ph.title, ph.keywords = "", []
             self._show(ph)
         core.debug(f"redo with reasons for {len(photos)} photo(s), old title and keywords cleared:\n{feedback}")
@@ -4068,6 +4175,8 @@ class MainWindow(QMainWindow):
                 # the location is added to the title for you, so a trailing "in <location>" from the AI goes
                 ph.title = self.compose_title(ph, core.drop_trailing_location(result["title"],
                                                                                self.location_for(ph)))
+            if result.get("description") and not (keep_title and ph.description):
+                ph.description = self.compose_description(ph, result["description"])
             # order: your "keywords to put first", then existing keywords (if kept), then suggestions
             kmax = core.keyword_range(self.settings.get("keyword_min"), self.settings.get("keyword_max"))[1]
             lead = core.expand_lead_keywords(self.settings.get("lead_keywords", ""), self.photo_date(ph))
@@ -4221,7 +4330,7 @@ class MainWindow(QMainWindow):
             ph.busy, ph.status, ph.message = True, "saving", "Saving…"
             self._show(ph)
             job = Job(ph.path, self._write_one, ph.path, ph.title, list(ph.keywords), self._save_options(ph),
-                      cancel=self.cancel)
+                      ph.description, cancel=self.cancel)
             run_job(self, job, self.io_pool, self._saved, self._save_failed)
         self._refresh_buttons()
 
@@ -4234,13 +4343,13 @@ class MainWindow(QMainWindow):
         return {"fields": core.meta_fields(s), "xmp2iptc_args": args,
                 "location": self.location_for(ph) if ph is not None else self.editorial_location()}
 
-    def _write_one(self, path, title, keywords, opts):
+    def _write_one(self, path, title, keywords, opts, description=""):
         try:
             before = core.snapshot_metadata(self.exiftool, path)   # so this save can be undone
         except Exception as e:
             before = None
             core.debug(f"{os.path.basename(path)}: couldn't keep a copy for Undo: {e!r}", always=True)
-        core.safe_write(self.exiftool, path, title, keywords, xmp2iptc_args=opts["xmp2iptc_args"],
+        core.safe_write(self.exiftool, path, title, keywords, description or None, xmp2iptc_args=opts["xmp2iptc_args"],
                         fields=opts["fields"], location=opts["location"])
         if before is not None:
             try:
@@ -4281,8 +4390,8 @@ class MainWindow(QMainWindow):
     def _undone(self, path, meta):
         ph = self._photo(path)
         if ph:
-            ph.file_title, ph.file_keywords = meta["title"], list(meta["keywords"])
-            ph.title, ph.keywords = ph.file_title, list(ph.file_keywords)
+            ph.load_file(meta)
+            ph.title, ph.keywords, ph.description = ph.file_title, list(ph.file_keywords), ph.file_description
             ph.busy = False
             more = core.can_undo(path)
             ph.status, ph.message = "ready", "Save undone ✓ (image verified unchanged)" + (
@@ -4302,7 +4411,7 @@ class MainWindow(QMainWindow):
     def _saved(self, path, meta):
         ph = self._photo(path)
         if ph:
-            ph.file_title, ph.file_keywords = meta["title"], list(meta["keywords"])
+            ph.load_file(meta)
             ph.busy = False
             if ph.changed:   # file doesn't match what we asked for
                 ph.status, ph.message = "error", "Saved, but the file reads back differently"

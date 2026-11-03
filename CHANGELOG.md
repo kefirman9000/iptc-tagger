@@ -1,5 +1,12 @@
 # What's new
 
+## 2026.11.02.1
+
+- **A description of its own:** every photo now has a **Description** (caption) next to its title, for Alamy, Dreamstime and the other sites that want a proper description and not just the title again. The AI writes it right after the title: one or two plain sentences (up to 200 characters) that add what the title leaves out. Edit it in the side panel, under the title. It's saved as the *Description / Caption* (XMP and IPTC), which Alamy, Dreamstime and Shutterstock read. With *Editorial* on, the location and date go in front of it too (*Tokyo, Japan - October 26, 2026: A crowd…*). Leave it empty and the title is saved as the description, as before. Turn the AI's description off in **Settings → Description**.
+- **Shutterstock CSV fixed:** Shutterstock rejected the upload CSV because its *Categories* column was empty. Export now asks for one or two Shutterstock categories (remembered for next time), writes *Yes* / *No* the way Shutterstock's sample does, and puts each photo's description in the *Description* column.
+- **Dated CSV names:** Export CSV suggests a name with today's date, like *shutterstock_2026-11-02.csv*. The *All details* CSV also has the description and its length.
+- Dreamstime and Alamy are flagged in the stock-site rules when a photo has no description of its own.
+
 ## 2026.11.01.1
 
 - **RAW files:** drop CR3, CR2, NEF, ARW, RAF, ORF, RW2 and other camera RAW files in, alongside your JPEGs. Their titles and keywords are saved into Lightroom's **.xmp sidecar** next to the RAW (photo.CR3 → photo.xmp), so Lightroom picks them up and carries them into every JPEG you export. The RAW file itself is never written to: it's checked byte for byte before and after every save. Anything else in the sidecar, like Lightroom or RAW Review edits and star ratings, is kept. The AI and the thumbnails use the preview the camera stores inside the RAW. RAW files aren't sent to StockUp (export JPEGs first), and Export CSV lists them by the name of the JPEG Lightroom will make (photo.jpg). DNG files aren't included: Lightroom keeps their metadata inside the file. For RAW photos already in your Lightroom catalog, see *RAW files and Lightroom* in the README first.
