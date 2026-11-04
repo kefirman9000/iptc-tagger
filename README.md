@@ -12,8 +12,6 @@ The AI runs locally through [Ollama](https://ollama.com): no account, no subscri
 
 No installation and no Python needed. ExifTool is included.
 
-**Mac:** download **IPTC.Tagger.Mac.zip** and open **IPTC Tagger.app** (the first time: right-click → **Open**). Install [ExifTool](https://exiftool.org) separately, or with `brew install exiftool`.
-
 ## Requirements
 
 - **[Ollama](https://ollama.com/download)**, free, installed and running.
