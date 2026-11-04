@@ -34,6 +34,9 @@ No installation and no Python needed. ExifTool is included.
 - **Stock-site rules:** titles and keywords that Shutterstock, Adobe Stock or the other sites you sell on would reject are marked in amber with the reason, using the same rules as StockUp.
 - **Detect:** the AI suggests a full, descriptive, SEO-friendly title that starts with the subject (*Magazines on a Shelf for Reading…*, never *A picture of…*), in Title Case or with every word capitalized, short, standard or detailed, as you choose, and 30–40 lowercase keywords per photo.
 - **Review and edit** in a table or a side panel with a large preview. Save one photo at a time or many at once.
+- **Every Detect checklist and profiles:** tick how the AI should write for every photo (plain and factual, focus on the signs, the main subject…), and save your instructions and choices as named profiles to switch between kinds of shoot.
+- **Near-identical titles** are spotted after each batch, with one click to redo all but one of each group.
+- **Keyboard review:** Ctrl+↓ / Ctrl+↑ next and previous photo, Ctrl+D Detect, Ctrl+R Redo, Ctrl+T tick, Ctrl+Enter save and next (⌘ on a Mac; F1 lists them all).
 - **Instructions for the AI:** one box for facts about the batch and how titles and keywords should be written, plus a note per photo and an optional **Avoid** column (tick *Avoid column*) for what the AI shouldn't say about it. A **Never use** list keeps words like *beautiful* out of every title and keyword.
 - **Find and replace** across the titles and keywords of many photos at once.
 - **Photo types:** landscape, food, architecture, product on a shelf, company logo with a stock chart, editorial event and more, plus your own. A **Copyright-free** type keeps brand and personal names out.

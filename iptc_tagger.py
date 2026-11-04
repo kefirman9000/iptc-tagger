@@ -20,7 +20,7 @@ from PySide6.QtCore import QDate, QItemSelectionModel, QObject, QRunnable, QSize
 from PySide6.QtGui import QAction, QColor, QDesktopServices, QIcon, QImage, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDateEdit, QDialog, QDialogButtonBox, QFileDialog,
-    QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMainWindow,
+    QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit, QMainWindow,
     QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QSpinBox, QSplitter, QStackedWidget,
     QStyle, QSystemTrayIcon, QTableWidget, QTableWidgetItem, QTabWidget, QTextBrowser, QVBoxLayout, QWidget,
 )
@@ -183,10 +183,11 @@ FILTERS = [
     ("no_date", "No date taken"),
     ("has_note", "With photo notes or Avoid"),
     ("site_problems", "Breaks a stock site's rules"),
+    ("similar", "Near-identical titles"),
 ]
 
 
-def photo_matches(ph, key: str, search: str = "", keyword_min: int = 0, sites=()) -> bool:
+def photo_matches(ph, key: str, search: str = "", keyword_min: int = 0, sites=(), similar=None) -> bool:
     """Does this photo pass the Show filter and the search? The search looks in the file name,
     title and keywords; every word typed must appear somewhere (in any order, any case)."""
     ok = {
@@ -203,6 +204,7 @@ def photo_matches(ph, key: str, search: str = "", keyword_min: int = 0, sites=()
         "no_date": not ph.taken,
         "has_note": bool(ph.note.strip() or ph.avoid.strip()),
         "site_problems": bool(core.site_problems(ph.title, ph.keywords, sites, ph.description)) if key == "site_problems" else True,
+        "similar": ph.path in (similar or ()),
     }.get(key, True)
     if not ok:
         return False
@@ -393,7 +395,8 @@ class SettingsDialog(QDialog):
         self.read_label.setChecked(bool(settings.get("read_label", True)))
         self.read_label.setToolTip("Before writing the title, the AI first copies the text it can read on the product,\n"
                                    "packaging or sign (brand, product, flavour, size). The title and keywords then use\n"
-                                   "those exact spellings. Adds one quick step per photo. Not used for Copyright-free.")
+                                   "those exact spellings. Adds one quick step per photo. Not used for Copyright-free, or for\n"
+                                   "landscapes, wildlife, pets, flowers, portraits and other photos that rarely have text.")
         f_text.addRow("Labels", self.read_label)
         self.ai_desc = QCheckBox("Also write a description (caption) for each photo")
         self.ai_desc.setChecked(bool(settings.get("ai_description", True)))
@@ -589,6 +592,10 @@ class SettingsDialog(QDialog):
         whats_new.setToolTip("What changed in this version and the ones before it")
         whats_new.clicked.connect(lambda *_: show_whats_new(self, "", full=True))
         f_general.addRow("", whats_new)
+        keys_btn = QPushButton("Keyboard shortcuts…")
+        keys_btn.setToolTip("Review a batch without the mouse (F1 shows this list any time)")
+        keys_btn.clicked.connect(lambda *_: self.parent().show_shortcuts() if hasattr(self.parent(), "show_shortcuts") else None)
+        f_general.addRow("", keys_btn)
         self.finish_alert = QComboBox()
         for key, label in (("both", "Play a sound and show a notification"), ("sound", "Play a sound"),
                            ("notify", "Show a notification"), ("off", "Do nothing")):
@@ -1337,6 +1344,46 @@ class FindReplaceDialog(QDialog):
             self.result.setText(f"<b>{len(ch)} photo{'s' if len(ch) != 1 else ''} will change.</b>{example}")
 
 
+class StyleDialog(QDialog):
+    """"Every Detect": standing preferences for the AI, ticked once and used for every photo."""
+
+    def __init__(self, parent, chosen):
+        super().__init__(parent)
+        self.setWindowTitle("Every Detect")
+        lay = QVBoxLayout(self)
+        head = QLabel("Tick how the AI should write titles and keywords for <b>every</b> photo. They're kept until "
+                      "you change them (and saved in a profile, if you use one). Redo with reasons still adds its "
+                      "own reasons on top, for one photo at a time.")
+        head.setWordWrap(True)
+        lay.addWidget(head)
+        self.boxes = {}
+        cols = QGridLayout()
+        cols.setHorizontalSpacing(24)
+        chosen = set(chosen or [])
+        for col, (heading, items) in enumerate((("Always", core.STYLE_ALWAYS), ("Focus on", core.STYLE_FOCUS))):
+            cols.addWidget(QLabel(f"<b>{heading}</b>"), 0, col)
+            for r, (key, label, _short, rule) in enumerate(items, start=1):
+                cb = QCheckBox(label)
+                cb.setToolTip(rule)                     # what the AI is told
+                cb.setChecked(key in chosen)
+                self.boxes[key] = cb
+                cols.addWidget(cb, r, col)
+        cols.setRowStretch(max(len(core.STYLE_ALWAYS), len(core.STYLE_FOCUS)) + 1, 1)
+        lay.addLayout(cols)
+        tip = QLabel("Tip: pick a few. Ticking everything pulls the AI in too many directions at once.")
+        tip.setStyleSheet(f"color:{GREY}")
+        lay.addWidget(tip)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel | QDialogButtonBox.Reset)
+        buttons.button(QDialogButtonBox.Reset).setText("Untick all")
+        buttons.button(QDialogButtonBox.Reset).clicked.connect(lambda *_: [b.setChecked(False) for b in self.boxes.values()])
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        lay.addWidget(buttons)
+
+    def chosen(self) -> list[str]:
+        return core.style_keys([k for k, cb in self.boxes.items() if cb.isChecked()])
+
+
 class RedoDialog(QDialog):
     """Redo with reasons: tick what's wrong with the current suggestion, and the AI starts again from the photo
     with that in mind. The current title and keywords are cleared and not shown to it."""
@@ -1703,6 +1750,11 @@ class MainWindow(QMainWindow):
                              "{year}, {month} and {date} are filled in from each photo's capture date.")
         self.lead.setClearButtonEnabled(True)
         self.lead.editingFinished.connect(self._remember_options)
+        self.context_timer = QTimer(self)              # the Instructions text is remembered a moment after typing
+        self.context_timer.setSingleShot(True)
+        self.context_timer.setInterval(800)
+        self.context_timer.timeout.connect(self._remember_options)
+        self.context.textChanged.connect(lambda *_: self.context_timer.start())
         self.btn_lead = QPushButton("Add to photos now")
         self.btn_lead.setToolTip("Put these keywords at the front of the selected photos (or all photos) "
                                  "right away, without running the AI")
@@ -1865,6 +1917,37 @@ class MainWindow(QMainWindow):
         checks.addStretch(1)
         checks.addWidget(note)
         g.addLayout(checks, 7, 0, 1, 2)
+        style_row = QHBoxLayout()
+        self.style_label = QLabel()
+        self.style_label.setToolTip("Standing preferences the AI follows for every photo")
+        self.btn_style = QPushButton("Choose…")
+        self.btn_style.setToolTip("Tick how the AI should write titles and keywords for every photo:\n"
+                                  "plain and factual, only what's visible, focus on the signs, the main subject…")
+        self.btn_style.clicked.connect(lambda *_: self.choose_style())
+        self.profile_box = QComboBox()
+        self.profile_box.setMinimumContentsLength(16)
+        self.profile_box.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.profile_box.setToolTip("A profile keeps your Instructions text, the Every Detect choices, the default\n"
+                                    "photo type, keywords to put first, text before titles, Editorial and the location.\n"
+                                    "Pick one to switch everything at once, e.g. Grocery products or Travel – editorial.")
+        self.profile_box.activated.connect(lambda i: self.apply_profile(self.profile_box.itemData(i) or ""))
+        self.btn_profile_save = QPushButton("Save Profile…")
+        self.btn_profile_save.setToolTip("Save the current instructions and choices as a profile (new, or replace one)")
+        self.btn_profile_save.clicked.connect(lambda *_: self.save_profile())
+        self.btn_profile_del = QPushButton("Delete")
+        self.btn_profile_del.setToolTip("Delete the chosen profile (your current instructions stay as they are)")
+        self.btn_profile_del.clicked.connect(lambda *_: self.delete_profile())
+        style_row.addWidget(QLabel("<b>Every Detect:</b>"))
+        style_row.addWidget(self.style_label, 1)
+        style_row.addWidget(self.btn_style)
+        style_row.addSpacing(16)
+        style_row.addWidget(QLabel("<b>Profile:</b>"))
+        style_row.addWidget(self.profile_box)
+        style_row.addWidget(self.btn_profile_save)
+        style_row.addWidget(self.btn_profile_del)
+        g.addLayout(style_row, 8, 0, 1, 2)
+        self._show_style()
+        self._fill_profiles()
         g.setColumnStretch(0, 1)
         g.setColumnStretch(1, 1)
 
@@ -1951,6 +2034,12 @@ class MainWindow(QMainWindow):
                                     "(or the selected ones, or all shown)  (Ctrl+H, or ⌘⌥F on a Mac)")
         self.btn_replace.clicked.connect(lambda *_: self.find_replace())
         fb.addWidget(self.btn_replace)
+        self.btn_redo_similar = QPushButton("Redo Similar…")
+        self.btn_redo_similar.setToolTip("Keeps the first photo of each group of near-identical titles and redoes the\n"
+                                         "others, telling the AI which title to steer away from")
+        self.btn_redo_similar.clicked.connect(lambda *_: self.redo_similar())
+        self.btn_redo_similar.hide()
+        fb.addWidget(self.btn_redo_similar)
         self.filter_bar.hide()                       # shown once there are photos
         self.list_side = QWidget()
         ls = QVBoxLayout(self.list_side)
@@ -1976,6 +2065,8 @@ class MainWindow(QMainWindow):
         self.btn_force.hide()
         self.status = QLabel("")
         self.status.setStyleSheet("color:#6b7280")
+        self.status.setTextFormat(Qt.AutoText)
+        self.status.linkActivated.connect(lambda link: self.show_similar() if link == "similar" else None)
         self.model_light = QLabel("<span style='color:#8a8f98'>●</span> Checking the AI model…")
         self.model_light.setTextFormat(Qt.RichText)
         self.model_light.linkActivated.connect(self._model_link)
@@ -2009,8 +2100,18 @@ class MainWindow(QMainWindow):
                           (QKeySequence(QKeySequence.Paste), lambda: self.paste_metadata("both")),
                           (QKeySequence("Ctrl+Shift+V"), lambda: self.paste_metadata("add")),
                           (QKeySequence(QKeySequence.Find), self.focus_search),
-                          (QKeySequence(QKeySequence.Replace), self.find_replace)):   # Ctrl+H; ⌘⌥F on a Mac
+                          (QKeySequence(QKeySequence.Replace), self.find_replace),   # Ctrl+H; ⌘⌥F on a Mac
+                          # reviewing with the keyboard: these work on the selected photo, even while typing in
+                          # the side panel (Ctrl is ⌘ on a Mac)
+                          (QKeySequence("Ctrl+Down"), lambda: self.select_offset(1)),
+                          (QKeySequence("Ctrl+Up"), lambda: self.select_offset(-1)),
+                          (QKeySequence("Ctrl+D"), self.detect_selected),
+                          (QKeySequence("Ctrl+R"), lambda: self.redo_photos(self._selected_photos())),
+                          (QKeySequence("Ctrl+T"), self.toggle_check_selected),
+                          (QKeySequence(QKeySequence.HelpContents), self.show_shortcuts),   # F1
+                          (QKeySequence("Ctrl+/"), self.show_shortcuts)):
             act = QAction(self)
+            act.setShortcutContext(Qt.WindowShortcut)
             act.setShortcut(seq)
             act.triggered.connect(slot)
             self.addAction(act)
@@ -2032,11 +2133,14 @@ class MainWindow(QMainWindow):
     # ---------- ExifTool
     def _setup_exiftool(self):
         exe = core.find_exiftool(self.settings.get("exiftool_path", ""))
-        self.exiftool = None
+        old, self.exiftool = getattr(self, "exiftool", None), None
+        if old is not None and (not exe or old.exe != exe):
+            threading.Thread(target=old.close, daemon=True).start()   # (after anything it's still doing)
         if exe:
             try:
-                ver = core.ExifTool(exe).version()
-                self.exiftool = core.ExifTool(exe)
+                et = old if old is not None and old.exe == exe else core.ExifTool(exe)   # one, kept running
+                ver = et.version()
+                self.exiftool = et
                 core.set_preview_exiftool(self.exiftool)
                 self.status.setText(f"ExifTool {ver} ready.")
             except core.ExifToolError as e:
@@ -2404,6 +2508,170 @@ class MainWindow(QMainWindow):
                     todo.append(ph)
         if todo:
             self.identify_photos(todo)
+
+    # ---------- near-identical titles
+    def similar_groups(self) -> list[list]:
+        """Photos whose titles are the same or nearly (compared without your text before titles, the location
+        and the date, which they'd share anyway)."""
+        photos = [p for p in self.photos if not p.busy and p.title.strip()]
+        return [[photos[i] for i in g] for g in core.similar_title_groups([self.bare_title(p) for p in photos])]
+
+    def show_similar(self):
+        i = self.filter_box.findData("similar")
+        if i >= 0:
+            self.filter_box.setCurrentIndex(i)       # (apply_filter runs when the filter changes)
+            self.apply_filter()
+
+    def redo_similar(self):
+        groups = self.similar_groups()
+        extra, photos = {}, []
+        for g in groups:
+            keep = self.bare_title(g[0])
+            for ph in g[1:]:
+                photos.append(ph)
+                extra[ph.path] = (f"Another photo in this batch already has the title "
+                                  f"\"{keep}\". Write a clearly different title that brings out what is distinctive "
+                                  "about this photo (its angle, framing, details, action or setting).")
+        if photos:
+            self.redo_photos(photos, extra)
+
+    def _note_similar(self):
+        """After a Detect batch: say so when titles came out near-identical."""
+        groups = self.similar_groups()
+        n = sum(len(g) for g in groups)
+        if n:
+            core.debug(f"{n} photo(s) in {len(groups)} group(s) have near-identical titles")
+            self.status.setText((getattr(self, "last_summary", "") + " ").lstrip()
+                                + f"{n} photos have near-identical titles: <a href='similar'>show them</a>.")
+
+    # ---------- Every Detect checklist
+    def _show_style(self):
+        summary = core.style_summary(self.settings.get("detect_style", []))
+        self.style_label.setText(summary if summary else f"<span style='color:{GREY}'>nothing extra (the AI's "
+                                                         "usual style)</span>")
+
+    def choose_style(self):
+        dlg = StyleDialog(self, self.settings.get("detect_style", []))
+        if dlg.exec():
+            self.settings["detect_style"] = dlg.chosen()
+            core.save_settings(self.settings)
+            self._show_style()
+            self._fill_profiles()                      # (marks the profile as changed)
+            n = len(self.settings["detect_style"])
+            self.status.setText((f"Every Detect: {core.style_summary(self.settings['detect_style'])}. "
+                                 if n else "Every Detect: nothing extra. ")
+                                + "Used from the next Detect, Redo or Reword.")
+
+    def style_text(self) -> str:
+        return core.style_rules(self.settings.get("detect_style", []))
+
+    # ---------- profiles
+    PROFILE_KEYS = ("context", "detect_style", "default_type", "lead_keywords", "title_prefix", "editorial_on",
+                    "title_location")
+    NO_PROFILE = "No profile"
+
+    def _profile_values(self, save: bool = True) -> dict:
+        if save:
+            self._remember_options()
+        return {k: (list(self.settings.get(k) or []) if k == "detect_style" else self.settings.get(k))
+                for k in self.PROFILE_KEYS}
+
+    def _profile_changed(self, name: str) -> bool:
+        saved = self.settings.get("profiles", {}).get(name)
+        if not saved:
+            return False
+        now = self._profile_values(save=False)        # (the options as last remembered)
+        return any(now.get(k) != saved.get(k, now.get(k)) for k in self.PROFILE_KEYS)
+
+    def _fill_profiles(self):
+        if not hasattr(self, "profile_box"):
+            return
+        names = sorted(self.settings.get("profiles", {}), key=str.casefold)
+        current = self.settings.get("profile", "")
+        if current not in names:
+            current = ""
+        self.profile_box.blockSignals(True)
+        self.profile_box.clear()
+        self.profile_box.addItem(self.NO_PROFILE if names else "No profiles yet", "")
+        for n in names:
+            label = n + ("  (changed)" if n == current and self._ready and self._profile_changed(n) else "")
+            self.profile_box.addItem(label, n)
+        self.profile_box.setCurrentIndex(max(0, self.profile_box.findData(current)))
+        self.profile_box.blockSignals(False)
+        self.btn_profile_del.setEnabled(bool(current))
+
+    def save_profile(self):
+        current = self.settings.get("profile", "")
+        name, ok = QInputDialog.getText(self, "Save profile",
+                                        "Name for this profile (e.g. Grocery products, Travel – editorial):",
+                                        text=current)
+        name = " ".join((name or "").split())
+        if not ok or not name:
+            return
+        profiles = dict(self.settings.get("profiles", {}))
+        same = next((n for n in profiles if n.casefold() == name.casefold()), None)
+        if same and same != current and QMessageBox.question(
+                self, "Replace profile", f"There's already a profile called {same}. Replace it?") != QMessageBox.Yes:
+            return
+        if same:
+            profiles.pop(same)
+        profiles[name] = self._profile_values()
+        self.settings.update(profiles=profiles, profile=name)
+        core.save_settings(self.settings)
+        self._fill_profiles()
+        self.status.setText(f"Saved the profile {name}. Pick it from Profile any time to switch back to these "
+                            "instructions and choices.")
+
+    def delete_profile(self):
+        name = self.settings.get("profile", "")
+        if not name or QMessageBox.question(self, "Delete profile",
+                                            f"Delete the profile {name}? Your current instructions stay as they are."
+                                            ) != QMessageBox.Yes:
+            return
+        profiles = dict(self.settings.get("profiles", {}))
+        profiles.pop(name, None)
+        self.settings.update(profiles=profiles, profile="")
+        core.save_settings(self.settings)
+        self._fill_profiles()
+        self.status.setText(f"Deleted the profile {name}.")
+
+    def apply_profile(self, name: str):
+        current = self.settings.get("profile", "")
+        if name == current and not (name and self._profile_changed(name)):
+            return
+        if not name:                                   # "No profile": keep everything, just stop following one
+            self.settings["profile"] = ""
+            core.save_settings(self.settings)
+            self._fill_profiles()
+            return
+        values = self.settings.get("profiles", {}).get(name)
+        if not values:
+            self._fill_profiles()
+            return
+        now = self._profile_values()
+        unsaved = (current and self._profile_changed(current)) or (
+            not current and (now.get("context") or now.get("detect_style")))
+        if unsaved and QMessageBox.question(
+                self, "Switch profile",
+                f"Switch to {name}? Your current instructions and choices aren't saved in a profile and will be "
+                "replaced. (Click No, then Save Profile…, to keep them.)") != QMessageBox.Yes:
+            self._fill_profiles()
+            return
+        self.context.setPlainText(values.get("context", "") or "")
+        self.lead.setText(values.get("lead_keywords", "") or "")
+        self.prefix.setText(values.get("title_prefix", "") or "")
+        self.location.setText(values.get("title_location", "") or "")
+        self.editorial.setChecked(bool(values.get("editorial_on")))
+        dt = values.get("default_type") or "auto"
+        i = self.default_type.findData(dt)
+        if i >= 0:
+            self.default_type.setCurrentIndex(i)
+        self.settings.update(detect_style=core.style_keys(values.get("detect_style", [])), profile=name)
+        self._remember_options()
+        self._date_options_changed()
+        self._show_style()
+        self._fill_profiles()
+        self.status.setText(f"Profile {name}: its instructions and choices are in use from the next Detect.")
 
     # ---------- title capitals and wording, for titles already in the list
     def restyle_title(self, ph) -> str:
@@ -2873,6 +3141,8 @@ class MainWindow(QMainWindow):
                              avoid_on=self.avoid_on.isChecked(),
                              keep_existing_keywords=self.keep_kw.isChecked())
         core.save_settings(self.settings)
+        if hasattr(self, "profile_box"):
+            self._fill_profiles()                      # "(changed)" next to the profile when it no longer matches
 
     def open_settings(self):
         dlg = SettingsDialog(self, self.settings, core.find_exiftool(""))
@@ -3192,6 +3462,40 @@ class MainWindow(QMainWindow):
         if 0 <= new < len(self.photos):
             self.table.selectRow(new)
             self.table.scrollToItem(self.table.item(new, COL_FILE))
+
+    def detect_selected(self):
+        photos = [p for p in self._selected_photos() if not p.busy]
+        if photos:
+            self.identify_photos(photos)
+
+    def toggle_check_selected(self):
+        photos = self._selected_photos()
+        if photos:
+            self.set_checked(photos, not all(p.checked for p in photos))
+
+    SHORTCUTS = [("Ctrl+Down / Ctrl+Up", "Next / previous photo (also while typing in the side panel)"),
+                 ("Ctrl+Enter", "Save this photo and go to the next one"),
+                 ("Ctrl+D", "Detect the selected photo(s)"),
+                 ("Ctrl+R", "Redo the selected photo(s) with reasons"),
+                 ("Ctrl+T", "Tick / untick the selected photo(s)"),
+                 ("Ctrl+S", "Save Metadata (checked, else selected, else all shown)"),
+                 ("Ctrl+C / Ctrl+V", "Copy / paste title and keywords; Ctrl+Shift+V adds the keywords"),
+                 ("Ctrl+F", "Search"),
+                 ("Ctrl+H", "Find and replace"),
+                 ("Delete", "Remove the selected photos from the list (files aren't touched)"),
+                 ("F1 or Ctrl+/", "This list")]
+
+    def show_shortcuts(self):
+        mac = sys.platform == "darwin"
+        key = lambda k: (k.replace("Ctrl+H", "⌘⌥F").replace("Ctrl+", "⌘").replace("Enter", "↩")
+                         .replace("Down", "↓").replace("Up", "↑").replace("Shift+", "⇧") if mac else k)
+        rows = "".join(f"<tr><td style='padding:3px 16px 3px 0'><b>{key(k)}</b></td><td>{what}</td></tr>"
+                       for k, what in self.SHORTCUTS)
+        box = QMessageBox(self)
+        box.setWindowTitle("Keyboard shortcuts")
+        box.setTextFormat(Qt.RichText)
+        box.setText(f"<table>{rows}</table>")
+        box.exec()
 
     def save_and_next(self):
         ph = self.review.photo
@@ -3881,7 +4185,12 @@ class MainWindow(QMainWindow):
         text = self.search.text()
         kmin = core.keyword_range(self.settings.get("keyword_min"), self.settings.get("keyword_max"))[0]
         sites = core.stock_sites(self.settings) if key == "site_problems" else ()
-        hidden = {p.path for p in self.photos if not photo_matches(p, key, text, kmin, sites)}
+        groups = self.similar_groups() if key == "similar" else []
+        similar = {p.path for g in groups for p in g}
+        hidden = {p.path for p in self.photos if not photo_matches(p, key, text, kmin, sites, similar)}
+        n_redo = sum(len(g) - 1 for g in groups)
+        self.btn_redo_similar.setVisible(key == "similar" and n_redo > 0)
+        self.btn_redo_similar.setText(f"Redo {n_redo} Similar…")
         for p in self.photos:
             self.table.setRowHidden(self.rows[p.path], p.path in hidden)
         newly_hidden = hidden - self.hidden
@@ -4028,6 +4337,8 @@ class MainWindow(QMainWindow):
             self.btn_stop.hide()
             self.btn_force.hide()
             self.apply_filter()
+            if self.batch_label == "Detecting":
+                self._note_similar()
             self._batch_finished()
             if self.stockup_pending is not None:
                 pending, self.stockup_pending = self.stockup_pending, None
@@ -4264,10 +4575,13 @@ class MainWindow(QMainWindow):
                                              title_caps=self.settings.get("title_caps", "title"),
                                              direct_titles=bool(self.settings.get("direct_titles", True)),
                                              expand_short=True,
-                                             read_label=bool(self.settings.get("read_label", True)),
+                                             read_label=bool(self.settings.get("read_label", True))
+                                             and (self.effective_type(ph) not in core.NO_TEXT_TYPES
+                                                  or "words" in self.settings.get("detect_style", [])),
                                              never_use=core.parse_word_list(self.settings.get("never_use", "")),
                                              never_in_title=bool(self.settings.get("never_use_titles", True)),
                                              photo_avoid=ph.avoid if self.settings.get("avoid_on") else "",
+                                             style=self.style_text(),
                                              description=bool(self.settings.get("ai_description", True)),
                                              tidy=bool(self.settings.get("tidy_keywords", True))),
                   ph.path, url, model, kmin, kmax,
@@ -4297,18 +4611,20 @@ class MainWindow(QMainWindow):
                 on_started=lambda k: self._identify_started(k) if (self._photo(k) and self._photo(k).run == run)
                 else None)
 
-    def redo_photos(self, photos):
-        """Ask what's wrong, then run the AI again on these photos with those reasons."""
+    def redo_photos(self, photos, extra=None):
+        """Ask what's wrong, then run the AI again on these photos with those reasons.
+        extra: {path: one more reason for that photo only} (Redo Similar uses it)."""
         photos = [p for p in photos if not p.busy]
         if not photos:
             return
         dlg = RedoDialog(self, len(photos), self.bare_title(photos[0]) if len(photos) == 1 else "")
         if not dlg.exec():
             return
-        feedback = dlg.feedback()
-        if not feedback:
-            feedback = core.redo_feedback(["angle"])     # nothing ticked: at least ask for something different
+        base_feedback = dlg.feedback()
+        if not base_feedback:
+            base_feedback = core.redo_feedback(["angle"])   # nothing ticked: at least ask for something different
         for ph in photos:
+            feedback = base_feedback + ("\n- " + extra[ph.path] if extra and extra.get(ph.path) else "")
             # start clean: the AI doesn't see the old title or keywords (saved or suggested), only your notes
             # and reasons. They're kept here so a stopped or failed redo can put them back.
             if not any(h["title"] == ph.title and h["keywords"] == ph.keywords for h in ph.history):
@@ -4316,7 +4632,7 @@ class MainWindow(QMainWindow):
             ph.redo = {"feedback": feedback, "before": (ph.title, list(ph.keywords)), "description": ph.description}
             ph.title, ph.keywords = "", []
             self._show(ph)
-        core.debug(f"redo with reasons for {len(photos)} photo(s), old title and keywords cleared:\n{feedback}")
+        core.debug(f"redo with reasons for {len(photos)} photo(s), old title and keywords cleared:\n{base_feedback}")
         self.identify_photos(photos)
 
     # ---------- reword / double-check (text only)
@@ -4409,7 +4725,7 @@ class MainWindow(QMainWindow):
             s.get("direction", ""), self.effective_type(ph) == core.COPYRIGHT_FREE, s.get("symbols", "convert"),
             core.parse_word_list(s.get("never_use", "")), ph.avoid if s.get("avoid_on") else "",
             cancel=ph.token, name=os.path.basename(ph.path), title_caps=s.get("title_caps", "title"),
-            direct_titles=bool(s.get("direct_titles", True))))
+            direct_titles=bool(s.get("direct_titles", True)), style=self.style_text()))
         ph.run += 1
         ph.queued = True
         run = ph.run

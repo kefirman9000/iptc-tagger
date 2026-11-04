@@ -39,7 +39,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.11.04.1"
+APP_VERSION = "2026.11.04.2"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 # camera RAW files: titles and keywords go into the Lightroom sidecar next to them (photo.xmp), never the RAW.
 # DNG is left out: Lightroom ignores sidecars for DNG and keeps its metadata inside the file itself.
@@ -376,6 +376,9 @@ DEFAULT_SETTINGS = {
     "avoid_on": False,        # show the per-photo Avoid column and use it
     "stockup_path": "",       # StockUp.app / StockUp.exe / stockup.py ("" = look in the usual places)
     "stockup_after_save": False,  # after Save Metadata, open the saved photos in StockUp
+    "detect_style": [],       # "Every Detect" checklist: keys from STYLE_CHOICES
+    "profiles": {},           # saved profiles: name -> {context, detect_style, default_type, lead_keywords, …}
+    "profile": "",            # the profile last chosen
     "title_caps": "title",    # title (Title Case: small words lowercase) / every (Capitalise Every Word)
     "direct_titles": True,    # titles start with the subject: no "A Picture of…" in front
     "never_use": "",          # words the AI must never use (comma or line separated); removed from its keywords
@@ -757,6 +760,12 @@ def load_settings() -> dict:
         s["symbols"] = DEFAULT_SETTINGS["symbols"]
     if not isinstance(s.get("location_history"), list):
         s["location_history"] = []
+    s["detect_style"] = style_keys(s.get("detect_style") if isinstance(s.get("detect_style"), list) else [])
+    if not isinstance(s.get("profiles"), dict):
+        s["profiles"] = {}
+    s["profiles"] = {str(k): v for k, v in s["profiles"].items() if isinstance(v, dict) and str(k).strip()}
+    if s.get("title_caps") not in ("title", "every"):
+        s["title_caps"] = "title"
     try:
         s["ai_time_limit"] = max(0, min(900, int(s.get("ai_time_limit", 30))))
         s["ai_retries"] = max(0, min(2, int(s.get("ai_retries", 1))))
@@ -966,19 +975,129 @@ def wrote_one(out: str) -> bool:
     return any(f"1 image files {w}" in out for w in ("updated", "unchanged", "created"))
 
 
-class ExifTool:
-    """Runs ExifTool with an argument file, so any file name or Unicode text is safe."""
+class _NotOpen(Exception):
+    """The ExifTool kept running in the background is gone: run this command the one-off way."""
 
-    def __init__(self, exe: str):
+
+class ExifTool:
+    """Runs ExifTool so any file name or Unicode text is safe. One ExifTool is kept running in the background
+    (-stay_open) and given one command after another, which saves starting it for every read and save (slow on
+    Windows). If that ever goes wrong, the command runs the one-off way with an argument file instead."""
+
+    def __init__(self, exe: str, persistent: bool = True):
         self.exe = exe
+        # "exiftool(-k).exe" waits for a key press when it ends: only ever run that one the one-off way
+        self.persistent = persistent and "(-k)" not in os.path.basename(exe or "")
+        self._proc = None
+        self._lock = threading.Lock()
+        self._seq = 0
+        self._out = self._err = None
+        self._failures = 0
+
+    # ----- kept running
+    def _start(self):
+        import atexit
+        import queue
+        kw = {"creationflags": 0x08000000} if os.name == "nt" else {}
+        self._proc = subprocess.Popen([self.exe, "-stay_open", "True", "-@", "-"], stdin=subprocess.PIPE,
+                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kw)
+        self._out, self._err = queue.Queue(), queue.Queue()
+
+        def pump(stream, q):
+            for line in iter(stream.readline, b""):
+                q.put(line)
+            q.put(None)                                    # it ended
+        for stream, q in ((self._proc.stdout, self._out), (self._proc.stderr, self._err)):
+            threading.Thread(target=pump, args=(stream, q), daemon=True).start()
+        atexit.register(self.close)
+        debug(f"ExifTool kept running in the background (pid {self._proc.pid})")
+
+    def _collect(self, q, marker: bytes, deadline: float) -> str:
+        import queue
+        lines = []
+        while True:
+            try:
+                line = q.get(timeout=max(0.05, deadline - time.monotonic()))
+            except queue.Empty:
+                raise ExifToolError("ExifTool took too long and was stopped")
+            if line is None:
+                raise _NotOpen()
+            if line.rstrip(b"\r\n") == marker:
+                return b"".join(lines).decode("utf-8", "replace")
+            lines.append(line)
+
+    def _run_open(self, args: list[str], timeout: int) -> str:
+        with self._lock:
+            if self._proc is None or self._proc.poll() is not None:
+                self._start()
+            self._seq += 1
+            marker = f"{{ready{self._seq}}}"
+            lines = ["-charset", "filename=utf8"] + args + ["-echo4", marker, f"-execute{self._seq}"]
+            try:
+                self._proc.stdin.write(("\n".join(lines) + "\n").encode("utf-8"))
+                self._proc.stdin.flush()
+            except OSError:
+                raise _NotOpen()
+            deadline = time.monotonic() + timeout
+            try:
+                out = self._collect(self._out, marker.encode(), deadline)
+                err = self._collect(self._err, marker.encode(), deadline).strip()
+            except ExifToolError:
+                self._kill()                               # stuck: start a fresh one next time
+                raise
+        errors = [ln for ln in err.splitlines() if ln.startswith("Error")]
+        if errors:
+            raise ExifToolError(errors[0].replace("Error: ", "", 1))
+        return out
+
+    def _kill(self):
+        proc, self._proc = self._proc, None
+        if proc is not None:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+
+    def close(self):
+        """Let the background ExifTool finish (when the app closes), after the command it's on."""
+        got = self._lock.acquire(timeout=30)
+        try:
+            proc, self._proc = self._proc, None
+        finally:
+            if got:
+                self._lock.release()
+        if proc is None or proc.poll() is not None:
+            return
+        try:
+            proc.stdin.write(b"-stay_open\nFalse\n")
+            proc.stdin.flush()
+            proc.wait(timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
+            try:
+                proc.kill()
+            except OSError:
+                pass
 
     def _run(self, args: list[str], timeout: int = 180) -> str:
+        for a in args:
+            if "\n" in a or "\r" in a:
+                raise ExifToolError("line breaks are not allowed in metadata values")
+        if self.persistent:
+            try:
+                return self._run_open(args, timeout)
+            except _NotOpen:
+                self._kill()
+                self._failures += 1
+                debug(f"ExifTool in the background stopped answering ({self._failures}x): running it the one-off way")
+                if self._failures >= 3:
+                    self.persistent = False                # keeps happening: stay with the one-off way
+        return self._run_once(args, timeout)
+
+    def _run_once(self, args: list[str], timeout: int = 180) -> str:
         fd, argfile = tempfile.mkstemp(suffix=".args", prefix="iptc_tagger_")
         try:
             with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
                 for a in ["-charset", "filename=utf8"] + args:
-                    if "\n" in a or "\r" in a:
-                        raise ExifToolError("line breaks are not allowed in metadata values")
                     f.write(a + "\n")
             kw = {}
             if os.name == "nt":
@@ -1653,6 +1772,42 @@ def title_case_overridden(direction: str) -> bool:
 def keyword_case_overridden(direction: str) -> bool:
     """True if your directions ask for capitals in keywords."""
     return bool(_KEYWORD_CASE_OVERRIDE.search(direction or ""))
+
+
+def _title_tokens(title: str) -> set[str]:
+    """The words that carry meaning in a title, singular and lowercase (no 'a', 'on', 'with'…)."""
+    words = re.findall(r"[\w']+", (title or "").casefold().replace("'", ""))
+    return {_singular(w) for w in words if w not in SMALL_WORDS}
+
+
+SIMILAR_TITLES = 0.75   # share of meaningful words two titles have in common to count as near-identical
+
+
+def similar_title_groups(titles, threshold: float = SIMILAR_TITLES) -> list[list[int]]:
+    """Groups (by position) of titles that are the same or nearly the same, e.g. 'Red Barn in a Snowy Field'
+    and 'Red Barn in Snowy Fields'. Titles of fewer than 3 meaningful words are left out."""
+    toks = [_title_tokens(t) for t in titles]
+    parent = list(range(len(toks)))
+
+    def root(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+    idx = [i for i, t in enumerate(toks) if len(t) >= 3]
+    for a, i in enumerate(idx):
+        ti = toks[i]
+        for j in idx[a + 1:]:
+            tj = toks[j]
+            small, big = sorted((len(ti), len(tj)))
+            if small < threshold * big:                # can't reach the threshold: skip the set work
+                continue
+            if len(ti & tj) >= threshold * len(ti | tj):
+                parent[root(j)] = root(i)
+    groups: dict[int, list[int]] = {}
+    for i in idx:
+        groups.setdefault(root(i), []).append(i)
+    return sorted((g for g in groups.values() if len(g) > 1), key=lambda g: g[0])
 
 
 def _singular(word: str) -> str:
@@ -2516,7 +2671,7 @@ def build_prompt(keyword_min: int, keyword_max: int, context: str = "", existing
                  date_in_title: bool = False, title_location: str = "", copyright_free: bool = False,
                  symbols: str = "keep", feedback: str = "", rejected_title: str = "",
                  title_length: str = "detailed", never_use=None, photo_avoid: str = "",
-                 direct_titles: bool = True) -> str:
+                 direct_titles: bool = True, style: str = "") -> str:
     """The instructions for one photo. Your notes come first and the title is built around them;
     your directions are repeated at the end. (title_prefix is never shown to the AI.)"""
     context, photo_note, direction = (context or "").strip(), (photo_note or "").strip(), (direction or "").strip()
@@ -2563,6 +2718,8 @@ def build_prompt(keyword_min: int, keyword_max: int, context: str = "", existing
         "product line, its variety or flavour and the parent company as keywords.",
         "", COPYRIGHT_FREE_RULES if copyright_free else BRAND_RULES,
     ]
+    if (style or "").strip():
+        lines += ["", "The photographer's standing preferences, for every photo:", style.strip()]
     if (feedback or "").strip():
         lines += ["", "REDO: the photographer rejected the previous suggestion"
                   + (f" ({json.dumps(rejected_title, ensure_ascii=False)})" if rejected_title else "")
@@ -2661,6 +2818,65 @@ REDO_FOCUS = [      # "What to focus on"
 ]
 REDO_REASONS = REDO_PROBLEMS + REDO_FOCUS
 
+# "Every Detect": standing preferences, ticked once and used for every photo. (key, label, short label, rule)
+STYLE_ALWAYS = [
+    ("factual", "Plain and factual, no flowery or salesy words", "Factual",
+     "Write plainly and factually: no flowery, emotional or salesy words such as beautiful, stunning, amazing, "
+     "perfect or breathtaking."),
+    ("visible", "Only what's visible, nothing invented", "Only what's visible",
+     "Describe only what can really be seen in the photo or is stated in the notes: never guess or invent details, "
+     "places, events, names or what something is used for."),
+    ("no_names", "No brand, product or people's names", "No names",
+     "Don't name brands, products, companies or people: describe them in generic words instead."),
+    ("use_notes", "Use the place, event and names from my notes", "Use my notes",
+     "Always work the place, event and names from the photographer's instructions and photo notes into the title "
+     "and the keywords."),
+    ("specific_kw", "Specific keywords, not general ones", "Specific keywords",
+     "Choose specific keywords (the exact species, product, place, activity or material) over general ones such as "
+     "nature, object, thing, item or background."),
+]
+STYLE_FOCUS = [
+    ("words", "The words and signs in the photo", "Signs",
+     "Read the text in the photo (signs, labels, packaging) and use it, spelled exactly as written."),
+    ("subject", "The main subject only", "Main subject",
+     "Keep the title about the main subject and mention the background only briefly."),
+    ("action", "What's happening", "Action", "Say what is happening: the action or activity."),
+    ("colours", "Colours, light and time of day", "Colours & light",
+     "Mention the main colours and the light or time of day."),
+    ("mood", "The mood and feeling", "Mood", "Bring out the mood or feeling of the scene, in plain words."),
+    ("setting", "The location and setting", "Setting", "Describe where this is and what the surroundings are like."),
+    ("people", "The people (without names)", "People",
+     "Describe the people: how many, approximate age, what they are doing and wearing, without naming them."),
+    ("concept", "The concept, for commercial buyers", "Concepts",
+     "Include the ideas this photo could illustrate for commercial buyers (for example teamwork, healthy eating, "
+     "sustainability) in the keywords, and in the title when it fits."),
+    ("season", "The season, weather or holiday", "Season",
+     "Mention the season, weather or holiday when it can be seen."),
+]
+STYLE_CHOICES = STYLE_ALWAYS + STYLE_FOCUS
+
+# Photo types that rarely have text to read: the label-reading first look is skipped for them, saving one full
+# look at the photo each (it's still done when "Focus on the words and signs" is ticked)
+NO_TEXT_TYPES = {"landscape", "seascape", "aerial", "night", "wildlife", "pets", "flowers", "portrait",
+                 "agriculture", "abstract"}
+
+
+def style_keys(keys) -> list[str]:
+    """Only known choices, in the checklist's own order."""
+    want = set(keys or [])
+    return [k for k, *_ in STYLE_CHOICES if k in want]
+
+
+def style_rules(keys) -> str:
+    """The standing preferences as instructions for the AI ('' when nothing is ticked)."""
+    return "\n".join("- " + rule for k, _l, _s, rule in STYLE_CHOICES if k in set(style_keys(keys)))
+
+
+def style_summary(keys) -> str:
+    """One line for the window: 'Factual · Main subject · Signs'."""
+    names = [short for k, _l, short, _r in STYLE_CHOICES if k in set(style_keys(keys))]
+    return " · ".join(names)
+
 
 def redo_feedback(reasons, other: str = "") -> str:
     """The instruction text for the chosen reasons (keys from REDO_REASONS) plus anything typed."""
@@ -2673,9 +2889,11 @@ def redo_feedback(reasons, other: str = "") -> str:
 def build_revision_prompt(draft_title: str, draft_keywords, keyword_min: int, keyword_max: int,
                           context: str = "", photo_note: str = "", direction: str = "",
                           title_location: str = "", copyright_free: bool = False, feedback: str = "",
-                          never_use=None, photo_avoid: str = "") -> str:
+                          never_use=None, photo_avoid: str = "", style: str = "") -> str:
     """Second pass (text only): bring a draft in line with your notes and directions."""
     lines = ["Check this draft title and keyword list for a stock photo against the photographer's instructions."]
+    if (style or "").strip():
+        lines += ["", "The photographer's standing preferences (make sure the draft follows them):", style.strip()]
     if never_use:
         lines += ["", "Remove these words or phrases from the title and the keywords: " + ", ".join(never_use) + "."]
     if (photo_avoid or "").strip():
@@ -2759,7 +2977,7 @@ def build_reword_prompt(title: str, description: str, keywords, fields, options=
                         dateline: str = "", fixed_keywords=(), keyword_min: int = 7, keyword_max: int = 50,
                         context: str = "", photo_note: str = "", direction: str = "", copyright_free: bool = False,
                         symbols: str = "keep", never_use=None, photo_avoid: str = "",
-                        direct_titles: bool = True) -> str:
+                        direct_titles: bool = True, style: str = "") -> str:
     """The instructions for rewording one photo's text (no image). dateline: the location / date put in front
     of the title, given only as background; the AI must leave it out of what it writes."""
     fields = [f for f, _ in REWORD_FIELDS if f in set(fields or [])]
@@ -2793,6 +3011,8 @@ def build_reword_prompt(title: str, description: str, keywords, fields, options=
     if "title" in fields:
         rules.append("Title: one line in Title Case, no quotation marks, no full stop at the end."
                      + (" " + DIRECT_TITLE_RULE if direct_titles else ""))
+    if (style or "").strip():
+        rules.append("The photographer's standing preferences, for every photo:\n" + style.strip())
     if "description" in fields:
         rules.append(f"Description: one or two complete sentences in normal sentence case ending with a full stop, "
                      f"at most {DESCRIPTION_MAX - 20} characters. If it is empty, write one from the title.")
@@ -2830,7 +3050,7 @@ def reword(url: str, model: str, title: str, description: str, keywords, fields,
            dateline: str = "", fixed_keywords=(), keyword_min: int = 7, keyword_max: int = 50, context: str = "",
            photo_note: str = "", direction: str = "", copyright_free: bool = False, symbols: str = "keep",
            never_use=None, photo_avoid: str = "", opener=None, cancel: CancelToken | None = None,
-           name: str = "", title_caps: str = "title", direct_titles: bool = True) -> dict:
+           name: str = "", title_caps: str = "title", direct_titles: bool = True, style: str = "") -> dict:
     """Reword / double-check a photo's text with the AI, text only (no image, so it's quick). Only the fields
     asked for change; anything the AI leaves empty keeps its old value. title is the bare title (without the
     location, date or text before titles) and keywords leave out fixed_keywords: the caller puts those back.
@@ -2841,7 +3061,8 @@ def reword(url: str, model: str, title: str, description: str, keywords, fields,
     room_max = max(room_min, keyword_max - len(fixed_keywords or []))
     prompt = build_reword_prompt(title, description, keywords, fields, options, instruction, dateline,
                                  fixed_keywords, room_min, room_max, context, photo_note, direction,
-                                 copyright_free, symbols, never_use, photo_avoid, direct_titles=direct_titles)
+                                 copyright_free, symbols, never_use, photo_avoid, direct_titles=direct_titles,
+                                 style=style)
     t0 = time.monotonic()
     debug(f"{name}: reword: fields={sorted(fields)} options={list(options or [])} instruction={_clip(instruction or '', 120)!r}")
     parsed = {}
@@ -3246,7 +3467,7 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
              title_length: str = "detailed", expand_short: bool = False,
              read_label: bool = False, tidy: bool = False, never_use=None, never_in_title: bool = True,
              photo_avoid: str = "", description: bool = False, title_caps: str = "title",
-             direct_titles: bool = True) -> dict:
+             direct_titles: bool = True, style: str = "") -> dict:
     """Ask the local vision model for an SEO title and keywords.
     With revise=True and any notes or directions given, a second (text-only) pass checks the draft
     against them. With description=True a description (caption) is also written, once the title is
@@ -3272,7 +3493,7 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
     prompt = build_prompt(keyword_min, keyword_max, context, existing_title, existing_keywords,
                           direction, photo_note, photo_type, lead_keywords, title_prefix, date_in_title,
                           title_location, copyright_free, symbols, feedback, rejected_title, title_length,
-                          never_use=never_use, photo_avoid=photo_avoid, direct_titles=direct_titles)
+                          never_use=never_use, photo_avoid=photo_avoid, direct_titles=direct_titles, style=style)
     system = system_prompt(direction)
 
     def body(user_text, schema, with_image=True, temperature=0.2):
@@ -3363,7 +3584,7 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
         try:
             fixed = ask(build_revision_prompt(raw_title, raw_keywords, keyword_min, keyword_max,
                                               context, photo_note, direction, title_location, copyright_free,
-                                              feedback, never_use=never_use, photo_avoid=photo_avoid),
+                                              feedback, never_use=never_use, photo_avoid=photo_avoid, style=style),
                         OUTPUT_SCHEMA, "double-check", with_image=False, temperature=0.1)
             new_title = split_leaked_keywords(str(fixed.get("title", "") or "").strip())[0]
             new_keywords = _as_list(fixed.get("keywords", []))
