@@ -172,3 +172,24 @@ def test_closing_normally_removes_the_crash_copy(window, make_photos):
     win.close()
     QApplication.processEvents()
     assert core.load_session() == []
+
+
+def test_clean_special_characters_and_limits(window, make_photos):
+    app, win = window
+    add(win, make_photos(2))
+    a, b = win.photos
+    a.title, a.keywords, a.description = "Fish & Chips in a Café", ["fish & chips", "café", "chips"], ""
+    b.title, b.keywords = "Plain Title Here", ["plain"]
+    for ph in (a, b):
+        win._show(ph)
+    assert win.clean_special_characters(win.photos) == 1
+    assert a.title == "Fish and Chips in a Cafe" and a.keywords == ["fish and chips", "cafe", "chips"]
+    assert b.title == "Plain Title Here"
+    win.settings["symbols"] = "safe"
+    a.title = "Crêpes™ & Coffee"
+    win._make_plain(a)
+    assert a.title == "Crepes and Coffee"
+    win.settings.update(text_checks=["fit"], stock_sites_from_stockup=False, stock_sites=["adobe"])
+    assert win.text_limits(a)["title_max"] == 70                 # no location or date around this title
+    win.settings["text_checks"] = []
+    assert win.text_limits(a) == {}

@@ -39,7 +39,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.11.04.3"
+APP_VERSION = "2026.11.04.4"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 # camera RAW files: titles and keywords go into the Lightroom sidecar next to them (photo.xmp), never the RAW.
 # DNG is left out: Lightroom ignores sidecars for DNG and keeps its metadata inside the file itself.
@@ -269,15 +269,56 @@ def split_leaked_keywords(title: str) -> tuple[str, list[str]]:
 
 # Symbols in the AI's titles and keywords ------------------------------------------------------
 SYMBOL_MODES = [("convert", "Convert to words (& → and, + → plus, @ → at, % → percent)"),
+                ("safe", "Stock-site safe: symbols to words, é → e, no other special characters"),
                 ("remove", "Remove them"),
                 ("keep", "Keep as written")]
 SYMBOL_WORDS = [("&", "and"), ("+", "plus"), ("@", "at"), ("%", "percent"), ("°", "degrees")]
 SYMBOL_DROP = "™®©#*~^|<>{}[]\\=_`•"          # never useful in a title or keyword
 
 
+# "Stock-site safe": what's left is plain English letters, numbers and this basic punctuation (Shutterstock asks
+# for English titles without special characters, and doesn't say which ones it means)
+SAFE_PUNCTUATION = " ,.-':;()/!?$"
+SAFE_WORDS = [("€", "euro"), ("£", "pound"), ("¥", "yen")]
+_PLAIN_LETTERS = {"ß": "ss", "æ": "ae", "Æ": "AE", "œ": "oe", "Œ": "OE", "ø": "o", "Ø": "O", "ł": "l", "Ł": "L",
+                  "đ": "d", "Đ": "D", "ð": "d", "þ": "th", "Þ": "Th", "ı": "i"}
+_TYPOGRAPHY = {"‘": "'", "’": "'", "‚": "'", "′": "'", "“": "", "”": "", "„": "", '"': "", "«": "", "»": "",
+               "–": " - ", "—": " - ", "‐": "-", "‑": "-", "…": " ", "·": " ", "×": " x ",
+               "™": "", "®": "", "©": "", "℠": ""}
+
+
+def special_characters(text: str) -> list[str]:
+    """The characters a stock site may reject: anything but plain letters, numbers and basic punctuation."""
+    seen = []
+    for ch in text or "":
+        if not (ch.isascii() and (ch.isalnum() or ch in SAFE_PUNCTUATION)) and ch not in seen and not ch.isspace():
+            seen.append(ch)
+    return seen
+
+
+def plain_text(text: str) -> str:
+    """Stock-site safe: symbols to words, accents to plain letters (Café -> Cafe), curly quotes and long dashes to
+    plain ones, and anything else that isn't a plain letter, number or basic punctuation taken out."""
+    import unicodedata
+    t = text or ""
+    for a, b in list(_TYPOGRAPHY.items()) + list(_PLAIN_LETTERS.items()):
+        t = t.replace(a, b)
+    for sym, word in SYMBOL_WORDS + SAFE_WORDS:
+        t = t.replace(sym, f" {word} ")
+    t = unicodedata.normalize("NFKD", t)
+    t = "".join(ch for ch in t if ch.isascii() and (ch.isalnum() or ch in SAFE_PUNCTUATION or ch.isspace()))
+    t = re.sub(r"\s*-\s*-+\s*", " - ", t)                 # "a - - b" left by removed characters
+    t = " ".join(t.split())
+    t = re.sub(r"\s+([,.;:!?)])", r"\1", t).replace("( ", "(").replace("()", "")
+    return t.strip(" ,;:-")
+
+
 def tidy_symbols(text: str, mode: str = "convert") -> str:
-    """Convert symbols to words ('Salt & Pepper' -> 'Salt and Pepper'), remove them, or keep them.
-    Normal punctuation (, . - ' : ! ? / ( ) and currency signs) is always left alone."""
+    """Convert symbols to words ('Salt & Pepper' -> 'Salt and Pepper'), remove them, or keep them. "safe" also
+    makes the text plain (see plain_text). Normal punctuation (, . - ' : ! ? / ( ) and currency signs) is
+    otherwise left alone."""
+    if mode == "safe":
+        return plain_text(text) if text else text
     if mode not in ("convert", "remove") or not text:
         return text
     t = text
@@ -377,6 +418,7 @@ DEFAULT_SETTINGS = {
     "stockup_path": "",       # StockUp.app / StockUp.exe / stockup.py ("" = look in the usual places)
     "stockup_after_save": False,  # after Save Metadata, open the saved photos in StockUp
     "detect_style": [],       # "Every Detect" checklist: keys from STYLE_CHOICES
+    "text_checks": ["numbers", "repeats", "list", "desc_copy"],   # automatic checks (DEFAULT_TEXT_CHECKS) on the AI's titles and descriptions
     "profiles": {},           # saved profiles: name -> {context, detect_style, default_type, lead_keywords, …}
     "profile": "",            # the profile last chosen
     "title_caps": "title",    # title (Title Case: small words lowercase) / every (Capitalise Every Word)
@@ -761,6 +803,8 @@ def load_settings() -> dict:
     if not isinstance(s.get("location_history"), list):
         s["location_history"] = []
     s["detect_style"] = style_keys(s.get("detect_style") if isinstance(s.get("detect_style"), list) else [])
+    s["text_checks"] = text_checks_keys(s.get("text_checks") if isinstance(s.get("text_checks"), list)
+                                        else DEFAULT_TEXT_CHECKS)
     if not isinstance(s.get("profiles"), dict):
         s["profiles"] = {}
     s["profiles"] = {str(k): v for k, v in s["profiles"].items() if isinstance(v, dict) and str(k).strip()}
@@ -1410,7 +1454,8 @@ def open_in_stockup(app_path: str, paths: list[str], new_window: bool = False) -
 # The photo list, kept as you work so nothing is lost if the app closes unexpectedly ----------------
 # Stock-site text rules, the same ones StockUp checks (from each site's contributor help pages) ---------------
 STOCK_SITES = {
-    "shutterstock": {"label": "Shutterstock", "kw_min": 7, "kw_max": 50, "desc_max": 200, "desc_min_words": 5},
+    "shutterstock": {"label": "Shutterstock", "kw_min": 7, "kw_max": 50, "desc_max": 200, "desc_min_words": 5,
+                     "plain": True},   # "Exclude special characters" (its help on rejected titles)
     "adobe": {"label": "Adobe Stock", "kw_min": 5, "kw_max": 49, "title_max": 70},
     "dreamstime": {"label": "Dreamstime", "own_desc": True},
     "alamy": {"label": "Alamy", "own_desc": True},
@@ -1484,6 +1529,10 @@ def site_problems(title: str, keywords, sites, description: str = "") -> list[st
             bits.append(f"{n} keyword{'s' if n != 1 else ''} (at least {r['kw_min']})")
         if r.get("kw_max") and n > r["kw_max"]:
             bits.append(f"{n} keywords (most {r['kw_max']})")
+        if r.get("plain"):
+            odd = special_characters(" ".join([title, desc] + [str(k) for k in keywords or []]))
+            if odd:
+                bits.append("special characters " + " ".join(odd[:8]) + (" …" if len(odd) > 8 else ""))
         if bits:
             out.append(f"{r['label']}: " + ", ".join(bits))
     return out
@@ -1782,6 +1831,77 @@ def _title_tokens(title: str) -> set[str]:
     """The words that carry meaning in a title, singular and lowercase (no 'a', 'on', 'with'…)."""
     words = re.findall(r"[\w']+", (title or "").casefold().replace("'", ""))
     return {_singular(w) for w in words if w not in SMALL_WORDS}
+
+
+# Automatic checks on what the AI wrote. When one finds a problem, the AI is asked once (text only) to fix it,
+# and the fix is only kept if it really has fewer problems. (key, label, what it does)
+TEXT_CHECKS = [
+    ("numbers", "Too many numbers in a title",
+     "Three or more numbers (or numbers in a short title): reworded with less emphasis on them, keeping a number "
+     "only when it defines the subject, like a model number or an important year."),
+    ("repeats", "The same word twice in a title",
+     "'Coffee Cup with Coffee Beans and a Coffee Grinder': reworded so each word is used once."),
+    ("list", "A title that reads like a list of keywords",
+     "Four or more commas: reworded as one natural, descriptive phrase."),
+    ("desc_copy", "A description that only repeats the title",
+     "Rewritten to add what the title leaves out: what's happening, the setting, details, the mood or use."),
+    ("fit", "Too long for my stock sites: shorten to fit",
+     "Shortened to fit the title and description limits of the sites you sell on (for example Adobe Stock's "
+     "70-character title), counting the location, date and text before titles. Off by default, because it makes "
+     "detailed titles shorter."),
+]
+DEFAULT_TEXT_CHECKS = ["numbers", "repeats", "list", "desc_copy"]
+_NUMBER = re.compile(r"(?<![\w])\d[\d,.:/]*(?:[a-z]{0,3})?(?![\w])", re.I)
+
+
+def text_checks_keys(keys) -> list[str]:
+    want = set(keys or [])
+    return [k for k, _l, _h in TEXT_CHECKS if k in want]
+
+
+def text_problems(title: str, description: str = "", checks=(), limits=None) -> tuple[list[str], list[str]]:
+    """What the chosen checks find in a title and description, as instructions for the AI to fix them:
+    (title problems, description problems)."""
+    checks, limits = set(checks or []), limits or {}
+    title, description = (title or "").strip(), (description or "").strip()
+    tp, dp = [], []
+    if not title:
+        return tp, dp
+    if "numbers" in checks:
+        nums = _NUMBER.findall(title)
+        if len(nums) >= 3 or (len(nums) >= 2 and len(nums) * 4 > len(title.split())):
+            tp.append(f"The title has too many numbers ({', '.join(nums)}): give them less emphasis. Keep a number only "
+                      "when it really defines the subject (a model number, an important year, a quantity that is the "
+                      "point of the photo) and describe the rest in words.")
+    if "repeats" in checks:
+        seen, twice = {}, []
+        for w in re.findall(r"[\w'-]+", title.casefold().replace("'", "")):
+            if len(w) > 2 and w not in SMALL_WORDS and not w.isdigit():
+                k = _singular(w)
+                seen[k] = seen.get(k, 0) + 1
+                if seen[k] == 2:
+                    twice.append(w)
+        if twice:
+            tp.append(f"The title uses {', '.join(twice)} more than once: use each word only once, choosing a "
+                      "different word or leaving the repeat out.")
+    if "list" in checks and title.count(",") >= 4:
+        tp.append("The title reads like a list of keywords: rewrite it as one natural, descriptive phrase with at "
+                  "most two commas.")
+    if "desc_copy" in checks and description:
+        a, b = _title_tokens(title), _title_tokens(description)
+        if a and b and len(a & b) >= 0.8 * len(a | b):
+            dp.append("The description only repeats the title: rewrite it as one or two full sentences that add what "
+                      "the title leaves out (what is happening, the setting, details, the mood or the use), without "
+                      "repeating the title word for word.")
+    if "fit" in checks:
+        tmax, dmax = int(limits.get("title_max") or 0), int(limits.get("desc_max") or 0)
+        if tmax and len(title) > tmax:
+            tp.append(f"The title is {len(title)} characters long: shorten it to at most {tmax} characters, keeping "
+                      "the main subject and the most important details.")
+        if dmax and description and len(description) > dmax:
+            dp.append(f"The description is {len(description)} characters long: shorten it to at most {dmax} "
+                      "characters.")
+    return tp, dp
 
 
 SIMILAR_TITLES = 0.75   # share of meaningful words two titles have in common to count as near-identical
@@ -3462,6 +3582,47 @@ def _as_list(kws) -> list:
     return [k for k in kws if isinstance(k, (str, int, float))] if isinstance(kws, list) else []
 
 
+def _fix_text_problems(ask, name, title, desc, checks, limits, symbols, direction, title_caps, direct_titles,
+                       title_never, never_use, style, min_words):
+    """The automatic checks: if they find problems, ask once (text only) for a fix, and keep it only if it's
+    really better. Returns (title, description)."""
+    tp, dp = text_problems(title, desc, checks, limits)
+    if not tp and not dp:
+        return title, desc
+    fields = (["title"] if tp else []) + (["description"] if dp else [])
+    prompt = ("Improve the text of this stock photo. "
+              f"Title: {json.dumps(title, ensure_ascii=False)}. "
+              + (f"Description: {json.dumps(desc, ensure_ascii=False)}. " if desc else "")
+              + "Fix only these problems: " + " ".join(tp + dp)
+              + " Keep everything else that is correct, and keep the meaning. The title stays one line in Title Case, "
+              "with no quotation marks and no full stop. "
+              + (DIRECT_TITLE_RULE + " " if direct_titles else "")
+              + (f"Follow the photographer's standing preferences:\n{style.strip()}\n" if (style or "").strip() else "")
+              + "Output only JSON: {" + ", ".join(f'"{f}": "..."' for f in fields) + "}")
+    schema = {"type": "object", "properties": {f: {"type": "string"} for f in fields}, "required": fields}
+    debug(f"{name}: checks found: {' | '.join(p.split(':')[0] for p in tp + dp)}")
+    try:
+        got = ask(prompt, schema, "checks", with_image=False, temperature=0.2)
+    except Stopped:
+        raise
+    except ApiError:
+        return title, desc
+    if tp:
+        t2 = split_leaked_keywords(drop_sizes(tidy_symbols(str(got.get("title", "") or "").strip(), symbols)))[0]
+        t2 = style_title(t2, direction, title_caps, direct_titles)
+        t2 = drop_never_from_title(t2, title_never) if title_never else t2
+        if len(t2.split()) >= max(3, min_words // 2) and \
+                len(text_problems(t2, "", checks, limits)[0]) < len(tp):
+            debug(f"{name}: title fixed by the checks: {t2!r}")
+            title = t2
+    if dp:
+        d2 = clean_description(str(got.get("description", "") or ""), symbols, never_use)
+        if len(d2.split()) >= 5 and len(text_problems(title, d2, checks, limits)[1]) < len(dp):
+            debug(f"{name}: description fixed by the checks")
+            desc = d2
+    return title, desc
+
+
 def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int, context: str = "",
              existing_title: str = "", existing_keywords=None, direction: str = "",
              photo_note: str = "", photo_type: str = "", lead_keywords=None, title_prefix: str = "",
@@ -3471,7 +3632,7 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
              title_length: str = "detailed", expand_short: bool = False,
              read_label: bool = False, tidy: bool = False, never_use=None, never_in_title: bool = True,
              photo_avoid: str = "", description: bool = False, title_caps: str = "title",
-             direct_titles: bool = True, style: str = "") -> dict:
+             direct_titles: bool = True, style: str = "", checks=(), limits=None) -> dict:
     """Ask the local vision model for an SEO title and keywords.
     With revise=True and any notes or directions given, a second (text-only) pass checks the draft
     against them. With description=True a description (caption) is also written, once the title is
@@ -3706,6 +3867,9 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
             raise
         except ApiError:
             desc = ""                                # the title is saved as the description instead
+    if checks and title:
+        title, desc = _fix_text_problems(ask, name, title, desc, checks, limits, symbols, direction, title_caps,
+                                         direct_titles, title_never, never_use, style, lo)
     debug(f"{name}: DONE in {time.monotonic() - started:.1f} s: {len(keywords)} keywords, revised={revised}, "
           f"title={title!r}")
     result = {"title": title, "keywords": keywords, "description": desc, "categories": cats,

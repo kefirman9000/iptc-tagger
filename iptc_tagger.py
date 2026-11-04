@@ -395,8 +395,13 @@ class SettingsDialog(QDialog):
         for key, label in core.SYMBOL_MODES:
             self.symbols.addItem(label, key)
         self.symbols.setCurrentIndex(max(0, self.symbols.findData(settings.get("symbols", "convert"))))
-        self.symbols.setToolTip("What happens to symbols like & + @ % in the AI's titles and keywords.\n"
-                                "Your own text (text before titles, location, keywords to put first) is never changed.")
+        self.symbols.setToolTip("What happens to symbols like & + @ % in the AI's titles and keywords. Your own text\n"
+                                "(text before titles, location, keywords to put first) is only changed with Stock-site safe.\n"
+                                "Stock-site safe: symbols become words, accents plain letters (Café → Cafe), curly\n"
+                                "quotes and long dashes plain ones, and ™, emoji and other special characters are\n"
+                                "taken out of the whole title, description and keywords. Shutterstock asks for\n"
+                                "titles without special characters. Right-click photos → Clean special characters\n"
+                                "does the same for titles you already have.")
         f_text.addRow("Symbols", self.symbols)
         self.read_label = QCheckBox("Read the text on packaging and signs first")
         self.read_label.setChecked(bool(settings.get("read_label", True)))
@@ -418,6 +423,23 @@ class SettingsDialog(QDialog):
                                 "phrases, then moves the keywords that name what's in the title to the front, because\n"
                                 "stock sites weigh the first ten the most. Keywords from your own instructions are kept.")
         f_text.addRow("Keywords", self.tidy_kw)
+        self.check_boxes = {}
+        checks_lay = QVBoxLayout()
+        checks_lay.setContentsMargins(0, 0, 0, 0)
+        checks_lay.setSpacing(2)
+        on = set(settings.get("text_checks", core.DEFAULT_TEXT_CHECKS))
+        for key, label, help_text in core.TEXT_CHECKS:
+            cb = QCheckBox(label)
+            cb.setChecked(key in on)
+            cb.setToolTip(help_text)
+            self.check_boxes[key] = cb
+            checks_lay.addWidget(cb)
+        checks_hint = QLabel("When a check finds one of these in what the AI wrote, it's asked once more (text only, "
+                             "quick) to reword just that. The rewording is only kept if it's really better.")
+        checks_hint.setWordWrap(True)
+        checks_hint.setStyleSheet(f"color:{GREY}")
+        checks_lay.addWidget(checks_hint)
+        f_text.addRow("Fix automatically", checks_lay)
         self.never_use = QPlainTextEdit(str(settings.get("never_use", "") or ""))
         self.never_use.setPlaceholderText("e.g. beautiful, stunning, amazing, a competitor's name")
         self.never_use.setMaximumHeight(60)
@@ -832,6 +854,7 @@ class SettingsDialog(QDialog):
                  debug_log=self.debug.isChecked(), symbols=self.symbols.currentData() or "convert",
                  title_length=self.title_len.currentData() or "detailed",
                  title_caps=self.title_caps.currentData() or "title", direct_titles=self.direct_titles.isChecked(),
+                 text_checks=[k for k, cb in self.check_boxes.items() if cb.isChecked()],
                  confirm_save=self.confirm_save.isChecked(),
                  read_label=self.read_label.isChecked(), tidy_keywords=self.tidy_kw.isChecked(),
                  ai_description=self.ai_desc.isChecked(),
@@ -2680,6 +2703,63 @@ class MainWindow(QMainWindow):
         self._fill_profiles()
         self.status.setText(f"Profile {name}: its instructions and choices are in use from the next Detect.")
 
+    # ---------- automatic checks: the length limits of your stock sites
+    def text_limits(self, ph) -> dict:
+        """The most the AI's part of the title (and the description) can be for the sites you sell on, leaving room
+        for your text before titles, the location and the date. Only used by "shorten to fit"."""
+        if "fit" not in self.settings.get("text_checks", []):
+            return {}
+        sites = [core.STOCK_SITES[k] for k in core.stock_sites(self.settings) if k in core.STOCK_SITES]
+        tmax = min((r["title_max"] for r in sites if r.get("title_max")), default=0)
+        dmax = min((r["desc_max"] for r in sites if r.get("desc_max")), default=0)
+        keep_date = ph.title_date
+        extra = max(0, len(self.compose_title(ph, "X")) - 1)   # what goes around the AI's title
+        ph.title_date = keep_date
+        if dmax and not self.settings.get("ai_description", True):
+            tmax = min(tmax, dmax) if tmax else dmax           # no description: the title stands in for it
+        return {"title_max": max(20, tmax - extra) if tmax else 0, "desc_max": dmax}
+
+    # ---------- special characters (Stock-site safe)
+    def _plain(self, ph):
+        """This photo's title, description and keywords with no special characters (see core.plain_text)."""
+        kws = core.clean_keywords([k2 for k2 in (core.plain_text(k) for k in ph.keywords) if k2])
+        return core.plain_text(ph.title), core.plain_text(ph.description) if ph.description else ph.description, kws
+
+    def _make_plain(self, ph):
+        if self.settings.get("symbols") == "safe":
+            ph.title, ph.description, ph.keywords = self._plain(ph)
+
+    def clean_special_characters(self, photos=None, ask: bool = False) -> int:
+        """Make titles, descriptions and keywords stock-site safe (& -> and, é -> e, no ™ or emoji)."""
+        photos = [p for p in (photos if photos is not None else self.photos) if not p.busy]
+        changes = [(p, self._plain(p)) for p in photos]
+        changes = [(p, c) for p, c in changes if c != (p.title, p.description, p.keywords)]
+        if not changes:
+            self.status.setText("No special characters in those photos.")
+            return 0
+        n = len(changes)
+        ph, (t, _d, _k) = changes[0]
+        if ask and QMessageBox.question(
+                self, "Clean special characters?",
+                f"Make {n} photo{'s' if n != 1 else ''} in the list stock-site safe? Symbols become words (& → and), "
+                "accents become plain letters (Café → Cafe) and anything else that isn't a plain letter, number or "
+                "basic punctuation is taken out of the titles, descriptions and keywords.\n\n"
+                f"For example:\n{ph.title}\n→ {t}\n\nNothing is saved into the files until you save."
+        ) != QMessageBox.Yes:
+            return 0
+        for ph, (t, d, k) in changes:
+            ph.title, ph.description, ph.keywords = t, d, k
+            if ph.status == "saved":
+                ph.status = "ready"
+            ph.message = "Special characters cleaned, not saved yet"
+            self._show(ph)
+        if self.review.photo is not None:
+            self.review.show_photo(self.review.photo)
+        self.apply_filter()
+        self.status.setText(f"Cleaned special characters in {n} photo{'s' if n != 1 else ''}. Save to write them "
+                            "into the files.")
+        return n
+
     # ---------- title capitals and wording, for titles already in the list
     def restyle_title(self, ph) -> str:
         """This photo's title with the chosen capitals and subject-first wording. Only the part the AI wrote
@@ -3155,10 +3235,13 @@ class MainWindow(QMainWindow):
         dlg = SettingsDialog(self, self.settings, core.find_exiftool(""))
         if dlg.exec():
             style_before = (self.settings.get("title_caps", "title"), bool(self.settings.get("direct_titles", True)))
+            symbols_before = self.settings.get("symbols", "convert")
             self.settings = dlg.values()
             style_after = (self.settings.get("title_caps", "title"), bool(self.settings.get("direct_titles", True)))
             if style_after != style_before:
                 QTimer.singleShot(0, self.offer_title_style)   # once Settings has closed
+            if self.settings.get("symbols") == "safe" and symbols_before != "safe":
+                QTimer.singleShot(0, lambda: self.clean_special_characters(ask=True))
             self._sites = None
             Photo.track_description = "description" in core.meta_fields(self.settings)
             for ph in self.photos:
@@ -3586,6 +3669,10 @@ class MainWindow(QMainWindow):
         if not self.settings.get("editorial_on"):
             a.setText(a.text() + "  (tick Editorial first)")
         a.triggered.connect(lambda *_: self.set_location_dialog(idle, "checked" if sel is checked else "selected"))
+        a = menu.addAction("Clean special characters" + ("" if one else f" ({len(idle)} photos)"))
+        a.setToolTip("& → and, é → e, no ™ or emoji: for sites like Shutterstock that refuse special characters")
+        a.setEnabled(bool(idle))
+        a.triggered.connect(lambda *_: self.clean_special_characters(idle))
         a = menu.addAction("Find and replace…")
         a.setEnabled(bool(idle))
         a.triggered.connect(lambda *_: self.find_replace())
@@ -4589,6 +4676,8 @@ class MainWindow(QMainWindow):
                                              never_in_title=bool(self.settings.get("never_use_titles", True)),
                                              photo_avoid=ph.avoid if self.settings.get("avoid_on") else "",
                                              style=self.style_text(),
+                                             checks=self.settings.get("text_checks", core.DEFAULT_TEXT_CHECKS),
+                                             limits=self.text_limits(ph),
                                              description=bool(self.settings.get("ai_description", True)),
                                              tidy=bool(self.settings.get("tidy_keywords", True))),
                   ph.path, url, model, kmin, kmax,
@@ -4765,6 +4854,7 @@ class MainWindow(QMainWindow):
             ph.keywords = core.place_editorial_keywords(head + list(result["keywords"]), extra,
                                                         s.get("editorial_pos", "before"), after=len(head),
                                                         title=result["title"])
+            self._make_plain(ph)
             same = (ph.title, ph.description, ph.keywords) == before
             ph.status = "ready" if same and not ph.changed else "suggested"
             ph.message = ("Double-checked: nothing needed changing" if same else
@@ -4887,6 +4977,7 @@ class MainWindow(QMainWindow):
                                                         self.editorial_keywords(ph),
                                                         self.settings.get("editorial_pos", "before"), after=len(lead),
                                                         title=result["title"])
+            self._make_plain(ph)                      # Stock-site safe: the whole title, your text included
             ph.busy, ph.status = False, "suggested"
             self._remember_suggestion(ph, "Redo" if redo else "Suggestion")
             ph.message = (("Redone with your reasons" if redo else "Suggested")

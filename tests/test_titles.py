@@ -74,3 +74,56 @@ def test_find_and_replace_in_titles():
 def test_keyword_list_written_into_the_title_is_split_off():
     title, leaked = core.split_leaked_keywords('Car Care Products", "Keywords": "car wax", "polish')
     assert "Keywords" not in title and leaked
+
+
+@pytest.mark.parametrize("before, after", [
+    ("Salt & Pepper Shakers", "Salt and Pepper Shakers"),
+    ("Café Ñandú in Zürich — Old Town", "Cafe Nandu in Zurich - Old Town"),
+    ("Coca-Cola™ Bottle", "Coca-Cola Bottle"),
+    ("“Best Deal” Sign at 50% Off", "Best Deal Sign at 50 percent Off"),
+    ("Tokyo 東京 Skyline", "Tokyo Skyline"),
+    ("Sunset 🌅 over Lake", "Sunset over Lake"),
+    ("Smørrebrød in København", "Smorrebrod in Kobenhavn"),
+    ("Ice at -5°C", "Ice at -5 degrees C"),
+])
+def test_stock_site_safe_text(before, after):
+    assert core.plain_text(before) == after
+    assert core.tidy_symbols(before, "safe") == after
+    assert core.special_characters(after) == []
+
+
+@pytest.mark.parametrize("keep", ["McDonald's Drive-Thru at Night", "Kyoto, Japan - October 26, 2026: Temple Gate",
+                                  "24/7 Store, $5 Coffee", "Close-Up of a Well-Known NASA Logo (Night)"])
+def test_stock_site_safe_leaves_plain_text_alone(keep):
+    assert core.plain_text(keep) == keep and core.special_characters(keep) == []
+
+
+def test_shutterstock_flags_special_characters():
+    out = core.site_problems("Fish & Chips in a Café", ["fish", "chips"] * 4, ["shutterstock", "adobe"])
+    assert any(o.startswith("Shutterstock:") and "special characters & é" in o for o in out)
+    assert not any(o.startswith("Adobe Stock:") and "special" in o for o in out)
+
+
+@pytest.mark.parametrize("title, found", [
+    ("1965 Ford Mustang 289 V8 with 4 Speed and 15 Inch Wheels", "numbers"),
+    ("Coffee Cup with Coffee Beans and a Coffee Grinder on Table", "more than once"),
+    ("Red, Blue, Green, Yellow, Orange Balloons", "list of keywords"),
+])
+def test_checks_find_problems(title, found):
+    tp, _ = core.text_problems(title, "", core.DEFAULT_TEXT_CHECKS)
+    assert len(tp) == 1 and found in tp[0]
+
+
+@pytest.mark.parametrize("good", ["iPhone 15 Pro on a Desk", "Doritos Cool Ranch Tortilla Chips, a Frito-Lay Brand",
+                                  "Magazines on a Wooden Shelf for Reading in a Cozy Home Library"])
+def test_checks_leave_good_titles_alone(good):
+    assert core.text_problems(good, "", core.DEFAULT_TEXT_CHECKS) == ([], [])
+
+
+def test_check_for_a_description_that_copies_the_title_and_for_length():
+    _, dp = core.text_problems("Magazines on a Wooden Shelf", "Magazines on a wooden shelf.", ["desc_copy"])
+    assert dp
+    tp, _ = core.text_problems("Magazines on a Wooden Shelf for Reading in a Cozy Home Library", "", ["fit"],
+                               {"title_max": 40})
+    assert "at most 40 characters" in tp[0]
+    assert core.text_problems("Magazines on a Shelf", "", ["fit"], {"title_max": 40}) == ([], [])

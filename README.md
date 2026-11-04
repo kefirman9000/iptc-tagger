@@ -41,7 +41,8 @@ No installation and no Python needed. ExifTool is included.
 - **Find and replace** across the titles and keywords of many photos at once.
 - **Photo types:** landscape, food, architecture, product on a shelf, company logo with a stock chart, editorial event and more, plus your own. A **Copyright-free** type keeps brand and personal names out.
 - **Editorial:** one checkbox adds the location and the date taken to every title (before or after it) and to the keywords (sorted by relevance), e.g. *Tokyo, Japan - October 26, 2026: Shibuya Crossing at Dusk*. Text before titles, a live preview and a custom date (when the camera's date is wrong) round it off. Give some photos a different location with **Set for Photos…** (or right-click → **Set location…**): their titles and keywords change right away, without detecting again.
-- **Clean text:** symbols in the AI's titles and keywords are converted to words (& → and, % → percent) or removed, as you choose.
+- **Clean text:** symbols in the AI's titles and keywords are converted to words (& → and, % → percent) or removed, as you choose. **Stock-site safe** makes the whole title, description and keywords plain for Shutterstock (*Café* → *Cafe*, no ™ or emoji).
+- **Fix automatically:** too many numbers, a word used twice, a title that reads like a keyword list, a description that only repeats the title, or text too long for your stock sites: the AI rewords just that, and the rewording is only kept if it's better.
 - **Reads the label first:** for products and signs, the AI copies the brand, product and flavour from the packaging (weights and sizes are left out), then uses those exact spellings.
 - **Tidy keywords:** filler words like *photo* and *image* are removed, and the keywords that name what's in the title come first.
 - **Undo a save:** right-click → **Undo last save** restores the photo's previous metadata (the last 5 saves per photo, even after a restart).

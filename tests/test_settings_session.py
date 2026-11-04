@@ -15,6 +15,12 @@ def test_new_options_have_sensible_defaults():
     s = core.load_settings()
     assert s["direct_titles"] is True and s["title_caps"] == "title" and s["detect_style"] == []
     assert s["stockup_after_save"] is False and s["avoid_on"] is False
+    assert s["text_checks"] == core.DEFAULT_TEXT_CHECKS and "fit" not in s["text_checks"]
+
+
+def test_checks_setting_is_cleaned():
+    core.save_settings({**core.DEFAULT_SETTINGS, "text_checks": ["numbers", "made-up"]})
+    assert core.load_settings()["text_checks"] == ["numbers"]
 
 
 def test_list_kept_after_a_crash(make_photos):

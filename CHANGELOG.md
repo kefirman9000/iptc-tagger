@@ -1,5 +1,16 @@
 # What's new
 
+## 2026.11.04.4
+
+- **Stock-site safe symbols:** a new choice in **Settings → Titles & keywords → Symbols**. Shutterstock asks for titles without special characters, so this makes the whole title, description and keywords plain: symbols become words (*Fish & Chips* → *Fish and Chips*, *50%* → *50 percent*), accents become plain letters (*Café* → *Cafe*, *Zürich* → *Zurich*), curly quotes and long dashes become plain ones, and ™, ®, emoji and other special characters are taken out. Unlike the other choices it also covers your own text (text before titles, location, keywords to put first). Choosing it offers to clean the titles already in the list, and right-click → **Clean special characters** does it for any photos. **Show → Breaks a stock site's rules** now also lists photos with special characters for Shutterstock.
+- **Fix automatically:** new checks in **Settings → Titles & keywords** catch common problems in what the AI wrote, and have the AI reword just that, once and text only. The rewording is only kept if it's really better, and nothing extra is asked when all is well.
+  - **Too many numbers in a title:** reworded with less emphasis on them, keeping a number only when it defines the subject (a model number, an important year).
+  - **The same word twice in a title** (*Coffee Cup with Coffee Beans and a Coffee Grinder*).
+  - **A title that reads like a list of keywords** (four or more commas): reworded as one natural phrase.
+  - **A description that only repeats the title:** rewritten to add what the title leaves out.
+  - **Too long for my stock sites:** shortened to fit the limits of the sites you sell on (for example Adobe Stock's 70-character title), counting the location, date and text before titles. Off by default, because it makes detailed titles shorter.
+  The first four are on to start with.
+
 ## 2026.11.04.3
 
 - **Fix: iPhone stays iPhone:** a title starting with a word that has its own capitals, like *iPhone* or *eBay*, could come out as *IPhone* or *EBay* since the last update. Fixed.

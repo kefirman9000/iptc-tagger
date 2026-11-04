@@ -67,3 +67,53 @@ def test_reword_uses_the_same_title_rules():
                     title_caps="every", style=core.style_rules(["factual"]))
     assert r["title"] == "Magazines On A Shelf For Reading"
     assert "standing preferences" in ai.prompts()[0]
+
+
+def checks_answer(draft, fix):
+    def answer(body):
+        f = schema_fields(body)
+        text = body["messages"][-1]["content"]
+        if text.startswith("Improve the text of this stock photo"):
+            return {"title": fix}
+        if {"title", "keywords"} <= f:
+            return {"title": draft, "keywords": [f"kw{i}" for i in range(35)]}
+        return {}
+    return answer
+
+
+def run(make_photos, answer, **kw):
+    ai = FakeAI(answer)
+    r = core.identify(make_photos(1)[0], "http://ollama", "model", 30, 40, opener=ai, revise=False, **kw)
+    return r, ai
+
+
+def test_checks_reword_too_many_numbers(make_photos):
+    r, ai = run(make_photos, checks_answer("1965 Ford Mustang 289 V8 with 4 Speed and 15 Inch Wheels in a Garage",
+                                           "Classic 1965 Ford Mustang V8 with Manual Gearbox and Chrome Wheels in a Garage"),
+                checks=core.DEFAULT_TEXT_CHECKS)
+    assert r["title"] == "Classic 1965 Ford Mustang V8 with Manual Gearbox and Chrome Wheels in a Garage"
+    assert any("too many numbers" in p for p in ai.prompts())
+
+
+def test_checks_keep_the_original_if_the_fix_is_no_better(make_photos):
+    draft = "Coffee Cup with Coffee Beans and a Coffee Grinder on a Wooden Kitchen Table"
+    r, _ = run(make_photos, checks_answer(draft, "Coffee Cup and Coffee Beans"), checks=core.DEFAULT_TEXT_CHECKS)
+    assert r["title"] == draft
+
+
+def test_no_extra_request_when_nothing_is_wrong(make_photos):
+    good = "Magazines on a Wooden Shelf for Reading in a Cozy Home Library with Soft Light and Green Plants"
+    _, with_checks = run(make_photos, checks_answer(good, "x"), checks=core.DEFAULT_TEXT_CHECKS)
+    _, without = run(make_photos, checks_answer(good, "x"))
+    assert len(with_checks.asked) == len(without.asked)
+
+
+def test_stock_site_safe_symbols_in_detect(make_photos):
+    def answer(body):
+        if {"title", "keywords"} <= schema_fields(body):
+            return {"title": "Fish & Chips in a Seaside Café with Crêpes™ on the Menu and Ocean View",
+                    "keywords": ["fish & chips", "café"] + [f"kw{i}" for i in range(35)]}
+        return {}
+    r, _ = run(make_photos, answer, symbols="safe")
+    assert core.special_characters(r["title"] + " ".join(r["keywords"])) == []
+    assert "Fish and Chips" in r["title"] and "fish and chips" in r["keywords"]
