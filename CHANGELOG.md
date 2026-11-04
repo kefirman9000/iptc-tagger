@@ -1,5 +1,11 @@
 # What's new
 
+## 2026.11.04.1
+
+- **Titles start with the subject:** titles are now direct, like *Magazines on a Shelf for Reading*, instead of *A Picture of Magazines on a Shelf…*. The AI is told to begin with what's in the photo, and openings like *A picture of*, *A photo of*, *An image showing*, *This is a photo of* or a leading *A* / *An* are taken off whatever it writes. Describing words that tell you something, such as *Aerial Photo of* or *Close-Up Photo of*, are kept. On by default; turn it off in **Settings → Titles & keywords → Title wording**.
+- **Capitalize Every Word:** a new **Title capitals** choice in **Settings → Titles & keywords**. *Title Case* (as before) keeps short words like *on*, *for* and *a* lowercase in the middle; *Capitalize Every Word* gives *Magazines On A Shelf For Reading*. Words with their own capitals (iPhone, NASA, McDonald's) stay as they are.
+- **Update the titles you already have:** when you change either option, the app offers to apply it to the titles already in the list, without detecting again. Only the part the AI wrote changes: your text before titles, the location and the date stay exactly as they are. Both options also apply to **Reword / Double-check**.
+
 ## 2026.11.03.1
 
 - **Reword / Double-check:** a new **Reword…** button (at the top, in the side panel, and right-click → **Reword / double-check text…**) goes over the titles, descriptions and keywords already written, *text only*, so it takes a few seconds and doesn't look at the photo again. Tick what it should work on (title, description, keywords), then pick clean-up options (*Just double-check*, *Make it shorter*, *Plainer words*, *Remove repeated words*, *Main subject first*, *Remove duplicate keywords*, *Remove keywords that don't fit*, and more) and/or type your own instructions, like *it's a heron, not a crane*. With only *Just double-check* ticked, it fixes mistakes and leaves the rest alone.

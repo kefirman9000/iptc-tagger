@@ -431,6 +431,20 @@ class SettingsDialog(QDialog):
                                   "for, the setting and details of the scene, e.g. 'McDonald's Restaurant Exterior, Major\n"
                                   "American Fast Food Chain, with Drive-Thru Lane and Parking Lot'. A title that comes back shorter is expanded once.")
         f_text.insertRow(0, "Title length", self.title_len)
+        self.title_caps = QComboBox()
+        self.title_caps.addItem("Title Case: Magazines on a Shelf for Reading", "title")
+        self.title_caps.addItem("Capitalize Every Word: Magazines On A Shelf For Reading", "every")
+        self.title_caps.setCurrentIndex(max(0, self.title_caps.findData(settings.get("title_caps", "title"))))
+        self.title_caps.setToolTip("How the AI's titles are capitalized. Title Case keeps short words like on, for, with\n"
+                                   "and a lowercase in the middle; Capitalize Every Word capitalizes all of them.\n"
+                                   "Words with their own capitals (iPhone, NASA) stay as they are.")
+        f_text.insertRow(1, "Title capitals", self.title_caps)
+        self.direct_titles = QCheckBox("Start titles with the subject: Magazines on a Shelf, not A Picture of Magazines…")
+        self.direct_titles.setChecked(bool(settings.get("direct_titles", True)))
+        self.direct_titles.setToolTip("The AI is told to begin with what's in the photo, and openings like 'A picture of',\n"
+                                      "'A photo of', 'An image showing' or a leading 'A' / 'An' are taken off its titles.\n"
+                                      "Describing words such as 'Aerial Photo of' or 'Close-Up Photo of' are kept.")
+        f_text.insertRow(2, "Title wording", self.direct_titles)
         self.et = QLineEdit(settings.get("exiftool_path", ""))
         self.et.setPlaceholderText(detected_exiftool or "not found: install ExifTool or choose it here")
         browse = QPushButton("Browse…")
@@ -803,6 +817,7 @@ class SettingsDialog(QDialog):
                  ai_time_limit=self.tlimit.value(), ai_retries=int(self.tretry.currentData() or 0),
                  debug_log=self.debug.isChecked(), symbols=self.symbols.currentData() or "convert",
                  title_length=self.title_len.currentData() or "detailed",
+                 title_caps=self.title_caps.currentData() or "title", direct_titles=self.direct_titles.isChecked(),
                  confirm_save=self.confirm_save.isChecked(),
                  read_label=self.read_label.isChecked(), tidy_keywords=self.tidy_kw.isChecked(),
                  ai_description=self.ai_desc.isChecked(),
@@ -2390,6 +2405,50 @@ class MainWindow(QMainWindow):
         if todo:
             self.identify_photos(todo)
 
+    # ---------- title capitals and wording, for titles already in the list
+    def restyle_title(self, ph) -> str:
+        """This photo's title with the chosen capitals and subject-first wording. Only the part the AI wrote
+        changes: your text before titles, the location and the date stay exactly as they are."""
+        s = self.settings
+        bare = self.bare_title(ph, strip_date=s.get("title_date_pos", "off") != "off")
+        if not bare.strip() or bare not in ph.title:
+            return ph.title
+        new = core.style_title(bare, s.get("direction", ""), s.get("title_caps", "title"),
+                               bool(s.get("direct_titles", True)))
+        if not new.strip():
+            return ph.title
+        i = ph.title.rfind(bare)
+        return ph.title[:i] + new + ph.title[i + len(bare):]
+
+    def offer_title_style(self, photos=None):
+        photos = [p for p in (photos if photos is not None else self.photos) if not p.busy and p.title.strip()]
+        changes = [(p, self.restyle_title(p)) for p in photos]
+        changes = [(p, t) for p, t in changes if t != p.title]
+        if not changes:
+            return
+        caps = "Capitalize Every Word" if self.settings.get("title_caps") == "every" else "Title Case"
+        ph, t = changes[0]
+        n = len(changes)
+        if QMessageBox.question(
+                self, "Update the titles in the list?",
+                f"Apply the new title style ({caps}"
+                + (", starting with the subject" if self.settings.get("direct_titles", True) else "")
+                + f") to {n} title{'s' if n != 1 else ''} already in the list?\n\n"
+                f"For example:\n{ph.title}\n→ {t}\n\n"
+                "Only the titles change, without detecting again. Nothing is saved into the files until you save."
+        ) != QMessageBox.Yes:
+            return
+        for ph, t in changes:
+            ph.title = t
+            if ph.status == "saved":
+                ph.status = "ready"
+            ph.message = "Title style updated, not saved yet"
+            self._show(ph)
+        if self.review.photo is not None:
+            self.review.show_photo(self.review.photo)
+        self.apply_filter()
+        self.status.setText(f"Updated {n} title{'s' if n != 1 else ''} to the new style. Save to write them into the files.")
+
     def _startup_dialogs(self):
         """One after the other, never stacked: bring back the list, then what's new."""
         self._offer_restore()
@@ -2818,7 +2877,11 @@ class MainWindow(QMainWindow):
     def open_settings(self):
         dlg = SettingsDialog(self, self.settings, core.find_exiftool(""))
         if dlg.exec():
+            style_before = (self.settings.get("title_caps", "title"), bool(self.settings.get("direct_titles", True)))
             self.settings = dlg.values()
+            style_after = (self.settings.get("title_caps", "title"), bool(self.settings.get("direct_titles", True)))
+            if style_after != style_before:
+                QTimer.singleShot(0, self.offer_title_style)   # once Settings has closed
             self._sites = None
             Photo.track_description = "description" in core.meta_fields(self.settings)
             for ph in self.photos:
@@ -4198,6 +4261,8 @@ class MainWindow(QMainWindow):
                                              symbols=self.settings.get("symbols", "convert"),
                                              feedback=redo.get("feedback", ""),
                                              title_length=self.settings.get("title_length", "detailed"),
+                                             title_caps=self.settings.get("title_caps", "title"),
+                                             direct_titles=bool(self.settings.get("direct_titles", True)),
                                              expand_short=True,
                                              read_label=bool(self.settings.get("read_label", True)),
                                              never_use=core.parse_word_list(self.settings.get("never_use", "")),
@@ -4343,7 +4408,8 @@ class MainWindow(QMainWindow):
             args["options"], args["instruction"], dateline, fixed, kmin, kmax, s.get("context", ""), ph.note,
             s.get("direction", ""), self.effective_type(ph) == core.COPYRIGHT_FREE, s.get("symbols", "convert"),
             core.parse_word_list(s.get("never_use", "")), ph.avoid if s.get("avoid_on") else "",
-            cancel=ph.token, name=os.path.basename(ph.path)))
+            cancel=ph.token, name=os.path.basename(ph.path), title_caps=s.get("title_caps", "title"),
+            direct_titles=bool(s.get("direct_titles", True))))
         ph.run += 1
         ph.queued = True
         run = ph.run

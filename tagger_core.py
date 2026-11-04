@@ -39,7 +39,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.11.03.1"
+APP_VERSION = "2026.11.04.1"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 # camera RAW files: titles and keywords go into the Lightroom sidecar next to them (photo.xmp), never the RAW.
 # DNG is left out: Lightroom ignores sidecars for DNG and keeps its metadata inside the file itself.
@@ -376,6 +376,8 @@ DEFAULT_SETTINGS = {
     "avoid_on": False,        # show the per-photo Avoid column and use it
     "stockup_path": "",       # StockUp.app / StockUp.exe / stockup.py ("" = look in the usual places)
     "stockup_after_save": False,  # after Save Metadata, open the saved photos in StockUp
+    "title_caps": "title",    # title (Title Case: small words lowercase) / every (Capitalise Every Word)
+    "direct_titles": True,    # titles start with the subject: no "A Picture of…" in front
     "never_use": "",          # words the AI must never use (comma or line separated); removed from its keywords
     "never_use_titles": True, # ... and taken out of its titles too
     "finish_alert": "both",   # when a long batch finishes: both (sound + notification) / sound / notify / off
@@ -1570,9 +1572,10 @@ SMALL_WORDS = {"a", "an", "and", "as", "at", "but", "by", "for", "from", "in", "
                "onto", "or", "over", "per", "the", "to", "up", "via", "vs", "with", "yet", "so"}
 
 
-def title_case(text: str) -> str:
+def title_case(text: str, every_word: bool = False) -> str:
     """SEO Title Case: capitalise each word except small words in the middle; leave words
-    that already have their own capitals (iPhone, NASA, McDonald's) exactly as they are."""
+    that already have their own capitals (iPhone, NASA, McDonald's) exactly as they are.
+    every_word: capitalise the small words too ('Magazines On A Shelf For Reading')."""
     words = clean_title(text).split()
     out = []
     for i, word in enumerate(words):
@@ -1587,7 +1590,7 @@ def title_case(text: str) -> str:
             if any(c.isupper() for c in letters[1:]):          # iPhone, NASA, eBay, McDonald's
                 return part
             bare = part.lower().strip("()[]\"'“”‘’,;")
-            if not edge and bare in SMALL_WORDS:
+            if not edge and not every_word and bare in SMALL_WORDS:
                 return part.lower()
             j = next(k for k, c in enumerate(part) if c.isalpha())
             return part[:j] + part[j].upper() + part[j + 1:]
@@ -1595,6 +1598,42 @@ def title_case(text: str) -> str:
         parts = word.split("-")
         out.append("-".join(fix(pt, starts or last or k > 0) for k, pt in enumerate(parts)))
     return " ".join(out)
+
+
+# "A Picture of …", "An Image Showing …", "This Is a Photo of …": filler in front of the subject. A
+# describing word that tells you something ("Aerial Photo of", "Close-Up Photo of") is left alone.
+_FILLER_OPENING = re.compile(
+    r"^\s*(?:(?:this\s+is|here\s+is|here's|there\s+is|this)\s+)?(?:(?:a|an|the)\s+)?"
+    r"(?:(?:beautiful|stunning|nice|great|lovely|stock|high[\s-]quality|royalty[\s-]free|digital|real)\s+)*"
+    r"(?:picture|photo|photograph|image|snapshot|shot|pic|depiction|capture|stock\s+photo)s?\s+"
+    r"(?:of|showing|featuring|depicting|with|that\s+shows|which\s+shows|capturing)\s+(?:(?:a|an)\s+)?", re.I)
+_LEADING_ARTICLE = re.compile(r"^\s*(?:a|an)\s+(?=\w)", re.I)   # not "The": The Hague, The Shard
+
+
+def direct_title(text: str) -> str:
+    """Start the title with the subject: 'A Picture of Magazines on a Shelf' -> 'Magazines on a Shelf',
+    'A Stack of Books' -> 'Stack of Books'. Nothing is changed if too little would be left."""
+    t = (text or "").strip()
+    new = _FILLER_OPENING.sub("", t, count=1).strip()
+    if new != t and new:
+        return new[0].upper() + new[1:]                  # "A photo of cats" -> "Cats"
+    new = _LEADING_ARTICLE.sub("", t, count=1).strip()
+    return new[0].upper() + new[1:] if len(new.split()) >= 2 else t
+
+
+def style_title(text: str, direction: str = "", caps: str = "title", direct: bool = True) -> str:
+    """The finishing step for every title the AI writes: start with the subject (direct), then the
+    capitals you chose: 'title' (Title Case) or 'every' (Capitalise Every Word). Your directions win
+    when they ask for other capitals (sentence case…)."""
+    t = direct_title(text) if direct else (text or "")
+    if title_case_overridden(direction):
+        return clean_title(t)
+    return title_case(t, every_word=caps == "every")
+
+
+DIRECT_TITLE_RULE = ("Start the title directly with the main subject, the way stock titles are written: 'Magazines on "
+                     "a Store Shelf for Reading', not 'A Picture of Magazines on a Shelf'. Never begin with 'A photo "
+                     "of', 'A picture of', 'An image of', 'This is', 'There is', or with 'A' or 'An'.")
 
 
 _TITLE_CASE_OVERRIDE = re.compile(
@@ -2476,7 +2515,8 @@ def build_prompt(keyword_min: int, keyword_max: int, context: str = "", existing
                  photo_type: str = "", lead_keywords=None, title_prefix: str = "",
                  date_in_title: bool = False, title_location: str = "", copyright_free: bool = False,
                  symbols: str = "keep", feedback: str = "", rejected_title: str = "",
-                 title_length: str = "detailed", never_use=None, photo_avoid: str = "") -> str:
+                 title_length: str = "detailed", never_use=None, photo_avoid: str = "",
+                 direct_titles: bool = True) -> str:
     """The instructions for one photo. Your notes come first and the title is built around them;
     your directions are repeated at the end. (title_prefix is never shown to the AI.)"""
     context, photo_note, direction = (context or "").strip(), (photo_note or "").strip(), (direction or "").strip()
@@ -2512,7 +2552,8 @@ def build_prompt(keyword_min: int, keyword_max: int, context: str = "", existing
                   .replace("the input", "the notes")]
     lines += [
         "", title_rules(title_length) + (" Work the facts from the photographer's notes into the title."
-                                         if context or photo_note else ""),
+                                         if context or photo_note else "")
+        + (" " + DIRECT_TITLE_RULE if direct_titles else ""),
         "",
         f"Keywords: between {keyword_min} and {keyword_max} unique SEO keywords, most relevant first. All "
         "lowercase, letters and numbers only: no special characters, punctuation or hashtags. No duplicates "
@@ -2717,7 +2758,8 @@ REWORD_FIELDS = [("title", "Title"), ("description", "Description"), ("keywords"
 def build_reword_prompt(title: str, description: str, keywords, fields, options=(), instruction: str = "",
                         dateline: str = "", fixed_keywords=(), keyword_min: int = 7, keyword_max: int = 50,
                         context: str = "", photo_note: str = "", direction: str = "", copyright_free: bool = False,
-                        symbols: str = "keep", never_use=None, photo_avoid: str = "") -> str:
+                        symbols: str = "keep", never_use=None, photo_avoid: str = "",
+                        direct_titles: bool = True) -> str:
     """The instructions for rewording one photo's text (no image). dateline: the location / date put in front
     of the title, given only as background; the AI must leave it out of what it writes."""
     fields = [f for f, _ in REWORD_FIELDS if f in set(fields or [])]
@@ -2749,7 +2791,8 @@ def build_reword_prompt(title: str, description: str, keywords, fields, options=
         lines += ["", "What to do:", "- " + REWORD_TEXT_OPTIONS[0][2]]
     rules = []
     if "title" in fields:
-        rules.append("Title: one line in Title Case, no quotation marks, no full stop at the end.")
+        rules.append("Title: one line in Title Case, no quotation marks, no full stop at the end."
+                     + (" " + DIRECT_TITLE_RULE if direct_titles else ""))
     if "description" in fields:
         rules.append(f"Description: one or two complete sentences in normal sentence case ending with a full stop, "
                      f"at most {DESCRIPTION_MAX - 20} characters. If it is empty, write one from the title.")
@@ -2787,7 +2830,7 @@ def reword(url: str, model: str, title: str, description: str, keywords, fields,
            dateline: str = "", fixed_keywords=(), keyword_min: int = 7, keyword_max: int = 50, context: str = "",
            photo_note: str = "", direction: str = "", copyright_free: bool = False, symbols: str = "keep",
            never_use=None, photo_avoid: str = "", opener=None, cancel: CancelToken | None = None,
-           name: str = "") -> dict:
+           name: str = "", title_caps: str = "title", direct_titles: bool = True) -> dict:
     """Reword / double-check a photo's text with the AI, text only (no image, so it's quick). Only the fields
     asked for change; anything the AI leaves empty keeps its old value. title is the bare title (without the
     location, date or text before titles) and keywords leave out fixed_keywords: the caller puts those back.
@@ -2798,7 +2841,7 @@ def reword(url: str, model: str, title: str, description: str, keywords, fields,
     room_max = max(room_min, keyword_max - len(fixed_keywords or []))
     prompt = build_reword_prompt(title, description, keywords, fields, options, instruction, dateline,
                                  fixed_keywords, room_min, room_max, context, photo_note, direction,
-                                 copyright_free, symbols, never_use, photo_avoid)
+                                 copyright_free, symbols, never_use, photo_avoid, direct_titles=direct_titles)
     t0 = time.monotonic()
     debug(f"{name}: reword: fields={sorted(fields)} options={list(options or [])} instruction={_clip(instruction or '', 120)!r}")
     parsed = {}
@@ -2821,7 +2864,7 @@ def reword(url: str, model: str, title: str, description: str, keywords, fields,
     if "title" in fields:
         t = split_leaked_keywords(str(parsed.get("title", "") or "").strip())[0]
         t = drop_sizes(tidy_symbols(t, symbols))
-        t = clean_title(t) if title_case_overridden(direction) else title_case(t)
+        t = style_title(t, direction, title_caps, direct_titles)
         t = drop_never_from_title(t, never) if never else t
         if len(t.split()) >= 2:
             new_title = t
@@ -3202,7 +3245,8 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
              symbols: str = "keep", feedback: str = "", rejected_title: str = "",
              title_length: str = "detailed", expand_short: bool = False,
              read_label: bool = False, tidy: bool = False, never_use=None, never_in_title: bool = True,
-             photo_avoid: str = "", description: bool = False) -> dict:
+             photo_avoid: str = "", description: bool = False, title_caps: str = "title",
+             direct_titles: bool = True) -> dict:
     """Ask the local vision model for an SEO title and keywords.
     With revise=True and any notes or directions given, a second (text-only) pass checks the draft
     against them. With description=True a description (caption) is also written, once the title is
@@ -3228,7 +3272,7 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
     prompt = build_prompt(keyword_min, keyword_max, context, existing_title, existing_keywords,
                           direction, photo_note, photo_type, lead_keywords, title_prefix, date_in_title,
                           title_location, copyright_free, symbols, feedback, rejected_title, title_length,
-                          never_use=never_use, photo_avoid=photo_avoid)
+                          never_use=never_use, photo_avoid=photo_avoid, direct_titles=direct_titles)
     system = system_prompt(direction)
 
     def body(user_text, schema, with_image=True, temperature=0.2):
@@ -3337,6 +3381,8 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
     protect = " ".join([direction or ""] if copyright_free else [direction or "", context or "", photo_note or ""])
     lower = not keyword_case_overridden(direction)
     lo, hi = title_words(title_length)
+    if direct_titles:
+        raw_title = direct_title(raw_title)
     if expand_short and raw_title and len(raw_title.split()) < lo and not title_case_overridden(direction) \
             and not (feedback or "").strip().count("too long"):
         # too short and blunt: ask once for a fuller version (looking at the photo again, so it can add
@@ -3348,7 +3394,8 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
                   + ("Don't add a place name; it is added separately. " if (title_location or "").strip() else "")
                   + (COPYRIGHT_FREE_RULES + " " if copyright_free else "")
                   + "Title Case, no quotation marks and no full stop at the end. "
-                  'Output only JSON: {"title": "..."}')
+                  + (DIRECT_TITLE_RULE + " " if direct_titles else "")
+                  + 'Output only JSON: {"title": "..."}')
         try:
             longer = split_leaked_keywords(str(ask(expand, TITLE_SCHEMA, "longer title").get("title", "") or "").strip())[0]
             if len(longer.split()) > len(raw_title.split()):
@@ -3359,7 +3406,7 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
         except ApiError:
             pass                                     # keep the short one
     raw_title = drop_sizes(tidy_symbols(drop_trailing_location(raw_title, title_location), symbols))
-    title = clean_title(raw_title) if title_case_overridden(direction) else title_case(raw_title)
+    title = style_title(raw_title, direction, title_caps, direct_titles)
     avoid = avoid_terms(photo_avoid)                 # this photo's own: always out of the title too
     title_never = (list(never_use or []) if never_in_title else []) + avoid
     if title_never and drop_never_from_title(title, title_never) != title:
@@ -3373,8 +3420,7 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
         try:
             fixed = split_leaked_keywords(str(ask(rewrite, TITLE_SCHEMA, "remove words", with_image=False)
                                               .get("title", "") or "").strip())[0]
-            fixed = drop_never_from_title(title_case(fixed) if not title_case_overridden(direction)
-                                          else clean_title(fixed), title_never)
+            fixed = drop_never_from_title(style_title(fixed, direction, title_caps, direct_titles), title_never)
             if len(fixed.split()) >= 3:
                 debug(f"{name}: title rewritten without never-use / avoid words")
                 title = fixed
