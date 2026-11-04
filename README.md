@@ -32,7 +32,7 @@ No installation and no Python needed. ExifTool is included.
 - **RAW files:** titles and keywords go into Lightroom's `.xmp` sidecar next to the RAW, so Lightroom carries them into every export. The RAW itself is never written to (it's verified byte for byte), and edits and ratings already in the sidecar are kept. DNG isn't supported, because Lightroom keeps DNG metadata inside the file.
 - **Watch Folder:** point it at Lightroom's export folder and new photos are added (and optionally detected) as they arrive.
 - **Stock-site rules:** titles and keywords that Shutterstock, Adobe Stock or the other sites you sell on would reject are marked in amber with the reason, using the same rules as StockUp.
-- **Detect:** the AI suggests a full, descriptive, SEO-friendly title in Title Case (short, standard or detailed, as you choose) and 30–40 lowercase keywords per photo.
+- **Detect:** the AI suggests a full, descriptive, SEO-friendly title that starts with the subject (*Magazines on a Shelf for Reading…*, never *A picture of…*), in Title Case or with every word capitalized, short, standard or detailed, as you choose, and 30–40 lowercase keywords per photo.
 - **Review and edit** in a table or a side panel with a large preview. Save one photo at a time or many at once.
 - **Instructions for the AI:** one box for facts about the batch and how titles and keywords should be written, plus a note per photo and an optional **Avoid** column (tick *Avoid column*) for what the AI shouldn't say about it. A **Never use** list keeps words like *beautiful* out of every title and keyword.
 - **Find and replace** across the titles and keywords of many photos at once.
