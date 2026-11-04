@@ -96,6 +96,8 @@ pip install -r requirements.txt pyinstaller
 python build_standalone.py --out build-output
 ```
 
+To run the tests: `pip install pytest`, then `python -m pytest` (set `EXIFTOOL` to ExifTool's path to include the saving tests). They run on Windows before every release, and nothing is published unless they all pass.
+
 To run without building, use `python iptc_tagger.py`. Releases are built automatically by [GitHub Actions](.github/workflows/release.yml) whenever `main` changes; the release is named after `APP_VERSION` in `tagger_core.py`.
 
 ## Support IPTC Tagger

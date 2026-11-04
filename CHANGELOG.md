@@ -1,5 +1,10 @@
 # What's new
 
+## 2026.11.04.3
+
+- **Fix: iPhone stays iPhone:** a title starting with a word that has its own capitals, like *iPhone* or *eBay*, could come out as *IPhone* or *EBay* since the last update. Fixed.
+- **Tested before every release:** every new version is now checked automatically on Windows before it's built: 78 tests covering titles, keywords, locations, the AI's instructions, saving with ExifTool, Undo, the list kept after a crash, StockUp and the window itself. If any test fails, nothing is built or published, so a mistake can't reach the update button.
+
 ## 2026.11.04.2
 
 - **Every Detect checklist:** under **Instructions for the AI**, **Every Detect → Choose…** lets you tick how the AI should write titles and keywords for *every* photo, the way Redo with reasons does for one. **Always:** plain and factual, only what's visible, no brand or people's names, use the place and names from my notes, specific keywords. **Focus on:** the words and signs, the main subject, what's happening, colours and light, mood, the setting, the people, concepts for commercial buyers, the season. What's ticked shows on one line (*Factual · Main subject · Signs*). It's used by Detect, the double-check and Reword; Redo still adds its own reasons on top. Nothing is ticked to start with.
