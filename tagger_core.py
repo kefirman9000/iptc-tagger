@@ -1733,11 +1733,15 @@ def direct_title(text: str) -> str:
     """Start the title with the subject: 'A Picture of Magazines on a Shelf' -> 'Magazines on a Shelf',
     'A Stack of Books' -> 'Stack of Books'. Nothing is changed if too little would be left."""
     t = (text or "").strip()
+
+    def first_capital(s):                            # "cats" -> "Cats", but never "iPhone" -> "IPhone"
+        w = s.split()[0]
+        return s[0].upper() + s[1:] if w == w.lower() else s
     new = _FILLER_OPENING.sub("", t, count=1).strip()
     if new != t and new:
-        return new[0].upper() + new[1:]                  # "A photo of cats" -> "Cats"
+        return first_capital(new)                    # "A photo of cats" -> "Cats"
     new = _LEADING_ARTICLE.sub("", t, count=1).strip()
-    return new[0].upper() + new[1:] if len(new.split()) >= 2 else t
+    return first_capital(new) if new != t and len(new.split()) >= 2 else t
 
 
 def style_title(text: str, direction: str = "", caps: str = "title", direct: bool = True) -> str:

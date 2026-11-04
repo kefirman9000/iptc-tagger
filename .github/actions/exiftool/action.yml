@@ -1,0 +1,21 @@
+# Downloads the latest ExifTool for Windows and puts its path in the EXIFTOOL environment variable.
+# Used by the tests and by the Windows build, so both always use the same ExifTool.
+name: Get ExifTool for Windows
+description: Download the latest ExifTool for Windows and set EXIFTOOL to its path
+runs:
+  using: composite
+  steps:
+    - shell: pwsh
+      run: |
+        $ver = (Invoke-WebRequest "https://exiftool.org/ver.txt" -UseBasicParsing).Content.Trim()
+        Write-Host "ExifTool $ver"
+        $urls = @("https://exiftool.org/exiftool-${ver}_64.zip",
+                  "https://sourceforge.net/projects/exiftool/files/exiftool-${ver}_64.zip/download")
+        foreach ($u in $urls) {
+          try { Invoke-WebRequest $u -OutFile exiftool.zip -UseBasicParsing -UserAgent "curl/8"; break }
+          catch { Write-Host "Couldn't download from $u, trying the next source" }
+        }
+        Expand-Archive exiftool.zip -DestinationPath exiftool-download
+        $exe = Get-ChildItem exiftool-download -Recurse -Filter "exiftool*.exe" | Select-Object -First 1
+        if (-not $exe) { throw "ExifTool's .exe wasn't found in the download" }
+        "EXIFTOOL=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
