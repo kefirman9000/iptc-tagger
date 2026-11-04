@@ -18,4 +18,8 @@ runs:
         Expand-Archive exiftool.zip -DestinationPath exiftool-download
         $exe = Get-ChildItem exiftool-download -Recurse -Filter "exiftool*.exe" | Select-Object -First 1
         if (-not $exe) { throw "ExifTool's .exe wasn't found in the download" }
-        "EXIFTOOL=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+        # named exiftool.exe, as in the finished program ("exiftool(-k).exe" waits for a key press when it ends)
+        $named = Join-Path $exe.DirectoryName "exiftool.exe"
+        if ($exe.FullName -ne $named) { Move-Item $exe.FullName $named -Force }
+        Write-Host "ExifTool: $named"
+        "EXIFTOOL=$named" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8

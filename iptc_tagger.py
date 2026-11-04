@@ -60,21 +60,28 @@ class Job(QRunnable):
         self.key, self.fn, self.args, self.cancel, self.with_progress = key, fn, args, cancel, progress
         self.signals = JobSignals()
 
+    def _emit(self, signal, *args):
+        """Report back, unless the window that asked has already closed (then there's no one to tell)."""
+        try:
+            getattr(self.signals, signal).emit(*args)
+        except RuntimeError:
+            pass
+
     def run(self):
         if self.cancel is not None and self.cancel.is_set():
-            self.signals.failed.emit(self.key, "__cancelled__")
+            self._emit("failed", self.key, "__cancelled__")
             return
-        self.signals.started.emit(self.key)
+        self._emit("started", self.key)
         kwargs = {}
         if self.with_progress:
-            kwargs = {"progress": lambda frac, text: self.signals.progress.emit(self.key, (frac, text)),
+            kwargs = {"progress": lambda frac, text: self._emit("progress", self.key, (frac, text)),
                       "cancel": self.cancel}
         try:
             result = self.fn(*self.args, **kwargs)
         except Exception as e:   # every failure is shown to the user
-            self.signals.failed.emit(self.key, str(e) or e.__class__.__name__)
+            self._emit("failed", self.key, str(e) or e.__class__.__name__)
         else:
-            self.signals.done.emit(self.key, result)
+            self._emit("done", self.key, result)
 
 
 def run_job(owner, job: Job, pool: QThreadPool, on_done, on_failed, on_progress=None, on_started=None):
