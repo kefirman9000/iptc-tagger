@@ -193,3 +193,24 @@ def test_clean_special_characters_and_limits(window, make_photos):
     assert win.text_limits(a)["title_max"] == 70                 # no location or date around this title
     win.settings["text_checks"] = []
     assert win.text_limits(a) == {}
+
+
+def test_make_shutterstock_csv_button(window, make_photos):
+    import csv
+    app, win = window
+    add(win, make_photos(2))
+    title = ("Holly Springs, North Carolina - November 4, 2026: Gerber Puffs Cereal Snacks Variety Pack on Grocery "
+             "Store Shelf, Featuring Banana, Apple Cinnamon, Sweet Potato and Strawberry Flavors")
+    a, b = win.photos
+    a.title, a.description, a.keywords = title, "A colorful display of Gerber Puffs on a shelf.", ["gerber", "puffs"]
+    b.title, b.keywords = "Second Photo Title Here Today", ["second"]
+    for ph in (a, b):
+        win._show(ph)
+    win._refresh_buttons()
+    assert win.btn_ss_csv.text() == "Make Shutterstock CSV (2)"
+    path = win.make_shutterstock_csv(ask_categories=lambda n, t: ["Food and drink"])
+    rows = {r["Filename"]: r for r in csv.DictReader(open(path, encoding="utf-8"))}
+    assert rows[os.path.basename(a.path)]["Description"] == title             # the title, as in the list
+    assert rows[os.path.basename(a.path)]["Categories"] == "Food and drink"
+    again = win.make_shutterstock_csv(ask_categories=lambda n, t: ["Food and drink"])
+    assert again != path and os.path.exists(path)                              # an earlier one is never replaced

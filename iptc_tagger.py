@@ -1727,6 +1727,10 @@ class MainWindow(QMainWindow):
                                       QStyle.SP_ArrowRight, primary=True)
         self.btn_stockup_all.setToolTip("When you're done: open every photo in the list in StockUp, to check them for\n"
                                         "each stock site and upload them. Photos with unsaved changes can be saved first.")
+        self.btn_ss_csv = button("Make Shutterstock CSV", lambda: self.make_shutterstock_csv(), QStyle.SP_DialogSaveButton)
+        self.btn_ss_csv.setToolTip("One click: the Shutterstock upload CSV for the checked photos (or all of them),\n"
+                                   "saved next to the photos as shutterstock_<date>.csv, with the titles exactly as in\n"
+                                   "the list. Upload it on Shutterstock's Submit page with the CSV button.")
         self.btn_stockup_checked = button("Send Checked to StockUp", lambda: self.open_in_stockup(self.checked_photos()),
                                           QStyle.SP_ArrowRight)
         self.btn_stockup_checked.setToolTip("Open only the photos you ticked in StockUp.\n"
@@ -2131,6 +2135,7 @@ class MainWindow(QMainWindow):
         bottom.addWidget(self.btn_stop)
         bottom.addWidget(self.btn_force)
         bottom.addSpacing(16)
+        bottom.addWidget(self.btn_ss_csv)
         bottom.addWidget(self.btn_stockup_checked)
         bottom.addWidget(self.btn_stockup_all)
 
@@ -3011,14 +3016,7 @@ class MainWindow(QMainWindow):
             categories = self._ask_shutterstock_categories(len(missing), len(photos))
             if categories is None:
                 return
-        labels = dict(self.type_items())
-        # a RAW's titles are exported for the JPEG Lightroom will make from it (photo.CR3 -> photo.jpg)
-        rows = [{"file": (os.path.splitext(os.path.basename(p.path))[0] + ".jpg") if core.is_raw(p.path)
-                 else os.path.basename(p.path), "folder": os.path.dirname(p.path), "title": p.title,
-                 "description": p.description, "categories": list(p.categories),
-                 "keywords": list(p.keywords), "editorial": self.is_editorial(p),
-                 "type": labels.get(self.effective_type(p), ""), "note": p.note, "taken": p.taken,
-                 "saved": not p.changed} for p in photos]
+        rows = self._csv_rows(photos)
         try:
             n = core.export_csv(path, rows, fmt, categories, self.settings.get("shutterstock_text", "title"))
         except OSError as e:
@@ -3030,6 +3028,60 @@ class MainWindow(QMainWindow):
                             + (f" {unsaved} of them {'has' if unsaved == 1 else 'have'} changes that aren't saved "
                                "into the files yet."
                                if unsaved else ""))
+
+    def _csv_rows(self, photos) -> list[dict]:
+        labels = dict(self.type_items())
+        # a RAW's titles are exported for the JPEG Lightroom will make from it (photo.CR3 -> photo.jpg)
+        return [{"file": (os.path.splitext(os.path.basename(p.path))[0] + ".jpg") if core.is_raw(p.path)
+                 else os.path.basename(p.path), "folder": os.path.dirname(p.path), "title": p.title,
+                 "description": p.description, "categories": list(p.categories),
+                 "keywords": list(p.keywords), "editorial": self.is_editorial(p),
+                 "type": labels.get(self.effective_type(p), ""), "note": p.note, "taken": p.taken,
+                 "saved": not p.changed} for p in photos]
+
+    def make_shutterstock_csv(self, photos=None, ask_categories=None) -> str:
+        """One click: the Shutterstock upload CSV for the checked photos (or all of them), saved next to the
+        photos as shutterstock_<date>.csv. Returns its path ('' if nothing was made)."""
+        if photos is None:
+            photos = self.checked_photos() or list(self.photos)
+        photos = [p for p in photos if not p.busy and (p.title.strip() or p.keywords)]
+        if not photos:
+            self.status.setText("No photos with a title or keywords to put in a Shutterstock CSV yet.")
+            return ""
+        categories = []
+        missing = [p for p in photos if not p.categories]
+        if missing:
+            categories = (ask_categories or self._ask_shutterstock_categories)(len(missing), len(photos))
+            if categories is None:
+                return ""
+        folder = os.path.dirname(photos[0].path)
+        base = os.path.splitext(core.csv_file_name("shutterstock"))[0]
+        path, n = os.path.join(folder, base + ".csv"), 2
+        while os.path.exists(path):                      # never replace an earlier one
+            path, n = os.path.join(folder, f"{base} ({n}).csv"), n + 1
+        try:
+            count = core.export_csv(path, self._csv_rows(photos), "shutterstock", categories,
+                                    self.settings.get("shutterstock_text", "title"))
+        except OSError as e:
+            QMessageBox.warning(self, "Shutterstock CSV", f"The CSV couldn't be saved:\n{e}")
+            return ""
+        what = "titles" if self.settings.get("shutterstock_text", "title") != "description" else "descriptions"
+        self.status.setText(f"Saved {os.path.basename(path)} with {count} photo{'s' if count != 1 else ''} in "
+                            f"{folder}. On Shutterstock's Submit page, click CSV and choose it.")
+        core.debug(f"Shutterstock CSV: {count} photo(s) -> {path}")
+        if not os.environ.get("IPTC_TAGGER_OFFLINE"):
+            box = QMessageBox(QMessageBox.Information, "Shutterstock CSV",
+                              f"Saved {os.path.basename(path)} with {count} photo{'s' if count != 1 else ''}, "
+                              f"using their {what} exactly as in the list, in:\n{folder}\n\n"
+                              "Upload the photos to Shutterstock first. Then, on the Submit page, click CSV and "
+                              "choose this file: it sets the titles, keywords, categories and editorial.",
+                              parent=self)
+            show = box.addButton("Show in Folder", QMessageBox.ActionRole)
+            box.addButton(QMessageBox.Ok)
+            box.exec()
+            if box.clickedButton() is show:
+                QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
+        return path
 
     def _ask_shutterstock_categories(self, count: int, total: int | None = None) -> list[str] | None:
         """Shutterstock rejects an upload CSV without categories: ask for 1 or 2 (remembered for next time).
@@ -4384,6 +4436,9 @@ class MainWindow(QMainWindow):
         sendable = lambda ps: [p for p in ps if not p.busy and p.status != "reading"]
         n_all, n_checked = len(sendable(self.photos)), len(sendable(self.checked_photos()))
         self.btn_stockup_all.setEnabled(n_all > 0)
+        n_csv = n_checked or n_all
+        self.btn_ss_csv.setEnabled(n_csv > 0)
+        self.btn_ss_csv.setText(f"Make Shutterstock CSV ({n_csv})" if n_csv else "Make Shutterstock CSV")
         self.btn_stockup_all.setText(f"Send All {n_all} to StockUp" if n_all else "Send All to StockUp")
         self.btn_stockup_checked.setEnabled(n_checked > 0)
         self.btn_stockup_checked.setText(f"Send {n_checked} Checked to StockUp" if n_checked else

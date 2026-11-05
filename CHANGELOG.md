@@ -1,5 +1,10 @@
 # What's new
 
+## 2026.11.05.3
+
+- **Make Shutterstock CSV:** a one-click button at the bottom right, next to the StockUp buttons. It makes the Shutterstock upload CSV for the checked photos (or all of them when none are checked) and saves it next to the photos as *shutterstock_<date>.csv*, never replacing an earlier one. It uses the titles exactly as you see them in the list. Upload the photos to Shutterstock, then on the Submit page click **CSV** and choose the file: it sets the titles, keywords, categories and editorial. (**Export CSV…** still makes the Adobe Stock CSV and the full spreadsheet.)
+- **StockUp 1.8.1** sends Shutterstock your title too, so the titles are right whichever CSV you upload.
+
 ## 2026.11.05.2
 
 - **Fix: Send to StockUp opens your newest StockUp:** with more than one copy of StockUp on the computer (an old one and a newer download such as *StockUp-Windows (1)*), the app could open the old one, because it went by the folder name, and a StockUp once chosen in Settings was always used even after you got a newer one. It now finds every copy (the usual folders, OneDrive and Downloads, and the one in Settings) and opens the newest, never StockUp's own update backup. **Settings → Saving → StockUp** shows which one it opens, and the status line says where it opened it from.
