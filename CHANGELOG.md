@@ -1,5 +1,9 @@
 # What's new
 
+## 2026.11.05.2
+
+- **Fix: Send to StockUp opens your newest StockUp:** with more than one copy of StockUp on the computer (an old one and a newer download such as *StockUp-Windows (1)*), the app could open the old one, because it went by the folder name, and a StockUp once chosen in Settings was always used even after you got a newer one. It now finds every copy (the usual folders, OneDrive and Downloads, and the one in Settings) and opens the newest, never StockUp's own update backup. **Settings → Saving → StockUp** shows which one it opens, and the status line says where it opened it from.
+
 ## 2026.11.05.1
 
 - **Fix: Shutterstock gets your title:** the Shutterstock CSV put a photo's description (the longer, sentence-style caption) in Shutterstock's one text column whenever the photo had one, so after uploading the CSV Shutterstock showed *…: A colorful display of Gerber Graduates Puffs cereal snacks is arranged on a grocery store shelf…* instead of the title you saw in the list. That column, called *Description* in the CSV, is what Shutterstock shows as the photo's title, so it now gets the title. To send the description instead, choose it in **Settings → Stock sites → Shutterstock gets**. The Shutterstock checks (200 characters, at least 5 words, special characters) now look at whichever one is sent.

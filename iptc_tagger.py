@@ -557,14 +557,26 @@ class SettingsDialog(QDialog):
         found_su = core.find_stockup("")
         self.stockup.setPlaceholderText(found_su or "not found: choose it, or download it")
         self.stockup.setToolTip("StockUp checks your saved photos against each stock site's rules and uploads them.\n"
-                                "Leave blank to find it by itself (Applications on a Mac; on Windows, the usual\n"
-                                "folders and Downloads). StockUp.exe, StockUp.app or stockup.py all work.")
+                                "Leave blank to find it by itself (on Windows: the usual folders, OneDrive and Downloads).\n"
+                                "If there's more than one copy, the newest is always opened, even if an older one is\n"
+                                "chosen here. StockUp.exe or stockup.py both work.")
         su_browse = QPushButton("Browse…")
         su_browse.clicked.connect(lambda *_: self._browse_stockup())
         su_row = QHBoxLayout()
         su_row.addWidget(self.stockup, 1)
         su_row.addWidget(su_browse)
         f_save.addRow("StockUp", su_row)
+        self.stockup_using = QLabel()
+        self.stockup_using.setStyleSheet(f"color:{GREY}")
+        self.stockup_using.setWordWrap(True)
+        self.stockup_using.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        show_using = lambda *_: self.stockup_using.setText(
+            (lambda u, n: f"Opens: {u}" + (f"  (the newest of {n} copies found)" if n > 1 else "") if u
+             else "No StockUp found yet.")(core.find_stockup(self.stockup.text().strip()),
+                                           len(core.stockup_candidates(self.stockup.text().strip()))))
+        self.stockup.editingFinished.connect(show_using)
+        show_using()
+        f_save.addRow("", self.stockup_using)
         su_hint = QLabel(f"<a href='{core.STOCKUP_DOWNLOAD}'>Get StockUp</a> (free): it uploads your saved photos "
                          "to Shutterstock, Adobe Stock and other sites.")
         su_hint.setOpenExternalLinks(True)
@@ -712,6 +724,7 @@ class SettingsDialog(QDialog):
         path, _ = QFileDialog.getOpenFileName(self, "Choose StockUp", "", filt + ";;All files (*)")
         if path:
             self.stockup.setText(path)
+            self.stockup.editingFinished.emit()
 
     def _browse(self):
         path, _ = QFileDialog.getOpenFileName(self, "Choose ExifTool")
@@ -2458,7 +2471,7 @@ class MainWindow(QMainWindow):
         n = len(photos)
         folders = len({os.path.dirname(p.path) for p in photos})
         self.status.setText(
-            f"Opening {n} photo{'s' if n != 1 else ''} in StockUp"
+            f"Opening {n} photo{'s' if n != 1 else ''} in StockUp ({os.path.dirname(app_path) or app_path})"
             + (f" ({note})" if note else
                " (from several folders, so StockUp copies them into a new batch)" if folders > 1 else "")
             + "." + (f" {failed} couldn't be saved and weren't sent: see the Status column." if failed else ""))

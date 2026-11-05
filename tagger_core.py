@@ -39,7 +39,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.11.05.1"
+APP_VERSION = "2026.11.05.2"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 # camera RAW files: titles and keywords go into the Lightroom sidecar next to them (photo.xmp), never the RAW.
 # DNG is left out: Lightroom ignores sidecars for DNG and keeps its metadata inside the file itself.
@@ -1360,30 +1360,65 @@ STOCKUP_DOWNLOAD = "https://github.com/kefirman9000/stockup/releases/latest"
 WINDOWS_ARG_LIMIT = 30000   # Windows can't start a program with a longer command line (32,767 characters)
 
 
-def find_stockup(custom: str = "") -> str | None:
-    """Where StockUp is: the one chosen in Settings, else the usual places (StockUp.app on a Mac;
-    on Windows it's a folder you unzip anywhere, so the usual folders and Downloads are searched)."""
+def _usable_stockup(c: str) -> bool:
+    if not c:
+        return False
+    low = c.replace("\\", "/").lower()
+    if "/stockup-update/" in low or "/previous/" in low:    # StockUp's own update backup: never the one to use
+        return False
+    if c.endswith(".app"):
+        return os.path.isdir(c)
+    return os.path.isfile(c) and (c.lower().endswith((".exe", ".py")) or os.access(c, os.X_OK))
+
+
+def _built_at(c: str) -> float:
+    """When this copy of StockUp was made (the program file's date: unzipping a download keeps it)."""
+    exe = os.path.join(c, "Contents", "MacOS", "StockUp") if c.endswith(".app") else c
+    try:
+        return os.path.getmtime(exe if os.path.exists(exe) else c)
+    except OSError:
+        return 0.0
+
+
+def stockup_candidates(custom: str = "") -> list[str]:
+    """Every copy of StockUp found: the one chosen in Settings, and the usual places (StockUp.app on a Mac; on
+    Windows it's a folder you unzip anywhere, so the usual folders, OneDrive and Downloads are searched)."""
     import glob
     home = os.path.expanduser("~")
     cands = [custom] if custom else []
     if sys.platform == "darwin":
         cands += ["/Applications/StockUp.app", os.path.join(home, "Applications", "StockUp.app")]
     elif os.name == "nt":
+        one = os.environ.get("OneDrive", "")
         roots = [os.environ.get("LOCALAPPDATA", ""), os.environ.get("ProgramFiles", ""),
                  os.path.join(home, "Desktop"), os.path.join(home, "Documents"), os.path.join(home, "Downloads"),
+                 os.path.join(one, "Desktop") if one else "", os.path.join(one, "Documents") if one else "",
                  os.path.dirname(program_root())]                          # next to IPTC Tagger's own folder
-        for r in filter(None, roots):
+        for r in dict.fromkeys(filter(None, roots)):
             for pat in ("StockUp*.exe", "StockUp*/StockUp.exe", "StockUp*/StockUp*/StockUp.exe",
                         "Programs/StockUp*/StockUp.exe"):
-                cands += sorted(glob.glob(os.path.join(r, pat)), reverse=True)   # newest version first
+                cands += glob.glob(os.path.join(r, pat))
+    out, seen = [], set()
     for c in cands:
-        if not c:
-            continue
-        if c.endswith(".app") and os.path.isdir(c):
-            return c
-        if os.path.isfile(c) and (c.lower().endswith((".exe", ".py")) or os.access(c, os.X_OK)):
-            return c
-    return None
+        key = os.path.normcase(os.path.abspath(c)) if c else ""
+        if key and key not in seen and _usable_stockup(c):
+            seen.add(key)
+            out.append(c)
+    return out
+
+
+def find_stockup(custom: str = "") -> str | None:
+    """The StockUp to open: the newest copy found (by when it was built), so a newer download or update is
+    used even when an older copy is still around or was chosen in Settings before. (A folder name like
+    "StockUp-Windows (1)" says nothing about which is newer.)"""
+    cands = stockup_candidates(custom)
+    if not cands:
+        return None
+    best = max(cands, key=lambda c: (_built_at(c), c == custom))
+    if len(cands) > 1:
+        debug("StockUp copies found: " + "; ".join(f"{c} ({time.strftime('%Y-%m-%d %H:%M', time.localtime(_built_at(c)))})"
+                                                  for c in cands) + f" -> using {best}")
+    return best
 
 
 def _python_for_script() -> list[str] | None:

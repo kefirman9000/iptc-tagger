@@ -61,3 +61,43 @@ def test_shutterstock_checks_look_at_what_it_gets():
     out = core.site_problems(long_title.strip(), ["k"] * 10, ["shutterstock"], "A short caption that fits fine here.",
                              ss_text="description")
     assert out == []
+
+
+def _fake_stockup(path, when):
+    """A stand-in StockUp.exe whose file date is `when` (like an unzipped download keeps its build date)."""
+    import time as _t
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        f.write("stand-in")
+    stamp = _t.mktime(_t.strptime(when, "%Y-%m-%d"))
+    os.utime(path, (stamp, stamp))
+    return path
+
+
+def test_newest_copy_is_opened_even_if_an_older_one_was_chosen(tmp_path, monkeypatch):
+    old = _fake_stockup(str(tmp_path / "StockUp-Windows" / "StockUp" / "StockUp.exe"), "2026-10-01")
+    new = _fake_stockup(str(tmp_path / "StockUp-Windows (1)" / "StockUp" / "StockUp.exe"), "2026-11-04")
+    monkeypatch.setattr(core, "stockup_candidates", lambda custom="": [old, new])
+    assert core.find_stockup(old) == new
+
+
+def test_stockups_own_update_backup_is_never_used(tmp_path):
+    backup = _fake_stockup(str(tmp_path / "StockUp-update" / "previous" / "StockUp" / "StockUp.exe"), "2026-11-05")
+    assert core.stockup_candidates(backup) == []
+    assert core.find_stockup(backup) is None
+
+
+@pytest.mark.skipif(os.name != "nt", reason="the Windows folders that are searched")
+def test_windows_search_finds_every_copy_and_opens_the_newest(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    for var, sub in (("USERPROFILE", "home"), ("LOCALAPPDATA", "local"), ("ProgramFiles", "programs"),
+                     ("OneDrive", "onedrive")):
+        (tmp_path / sub).mkdir(exist_ok=True)
+        monkeypatch.setenv(var, str(tmp_path / sub))
+    monkeypatch.setattr(core, "program_root", lambda: str(tmp_path / "tagger" / "IPTC Tagger"))
+    old = _fake_stockup(str(home / "Downloads" / "StockUp-Windows" / "StockUp" / "StockUp.exe"), "2026-10-01")
+    new = _fake_stockup(str(home / "Downloads" / "StockUp-Windows (1)" / "StockUp" / "StockUp.exe"), "2026-11-04")
+    on_drive = _fake_stockup(str(tmp_path / "onedrive" / "Desktop" / "StockUp" / "StockUp.exe"), "2026-09-01")
+    found = {os.path.normcase(p) for p in core.stockup_candidates("")}
+    assert {os.path.normcase(p) for p in (old, new, on_drive)} <= found
+    assert os.path.normcase(core.find_stockup(old)) == os.path.normcase(new)   # an old one chosen in Settings
