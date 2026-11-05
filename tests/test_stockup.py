@@ -30,3 +30,34 @@ def test_mac_command_shapes():
     assert cmd == ["open", "-a", "/Applications/StockUp.app", "/p/a.jpg"]
     cmd, _ = core.stockup_command("/Applications/StockUp.app", ["/p/a.jpg"], new_window=True)
     assert cmd[:3] == ["open", "-n", "-a"]
+
+
+TITLE = ("Holly Springs, North Carolina - November 4, 2026: Gerber Puffs Cereal Snacks Variety Pack on Grocery "
+         "Store Shelf, Featuring Banana, Apple Cinnamon, Sweet Potato and Strawberry Flavors")
+CAPTION = ("Holly Springs, North Carolina - November 4, 2026: A colorful display of Gerber Graduates Puffs cereal "
+           "snacks is arranged on a grocery store shelf, showcasing various flavors like banana.")
+
+
+def _shutterstock_csv(tmp_path, **kw):
+    import csv
+    p = tmp_path / "shutterstock.csv"
+    core.export_csv(str(p), [{"file": "a.jpg", "folder": "", "title": TITLE, "description": CAPTION,
+                              "keywords": ["gerber", "puffs"], "categories": ["Food and drink"]}], "shutterstock", **kw)
+    return list(csv.DictReader(open(p, encoding="utf-8")))[0]
+
+
+def test_shutterstock_csv_gets_the_title(tmp_path):
+    assert _shutterstock_csv(tmp_path)["Description"] == TITLE                 # what you see in the list
+
+
+def test_shutterstock_csv_can_get_the_description(tmp_path):
+    assert _shutterstock_csv(tmp_path, ss_text="description")["Description"] == CAPTION
+
+
+def test_shutterstock_checks_look_at_what_it_gets():
+    long_title = "Word " * 45                                                 # 225 characters
+    out = core.site_problems(long_title.strip(), ["k"] * 10, ["shutterstock"], "A short caption that fits fine here.")
+    assert out and "title 224 characters (most 200)" in out[0]
+    out = core.site_problems(long_title.strip(), ["k"] * 10, ["shutterstock"], "A short caption that fits fine here.",
+                             ss_text="description")
+    assert out == []

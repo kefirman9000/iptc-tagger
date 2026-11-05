@@ -194,7 +194,8 @@ FILTERS = [
 ]
 
 
-def photo_matches(ph, key: str, search: str = "", keyword_min: int = 0, sites=(), similar=None) -> bool:
+def photo_matches(ph, key: str, search: str = "", keyword_min: int = 0, sites=(), similar=None,
+                  ss_text: str = "title") -> bool:
     """Does this photo pass the Show filter and the search? The search looks in the file name,
     title and keywords; every word typed must appear somewhere (in any order, any case)."""
     ok = {
@@ -210,7 +211,7 @@ def photo_matches(ph, key: str, search: str = "", keyword_min: int = 0, sites=()
         "unchecked": not ph.checked,
         "no_date": not ph.taken,
         "has_note": bool(ph.note.strip() or ph.avoid.strip()),
-        "site_problems": bool(core.site_problems(ph.title, ph.keywords, sites, ph.description)) if key == "site_problems" else True,
+        "site_problems": bool(core.site_problems(ph.title, ph.keywords, sites, ph.description, ss_text)) if key == "site_problems" else True,
         "similar": ph.path in (similar or ()),
     }.get(key, True)
     if not ok:
@@ -670,6 +671,14 @@ class SettingsDialog(QDialog):
         self.sites_grid = QWidget()
         self.sites_grid.setLayout(sgrid)
         f_sites.addRow("Sites I sell on", self.sites_grid)
+        self.ss_text = QComboBox()
+        self.ss_text.addItem("The title, as you see it in the list", "title")
+        self.ss_text.addItem("The description (the longer caption), when there is one", "description")
+        self.ss_text.setCurrentIndex(max(0, self.ss_text.findData(settings.get("shutterstock_text", "title"))))
+        self.ss_text.setToolTip("Shutterstock has one text field. It's called Description in its upload CSV, but it's\n"
+                                "what the site shows as the photo's title (up to 200 characters). This is what the\n"
+                                "Shutterstock CSV puts there, and what the Shutterstock checks look at.")
+        f_sites.addRow("Shutterstock gets", self.ss_text)
         sync = lambda *_: self.sites_grid.setEnabled(not (self.sites_from_su.isChecked() and bool(from_su)))
         self.sites_from_su.toggled.connect(sync)
         sync()
@@ -864,7 +873,8 @@ class SettingsDialog(QDialog):
                  never_use=self.never_use.toPlainText().strip(), never_use_titles=self.never_titles.isChecked(),
                  stockup_path=self.stockup.text().strip(), stockup_after_save=self.stockup_after.isChecked(),
                  stock_sites=[k for k, cb in self.site_boxes.items() if cb.isChecked()],
-                 stock_sites_from_stockup=self.sites_from_su.isChecked())
+                 stock_sites_from_stockup=self.sites_from_su.isChecked(),
+                 shutterstock_text=self.ss_text.currentData() or "title")
         s["keyword_min"], s["keyword_max"] = core.keyword_range(self.kmin.value(), self.kmax.value())
         return s
 
@@ -2997,7 +3007,7 @@ class MainWindow(QMainWindow):
                  "type": labels.get(self.effective_type(p), ""), "note": p.note, "taken": p.taken,
                  "saved": not p.changed} for p in photos]
         try:
-            n = core.export_csv(path, rows, fmt, categories)
+            n = core.export_csv(path, rows, fmt, categories, self.settings.get("shutterstock_text", "title"))
         except OSError as e:
             QMessageBox.warning(self, "Export CSV", f"The CSV couldn't be saved:\n{e}")
             return
@@ -3415,7 +3425,8 @@ class MainWindow(QMainWindow):
         """What the stock sites you sell on would reject in this photo's title and keywords."""
         if self._sites is None:
             self._sites = core.stock_sites(self.settings)
-        return core.site_problems(ph.title, ph.keywords, self._sites, ph.description)
+        return core.site_problems(ph.title, ph.keywords, self._sites, ph.description,
+                                  self.settings.get("shutterstock_text", "title"))
 
     def status_text(self, ph: Photo) -> tuple[str, str]:
         if ph.busy or ph.status in ("error", "saved", "reading"):
@@ -4281,7 +4292,8 @@ class MainWindow(QMainWindow):
         sites = core.stock_sites(self.settings) if key == "site_problems" else ()
         groups = self.similar_groups() if key == "similar" else []
         similar = {p.path for g in groups for p in g}
-        hidden = {p.path for p in self.photos if not photo_matches(p, key, text, kmin, sites, similar)}
+        ss_text = self.settings.get("shutterstock_text", "title")
+        hidden = {p.path for p in self.photos if not photo_matches(p, key, text, kmin, sites, similar, ss_text)}
         n_redo = sum(len(g) - 1 for g in groups)
         self.btn_redo_similar.setVisible(key == "similar" and n_redo > 0)
         self.btn_redo_similar.setText(f"Redo {n_redo} Similar…")

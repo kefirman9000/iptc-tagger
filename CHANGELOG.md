@@ -1,5 +1,9 @@
 # What's new
 
+## 2026.11.05.1
+
+- **Fix: Shutterstock gets your title:** the Shutterstock CSV put a photo's description (the longer, sentence-style caption) in Shutterstock's one text column whenever the photo had one, so after uploading the CSV Shutterstock showed *…: A colorful display of Gerber Graduates Puffs cereal snacks is arranged on a grocery store shelf…* instead of the title you saw in the list. That column, called *Description* in the CSV, is what Shutterstock shows as the photo's title, so it now gets the title. To send the description instead, choose it in **Settings → Stock sites → Shutterstock gets**. The Shutterstock checks (200 characters, at least 5 words, special characters) now look at whichever one is sent.
+
 ## 2026.11.04.4
 
 - **Stock-site safe symbols:** a new choice in **Settings → Titles & keywords → Symbols**. Shutterstock asks for titles without special characters, so this makes the whole title, description and keywords plain: symbols become words (*Fish & Chips* → *Fish and Chips*, *50%* → *50 percent*), accents become plain letters (*Café* → *Cafe*, *Zürich* → *Zurich*), curly quotes and long dashes become plain ones, and ™, ®, emoji and other special characters are taken out. Unlike the other choices it also covers your own text (text before titles, location, keywords to put first). Choosing it offers to clean the titles already in the list, and right-click → **Clean special characters** does it for any photos. **Show → Breaks a stock site's rules** now also lists photos with special characters for Shutterstock.

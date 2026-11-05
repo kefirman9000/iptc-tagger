@@ -39,7 +39,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.11.04.4"
+APP_VERSION = "2026.11.05.1"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 # camera RAW files: titles and keywords go into the Lightroom sidecar next to them (photo.xmp), never the RAW.
 # DNG is left out: Lightroom ignores sidecars for DNG and keeps its metadata inside the file itself.
@@ -415,6 +415,7 @@ DEFAULT_SETTINGS = {
     "debug_log": False,       # write a detailed log of every AI request to debug_log.txt
     "check_updates": True,    # look for a newer release on GitHub when the app starts
     "avoid_on": False,        # show the per-photo Avoid column and use it
+    "shutterstock_text": "title",  # Shutterstock's one text column gets: title / description
     "stockup_path": "",       # StockUp.app / StockUp.exe / stockup.py ("" = look in the usual places)
     "stockup_after_save": False,  # after Save Metadata, open the saved photos in StockUp
     "detect_style": [],       # "Every Detect" checklist: keys from STYLE_CHOICES
@@ -518,10 +519,12 @@ def csv_file_name(fmt: str, day: str = "") -> str:
     return f"{'metadata' if fmt == 'full' else fmt}_{day}.csv"
 
 
-def export_csv(path: str, rows: list[dict], fmt: str = "shutterstock", categories=()) -> int:
+def export_csv(path: str, rows: list[dict], fmt: str = "shutterstock", categories=(), ss_text: str = "title") -> int:
     """Write the photos to a CSV file. rows: dicts with file, folder, title, description, keywords,
     editorial (bool), and for 'full' also type, note, taken, saved. Returns how many photos were written.
     categories: the 1-2 Shutterstock categories for photos without their own r["categories"].
+    ss_text: what goes in Shutterstock's one text column ("Description", shown on the site as the title):
+    "title" (the default: the title as you see it in the list) or "description" (the longer caption, if any).
     The upload formats match what Shutterstock and Adobe Stock accept: one row per file, the keywords
     comma-separated in one cell. Columns they need that the app doesn't know (categories) are left
     empty to fill in on the site."""
@@ -535,7 +538,8 @@ def export_csv(path: str, rows: list[dict], fmt: str = "shutterstock", categorie
         default = shutterstock_categories(list(categories or []))
         cats = lambda r: ",".join(shutterstock_categories(r.get("categories")) or default)
         head = ["Filename", "Description", "Keywords", "Categories", "Illustration", "Mature Content", "Editorial"]
-        body = [[r["file"], desc(r), ",".join(r["keywords"]), cats(r), "No", "No",
+        ss = (lambda r: single_line(r["title"]) or desc(r)) if ss_text != "description" else desc
+        body = [[r["file"], ss(r), ",".join(r["keywords"]), cats(r), "No", "No",
                  "Yes" if r.get("editorial") else "No"] for r in rows]
         enc = "utf-8"
     elif fmt == "adobe":
@@ -1502,7 +1506,7 @@ def stock_sites(settings: dict) -> list[str]:
     return [k for k in STOCK_SITES if k in chosen]
 
 
-def site_problems(title: str, keywords, sites, description: str = "") -> list[str]:
+def site_problems(title: str, keywords, sites, description: str = "", ss_text: str = "title") -> list[str]:
     """What a stock site would reject or cut in this title and these keywords, one short line each.
     A photo without its own description has its title saved as the description, so then the
     description limits apply to the title."""
@@ -1517,12 +1521,14 @@ def site_problems(title: str, keywords, sites, description: str = "") -> list[st
         if not r:
             continue
         bits = []
+        d = (title or desc) if key == "shutterstock" and ss_text != "description" else desc   # what that site gets
         if r.get("title_max") and len(title) > r["title_max"]:
             bits.append(f"title {len(title)} characters (most {r['title_max']})")
-        if r.get("desc_max") and len(desc) > r["desc_max"]:
-            bits.append(f"description {len(desc)} characters (most {r['desc_max']})")
-        if r.get("desc_min_words") and desc and len(desc.split()) < r["desc_min_words"]:
-            bits.append(f"description under {r['desc_min_words']} words")
+        what = "title" if key == "shutterstock" and ss_text != "description" and title else "description"
+        if r.get("desc_max") and len(d) > r["desc_max"]:
+            bits.append(f"{what} {len(d)} characters (most {r['desc_max']})")
+        if r.get("desc_min_words") and d and len(d.split()) < r["desc_min_words"]:
+            bits.append(f"{what} under {r['desc_min_words']} words")
         if r.get("own_desc") and title and not (description or "").strip():
             bits.append("no description of its own (the title is used)")
         if r.get("kw_min") and n < r["kw_min"]:
@@ -1530,7 +1536,7 @@ def site_problems(title: str, keywords, sites, description: str = "") -> list[st
         if r.get("kw_max") and n > r["kw_max"]:
             bits.append(f"{n} keywords (most {r['kw_max']})")
         if r.get("plain"):
-            odd = special_characters(" ".join([title, desc] + [str(k) for k in keywords or []]))
+            odd = special_characters(" ".join([title, d] + [str(k) for k in keywords or []]))
             if odd:
                 bits.append("special characters " + " ".join(odd[:8]) + (" …" if len(odd) > 8 else ""))
         if bits:
