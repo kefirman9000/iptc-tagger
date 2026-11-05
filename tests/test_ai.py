@@ -117,3 +117,33 @@ def test_stock_site_safe_symbols_in_detect(make_photos):
     r, _ = run(make_photos, answer, symbols="safe")
     assert core.special_characters(r["title"] + " ".join(r["keywords"])) == []
     assert "Fish and Chips" in r["title"] and "fish and chips" in r["keywords"]
+
+
+def test_every_title_step_keeps_the_photo_note(make_photos):
+    """The photo note must reach every request that writes or rewrites the title (the draft, the double-check,
+    'too short, make it fuller', the automatic checks, never-use words), or a later step undoes it."""
+    note = "it's a grey heron, not a crane"
+    seen = []
+
+    def answer(body):
+        text, system = body["messages"][-1]["content"], body["messages"][0]["content"]
+        knows = "not a crane" in text + system
+        bird = "Grey Heron" if knows else "Crane"
+        f = schema_fields(body)
+        if "title" in f:
+            seen.append((text[:40], knows))
+        if text.startswith("Improve the text"):
+            return {"title": f"{bird} Standing in Shallow Water of a Calm Lake with Reeds and Soft Mist"}
+        if "too short" in text:
+            return {"title": f"{bird} Bird with {bird} Feathers Standing in Shallow Water of a Calm Lake and Mist"}
+        if text.startswith("Rewrite this stock photo title without"):
+            return {"title": f"{bird} Standing in a Calm Lake with Reeds and Soft Mist over Water"}
+        if {"title", "keywords"} <= f:
+            return {"title": f"Stunning {bird} Bird", "keywords": [f"k{i}" for i in range(35)]}
+        return {}
+    ai = FakeAI(answer)
+    r = core.identify(make_photos(1)[0], "http://ollama", "model", 30, 40, photo_note=note, opener=ai, revise=True,
+                      expand_short=True, checks=core.DEFAULT_TEXT_CHECKS, never_use=["stunning"])
+    assert len(seen) >= 4, seen                                   # draft, double-check, longer, checks…
+    assert all(knows for _, knows in seen), [s for s in seen if not s[1]]
+    assert "Heron" in r["title"] and "Crane" not in r["title"]

@@ -1,5 +1,9 @@
 # What's new
 
+## 2026.11.05.4
+
+- **Fix: photo notes are kept:** the photo note (and your Instructions) went into the AI's first draft, but two later steps rewrote the title without seeing them: lengthening a title that came out too short, and the new automatic checks. So a note like *it's a heron, not a crane* could be undone and the title end up saying *crane* again. Every step that writes or rewrites a title now gets your photo note, your instructions and the text read from the label, and is told to keep them. This affects Detect and Redo with reasons; Reword / Double-check already had them.
+
 ## 2026.11.05.3
 
 - **Make Shutterstock CSV:** a one-click button at the bottom right, next to the StockUp buttons. It makes the Shutterstock upload CSV for the checked photos (or all of them when none are checked) and saves it next to the photos as *shutterstock_<date>.csv*, never replacing an earlier one. It uses the titles exactly as you see them in the list. Upload the photos to Shutterstock, then on the Submit page click **CSV** and choose the file: it sets the titles, keywords, categories and editorial. (**Export CSV…** still makes the Adobe Stock CSV and the full spreadsheet.)

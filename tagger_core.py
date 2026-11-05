@@ -39,7 +39,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.11.05.3"
+APP_VERSION = "2026.11.05.4"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 # camera RAW files: titles and keywords go into the Lightroom sidecar next to them (photo.xmp), never the RAW.
 # DNG is left out: Lightroom ignores sidecars for DNG and keeps its metadata inside the file itself.
@@ -3623,8 +3623,24 @@ def _as_list(kws) -> list:
     return [k for k in kws if isinstance(k, (str, int, float))] if isinstance(kws, list) else []
 
 
+def rewrite_facts(context: str = "", photo_note: str = "", direction: str = "", copyright_free: bool = False) -> str:
+    """What every later rewrite of a title must keep: your photo note, your instructions (and the text read
+    from the label, which is added to them). Without these a rewrite can undo what the note fixed
+    (a heron turning back into a crane)."""
+    context, photo_note, direction = (context or "").strip(), (photo_note or "").strip(), (direction or "").strip()
+    parts = []
+    if photo_note:
+        parts.append("About this photo (true; keep it in the title" + (", in generic words" if copyright_free else "")
+                     + "): " + single_line(photo_note) + ".")
+    if context:
+        parts.append("The photographer's instructions (follow them): " + single_line(context))
+    if direction and direction != context and direction not in context:
+        parts.append("The photographer's directions (follow them): " + single_line(direction))
+    return " ".join(parts)
+
+
 def _fix_text_problems(ask, name, title, desc, checks, limits, symbols, direction, title_caps, direct_titles,
-                       title_never, never_use, style, min_words):
+                       title_never, never_use, style, min_words, facts: str = ""):
     """The automatic checks: if they find problems, ask once (text only) for a fix, and keep it only if it's
     really better. Returns (title, description)."""
     tp, dp = text_problems(title, desc, checks, limits)
@@ -3635,6 +3651,7 @@ def _fix_text_problems(ask, name, title, desc, checks, limits, symbols, directio
               f"Title: {json.dumps(title, ensure_ascii=False)}. "
               + (f"Description: {json.dumps(desc, ensure_ascii=False)}. " if desc else "")
               + "Fix only these problems: " + " ".join(tp + dp)
+              + (" " + facts if facts else "")
               + " Keep everything else that is correct, and keep the meaning. The title stays one line in Title Case, "
               "with no quotation marks and no full stop. "
               + (DIRECT_TITLE_RULE + " " if direct_titles else "")
@@ -3774,6 +3791,7 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
                        "spellings for the brand, product, variety or flavour and parent company in the title and "
                        "keywords, as long as they fit what you see.")
             context = ((context or "").strip() + "\nText on the product or sign: " + read).strip()
+    facts = rewrite_facts(context, photo_note, direction, copyright_free)   # kept by every later rewrite
     # a redo is asked a little more freely, so it doesn't come back with the same words
     draft = ask(prompt, OUTPUT_SCHEMA, "draft", temperature=0.5 if (feedback or "").strip() else 0.2)
     raw_title = str(draft.get("title", "") or "").strip()
@@ -3820,6 +3838,7 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
                   "time of day or light if it is a striking part of the photo. "
                   + ("Don't add a place name; it is added separately. " if (title_location or "").strip() else "")
                   + (COPYRIGHT_FREE_RULES + " " if copyright_free else "")
+                  + (facts + " " if facts else "")
                   + "Title Case, no quotation marks and no full stop at the end. "
                   + (DIRECT_TITLE_RULE + " " if direct_titles else "")
                   + 'Output only JSON: {"title": "..."}')
@@ -3841,7 +3860,7 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
         # quick), so the title isn't left with a hole where the word was; anything left is still cut out
         rewrite = (f"Rewrite this stock photo title without these words or phrases: {', '.join(title_never)}. "
                    f"Title: {json.dumps(title, ensure_ascii=False)}. "
-                   + (f"About the photo: {single_line(photo_note)}. " if (photo_note or "").strip() else "")
+                   + (facts + " " if facts else "")
                    + "Keep its meaning and length, use other words where needed, Title Case, no quotation marks, "
                    'no full stop. Output only JSON: {"title": "..."}')
         try:
@@ -3910,7 +3929,7 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
             desc = ""                                # the title is saved as the description instead
     if checks and title:
         title, desc = _fix_text_problems(ask, name, title, desc, checks, limits, symbols, direction, title_caps,
-                                         direct_titles, title_never, never_use, style, lo)
+                                         direct_titles, title_never, never_use, style, lo, facts)
     debug(f"{name}: DONE in {time.monotonic() - started:.1f} s: {len(keywords)} keywords, revised={revised}, "
           f"title={title!r}")
     result = {"title": title, "keywords": keywords, "description": desc, "categories": cats,
