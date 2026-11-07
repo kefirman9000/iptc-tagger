@@ -3948,6 +3948,28 @@ class MainWindow(QMainWindow):
             return ""
         return ph.location or self.settings.get("title_location", "")
 
+    def _scrub_ai_text(self, ph: Photo, title: str, description: str, keywords):
+        """What goes to the AI and what comes back, without the location and date when they're turned off:
+        with Editorial off, no place (yours or one saved on the file earlier) and no month/year keywords; with
+        the date off too, no year at the ends of the title. Dates in the title always come out (the app adds
+        the date itself). Anything you wrote yourself (instructions, photo note, keywords to put first) stays."""
+        s = self.settings
+        ed = bool(s.get("editorial_on"))
+        hist = s.get("location_history") or []
+        locs = [ph.location, s.get("title_location", "")] + [x for x in hist if isinstance(x, str)]
+        lead = core.expand_lead_keywords(s.get("lead_keywords", ""), self.photo_date(ph))
+        keep = "\n".join([s.get("context", "") or "", s.get("direction", "") or "", ph.note or "", ", ".join(lead)])
+        return core.scrub_place_date(title, description, keywords, locs, [self.photo_date(ph), ph.taken],
+                                     drop_place=not ed, drop_date_keywords=not ed,
+                                     edge_years=not ed and s.get("title_date_pos", "off") == "off", keep_text=keep)
+
+    def _ai_style(self) -> str:
+        """The standing preferences for the AI, plus 'no dates' when neither Editorial nor the date is on."""
+        style = self.style_text()
+        if not self.settings.get("editorial_on") and self.settings.get("title_date_pos", "off") == "off":
+            style = ((style or "").rstrip() + "\n- " + core.NO_DATE_RULE).strip()
+        return style
+
     def editorial_keywords(self, ph: Photo) -> list[str]:
         if not self.settings.get("editorial_on"):
             return []
@@ -4742,6 +4764,8 @@ class MainWindow(QMainWindow):
         ph.ai_started, ph.rewording = 0.0, False
         redo = ph.redo or {}
         old_title, old_keywords = ("", []) if redo else (self.bare_title(ph), list(ph.keywords))
+        if old_title or old_keywords:   # a place or date saved on the file earlier mustn't reach the AI when off
+            old_title, _, old_keywords = self._scrub_ai_text(ph, old_title, "", old_keywords)
         job = Job(ph.path, functools.partial(core.identify, cancel=ph.token,
                                              symbols=self.settings.get("symbols", "convert"),
                                              feedback=redo.get("feedback", ""),
@@ -4755,7 +4779,7 @@ class MainWindow(QMainWindow):
                                              never_use=core.parse_word_list(self.settings.get("never_use", "")),
                                              never_in_title=bool(self.settings.get("never_use_titles", True)),
                                              photo_avoid=ph.avoid if self.settings.get("avoid_on") else "",
-                                             style=self.style_text(),
+                                             style=self._ai_style(),
                                              checks=self.settings.get("text_checks", core.DEFAULT_TEXT_CHECKS),
                                              limits=self.text_limits(ph),
                                              description=bool(self.settings.get("ai_description", True)),
@@ -4886,6 +4910,7 @@ class MainWindow(QMainWindow):
         fixed_set = {k.casefold() for k in fixed}
         editable = [k for k in ph.keywords if k.casefold() not in fixed_set]
         bare_desc = self.bare_title(ph, text=ph.description, with_prefix=False) if ph.description else ""
+        bare, bare_desc, editable = self._scrub_ai_text(ph, self.bare_title(ph), bare_desc, editable)
         dateline = ""
         if args["context_on"] and s.get("editorial_on"):
             d = self.photo_date(ph)
@@ -4896,12 +4921,12 @@ class MainWindow(QMainWindow):
         ph.rewording, ph.ai_started, ph.message = True, 0.0, "Waiting in line…"
         before = (ph.title, ph.description, list(ph.keywords))
         job = Job(ph.path, functools.partial(
-            core.reword, s["ollama_url"], s["model"], self.bare_title(ph), bare_desc, editable, args["fields"],
+            core.reword, s["ollama_url"], s["model"], bare, bare_desc, editable, args["fields"],
             args["options"], args["instruction"], dateline, fixed, kmin, kmax, s.get("context", ""), ph.note,
             s.get("direction", ""), self.effective_type(ph) == core.COPYRIGHT_FREE, s.get("symbols", "convert"),
             core.parse_word_list(s.get("never_use", "")), ph.avoid if s.get("avoid_on") else "",
             cancel=ph.token, name=os.path.basename(ph.path), title_caps=s.get("title_caps", "title"),
-            direct_titles=bool(s.get("direct_titles", True)), style=self.style_text()))
+            direct_titles=bool(s.get("direct_titles", True)), style=self._ai_style()))
         ph.run += 1
         ph.queued = True
         run = ph.run
@@ -4924,6 +4949,9 @@ class MainWindow(QMainWindow):
         ph = self._photo(path)
         if ph:
             ph.busy, ph.rewording = False, False
+            r_title, r_desc, r_kws = self._scrub_ai_text(ph, result["title"], result["description"] or "",
+                                                         result["keywords"])
+            result = dict(result, title=r_title, description=r_desc, keywords=r_kws)
             ph.title = self.compose_title(ph, result["title"]) if result["title"] else ph.title
             if result["description"]:
                 ph.description = self.compose_description(ph, result["description"])
@@ -5035,6 +5063,10 @@ class MainWindow(QMainWindow):
         if ph:
             redo, ph.redo = ph.redo, None
             keep_title = self.keep_titles.isChecked() and ph.title.strip() and not redo   # a redo always replaces it
+            # a place or date the AI still wrote (location / date turned off) comes out
+            r_title, r_desc, r_kws = self._scrub_ai_text(ph, result["title"], result.get("description") or "",
+                                                         result["keywords"])
+            result = dict(result, title=r_title, description=r_desc, keywords=r_kws)
             if not keep_title:
                 # the location is added to the title for you, so a trailing "in <location>" from the AI goes
                 ph.title = self.compose_title(ph, core.drop_trailing_location(result["title"],
@@ -5047,6 +5079,8 @@ class MainWindow(QMainWindow):
             kmax = core.keyword_range(self.settings.get("keyword_min"), self.settings.get("keyword_max"))[1]
             lead = core.expand_lead_keywords(self.settings.get("lead_keywords", ""), self.photo_date(ph))
             existing = ph.keywords if self.keep_kw.isChecked() else []
+            if existing:              # an old place / month-year keyword isn't kept when Editorial is off
+                existing = self._scrub_ai_text(ph, "", "", existing)[2]
             if redo:   # a redo starts clean: only the new suggestions (and your keywords to put first)
                 existing = []
             suggested = result["keywords"]

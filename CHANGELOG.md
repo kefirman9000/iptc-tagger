@@ -1,5 +1,10 @@
 # What's new
 
+## 2026.11.07.1
+
+- **Reword: Make it longer, add what the subject is:** a new Reword option for titles that came out too short. The AI makes the title about 10 to 16 words by adding general background about what it names: what kind of thing it is, what it's made of or used for, its category, or what it's known for. It doesn't invent details about the photo itself, and it never adds a date or the place. The old *Make it fuller* is now *Make it fuller (same details)*: it only rewords what's already there. *Make it shorter* is unchanged.
+- **Fix: location and date stay out when they're off:** with Editorial off, the AI could still pick up a place or a date from text saved on the photo earlier, such as an old title with a dateline or keywords like *durham* or *october 2026*, and put them back into the new title and keywords. Detect and Reword now take the location and the month/year out of what the AI is given, and out of what comes back, including old keywords kept with *Keep existing keywords*. With Editorial and the date both off, the AI is also told not to add any date. A place or date you wrote yourself in your Instructions, a photo note or your keywords to put first is still used.
+
 ## 2026.11.05.4
 
 - **Fix: photo notes are kept:** the photo note (and your Instructions) went into the AI's first draft, but two later steps rewrote the title without seeing them: lengthening a title that came out too short, and the new automatic checks. So a note like *it's a heron, not a crane* could be undone and the title end up saying *crane* again. Every step that writes or rewrites a title now gets your photo note, your instructions and the text read from the label, and is told to keep them. This affects Detect and Redo with reasons; Reword / Double-check already had them.

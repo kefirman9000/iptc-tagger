@@ -39,7 +39,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.11.05.4"
+APP_VERSION = "2026.11.07.1"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 # camera RAW files: titles and keywords go into the Lightroom sidecar next to them (photo.xmp), never the RAW.
 # DNG is left out: Lightroom ignores sidecars for DNG and keeps its metadata inside the file itself.
@@ -2339,6 +2339,110 @@ def editorial_keywords(location: str = "", taken: str = "") -> list[str]:
     return clean_keywords(out)
 
 
+# With Editorial (location) or the date turned off, the AI mustn't see or use them --------------------------
+_MONTH_ALT = "|".join(MONTHS) + "|" + "|".join(m[:3] for m in MONTHS) + "|Sept"
+_DAY = r"\d{1,2}(?:st|nd|rd|th)?"
+_FULL_DATE_RES = [re.compile(p, re.I) for p in (
+    rf"(?:(?:{'|'.join(WEEKDAYS)}),?\s+)?(?:{_MONTH_ALT})\.?\s+{_DAY},?\s+\d{{4}}\b",   # (Monday,) October 26, 2026
+    rf"\b{_DAY}\s+(?:{_MONTH_ALT})\.?,?\s+\d{{4}}\b",                                  # 26 October 2026
+    r"\b\d{4}-\d{2}-\d{2}\b",                                                          # 2026-10-26
+    r"\b\d{1,2}[/.]\d{1,2}[/.]\d{4}\b",                                                # 10/26/2026, 26.10.2026
+    rf"\b(?:{_MONTH_ALT})\.?,?\s+\d{{4}}\b",                                           # October 2026
+)]
+_LEAD_WORDS = r"(?:\s*,?\s+(?:on|in|during|from|taken|dated)\s+)?"
+
+
+def _year_of(dates) -> set[str]:
+    return {m.group(1) for d in dates or () for m in [re.match(r"(\d{4})-\d{2}-\d{2}$", d or "")] if m}
+
+
+def is_date_keyword(keyword: str, years=()) -> bool:
+    """A keyword that is a date: a full date, a month and year ('october 2026'), or one of these years."""
+    k = " ".join(str(keyword or "").split())
+    if not k:
+        return False
+    if k in set(years or ()):
+        return True
+    return any(r.fullmatch(k) for r in _FULL_DATE_RES)
+
+
+def _place_terms(locations) -> set[str]:
+    """Every keyword form of these locations: the whole thing and each part ('durham', 'nc', 'durham nc')."""
+    out = set()
+    for loc in locations or ():
+        parts = [" ".join(p.split()).casefold() for p in str(loc or "").split(",") if p.strip()]
+        if not parts:
+            continue
+        out.update(parts)
+        out.add(" ".join(parts))
+        for p in parts[1:]:
+            out.add(f"{parts[0]} {p}")
+    return {t for t in out if t}
+
+
+def _mentioned(term: str, text: str) -> bool:
+    return bool(term) and re.search(r"(?<!\w)" + re.escape(term) + r"(?!\w)", text or "", re.I) is not None
+
+
+def strip_dates(text: str, years=(), edges: bool = False) -> str:
+    """Take full dates and month-and-year dates out of a title or description (with an 'on' / 'in' before
+    them). edges: also a bare year of the photo at the very start or end ('... - 2026')."""
+    t = text or ""
+    for r in _FULL_DATE_RES:
+        t = re.sub(_LEAD_WORDS + r"[\(\[]?" + r.pattern + r"[\)\]]?", "", t, flags=re.I)
+    if edges:
+        for y in years or ():
+            t = re.sub(r"^\s*" + y + r"\b[\s,;:|–—-]*", "", t)
+            t = re.sub(r"[\s,;:|–—-]*\(?\b" + y + r"\)?\s*(?=\.?$)", "", t)
+    t = re.sub(r"\s{2,}", " ", t)
+    t = re.sub(r"\s+([,.;:])", r"\1", t)
+    return t.strip(" ,;:|–—-") + ("." if (text or "").rstrip().endswith(".") and not t.rstrip().endswith(".") else "")
+
+
+def strip_place(text: str, location: str) -> str:
+    """Take a location out of a title or description: at the start or end (any separator), or as 'in <place>'."""
+    loc = " ".join(str(location or "").split())
+    if not loc or not text:
+        return text
+    dot = text.rstrip().endswith(".")
+    t = strip_title_extras(text.rstrip().rstrip("."), location=loc)
+    t = drop_trailing_location(t, loc)
+    first = loc.split(",")[0].strip()
+    for p in dict.fromkeys([re.escape(loc), re.escape(first) + r"(?:\s*,\s*[^,.]{1,30}){0,2}" if first else ""]):
+        if p:
+            t = re.sub(r"\s*,?\s+(?:in|at|near|from)\s+(?:the\s+)?" + p + r"(?=[\s,.;:!?)]|$)", "", t, flags=re.I)
+    t = t.strip(" ,;:|–—-") or text
+    return t + ("." if dot and not t.endswith(".") else "")
+
+
+def scrub_place_date(title: str, description: str, keywords, locations=(), dates=(), drop_place: bool = True,
+                     drop_date_keywords: bool = True, edge_years: bool = False, keep_text: str = ""):
+    """What the AI is given and what comes back, with the location and/or date taken out (Editorial or the
+    date turned off). Anything the photographer wrote themselves (keep_text: instructions, photo note, keywords
+    to put first) stays. Returns (title, description, keywords)."""
+    years = {y for y in _year_of(dates) if not _mentioned(y, keep_text)}
+    locs = [loc for loc in dict.fromkeys(" ".join(str(x).split()) for x in (locations or ()) if str(x).strip())
+            if not _mentioned(loc.split(",")[0].strip(), keep_text)] if drop_place else []
+    terms = {t for t in _place_terms(locs) if not _mentioned(t, keep_text)}
+    t, d = title or "", description or ""
+    for loc in sorted(locs, key=len, reverse=True):
+        t, d = strip_place(t, loc), strip_place(d, loc)
+    t, d = strip_dates(t, years, edges=edge_years), strip_dates(d, years) if d else d
+    kws = []
+    for k in keywords or ():
+        low = " ".join(str(k).split()).casefold()
+        if drop_place and low in terms:
+            continue
+        if drop_date_keywords and is_date_keyword(low, years) and not _mentioned(low, keep_text):
+            continue
+        kws.append(k)
+    return (t or title or ""), d, kws
+
+
+NO_DATE_RULE = ("Don't put a date, month or year in the title, description or keywords unless the photographer's "
+                "instructions or notes give one.")
+
+
 def place_editorial_keywords(keywords, extra, pos: str = "before", after: int = 0, title: str = "") -> list[str]:
     """Add the Editorial keywords where they're relevant instead of always first: after your keywords to put
     first (the first `after`) and the keywords that name what's in the title, the place; the month and year
@@ -3100,8 +3204,14 @@ REWORD_TEXT_OPTIONS = [   # (key, label, what the AI is told)
      "the rest of the text. Keep everything else exactly as it is. If nothing is wrong, give it back unchanged."),
     ("shorter", "Make it shorter",
      "Make the title noticeably shorter, keeping only the most important details."),
-    ("longer", "Make it fuller",
+    ("longer", "Make it fuller (same details)",
      "Make the title noticeably fuller and more descriptive, using only the details already in the text."),
+    ("expand", "Make it longer: add what the subject is",
+     "The title is too short. Make it noticeably longer and more informative, about 10 to 16 words, by adding "
+     "well-known general background about what it names: what kind of thing it is, what it's made of or used for, "
+     "its category, its origin or what it's popular or known for. Add only facts that are generally true of the "
+     "named subject. Never invent details about this particular photo (colours, numbers, people, actions or a "
+     "setting the text doesn't give), and never add a date or the place where the photo was taken."),
     ("plain", "Plainer words, no marketing language",
      "Use plain, simple, descriptive words. Remove flowery or marketing words such as stunning, breathtaking, "
      "beautiful, amazing or perfect."),
@@ -3151,7 +3261,9 @@ def build_reword_prompt(title: str, description: str, keywords, fields, options=
                    and ({"title", "description"} & set(fields)))]
     what = " and ".join(dict(REWORD_FIELDS)[f].lower() for f in fields)
     lines = [f"Here is the text already written for a stock photo. Improve its {what} as asked below. You can't see "
-             "the photo: work only from this text and the facts given, and never add details that aren't there."]
+             "the photo: work only from this text and the facts given, and never add details that aren't there."
+             + (" (General background about what the text names is fine where asked below; new details about "
+                "this particular photo are not.)" if "expand" in set(options or []) else "")]
     lines += ["", "Current text:", json.dumps({"title": title, "description": description,
                                                 "keywords": list(keywords or [])}, ensure_ascii=False)]
     if (dateline or "").strip():
