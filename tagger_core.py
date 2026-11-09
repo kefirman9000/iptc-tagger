@@ -3604,13 +3604,18 @@ def build_reword_prompt(title: str, description: str, keywords, fields, options=
                         dateline: str = "", fixed_keywords=(), keyword_min: int = 7, keyword_max: int = 50,
                         context: str = "", photo_note: str = "", direction: str = "", copyright_free: bool = False,
                         symbols: str = "keep", never_use=None, photo_avoid: str = "",
-                        direct_titles: bool = True, style: str = "") -> str:
+                        direct_titles: bool = True, style: str = "", title_length: str = "detailed") -> str:
     """The instructions for rewording one photo's text (no image). dateline: the location / date put in front
     of the title, given only as background; the AI must leave it out of what it writes."""
     fields = [f for f, _ in REWORD_FIELDS if f in set(fields or [])]
-    chosen = [text for key, _, text in REWORD_OPTIONS if key in set(options or [])
+    picked = [key for key, _, _ in REWORD_OPTIONS if key in set(options or [])
               and (key.startswith("kw_") and "keywords" in fields or not key.startswith("kw_")
                    and ({"title", "description"} & set(fields)))]
+    chosen = [text for key, _, text in REWORD_OPTIONS if key in picked]
+    if "check" in picked and any(k != "check" and not k.startswith("kw_") for k in picked):
+        # with other changes asked for, "keep everything else exactly" would cancel them out
+        chosen[picked.index("check")] = ("Also fix any real mistakes: spelling, grammar, capitalisation, a wrong or "
+                                         "doubled word, something that contradicts the rest of the text.")
     what = " and ".join(dict(REWORD_FIELDS)[f].lower() for f in fields)
     lines = [f"Here is the text already written for a stock photo. Improve its {what} as asked below. You can't see "
              "the photo: work only from this text and the facts given, and never add details that aren't there."
@@ -3638,7 +3643,12 @@ def build_reword_prompt(title: str, description: str, keywords, fields, options=
         lines += ["", "What to do:", "- " + REWORD_TEXT_OPTIONS[0][2]]
     rules = []
     if "title" in fields:
-        rules.append("Title: one line in Title Case, no quotation marks, no full stop at the end."
+        lo_n, hi_n = reword_title_words(title, picked, title_length)
+        rules.append("Title: one line in Title Case, no quotation marks, no full stop at the end. "
+                     + (f"Make it shorter than now ({len(title.split())} words), at least {lo_n} words."
+                        if "shorter" in picked else
+                        f"It must have {lo_n} to {hi_n} words: never shorter than it is now ({len(title.split())} "
+                        "words)" + (", and noticeably longer" if lo_n > len(title.split()) else "") + ".")
                      + (" " + DIRECT_TITLE_RULE if direct_titles else ""))
     if (style or "").strip():
         rules.append("The photographer's standing preferences, for every photo:\n" + style.strip())
@@ -3667,6 +3677,22 @@ def build_reword_prompt(title: str, description: str, keywords, fields, options=
     return "\n".join(lines)
 
 
+LONGER_OPTIONS = {"longer", "expand", "context", "specific"}
+
+
+def reword_title_words(title: str, options, title_length: str = "detailed") -> tuple[int, int]:
+    """How many words a reworded title should have: (at least, at most). Never fewer than it has now, unless
+    Make it shorter is ticked; a few more when it should be fuller, longer or get the context; and within the
+    title length chosen in Settings (or longer, when the title is already longer than that)."""
+    now = len((title or "").split())
+    lo, hi = title_words(title_length)
+    if "shorter" in set(options or []):
+        return max(4, min(lo, now - 2)), max(4, now - 2)
+    want = now + 3 if LONGER_OPTIONS & set(options or []) else now
+    least = max(lo if LONGER_OPTIONS & set(options or []) else min(lo, now), want)
+    return least, max(hi, least + 4)
+
+
 REWORD_SCHEMA = {
     "type": "object",
     "properties": {"title": {"type": "string"}, "description": {"type": "string"},
@@ -3680,7 +3706,7 @@ def reword(url: str, model: str, title: str, description: str, keywords, fields,
            photo_note: str = "", direction: str = "", copyright_free: bool = False, symbols: str = "keep",
            never_use=None, photo_avoid: str = "", opener=None, cancel: CancelToken | None = None,
            name: str = "", title_caps: str = "title", direct_titles: bool = True, style: str = "",
-           fix_common: bool = True) -> dict:
+           fix_common: bool = True, title_length: str = "detailed") -> dict:
     """Reword / double-check a photo's text with the AI, text only (no image, so it's quick). Only the fields
     asked for change; anything the AI leaves empty keeps its old value. title is the bare title (without the
     location, date or text before titles) and keywords leave out fixed_keywords: the caller puts those back.
@@ -3692,8 +3718,11 @@ def reword(url: str, model: str, title: str, description: str, keywords, fields,
     prompt = build_reword_prompt(title, description, keywords, fields, options, instruction, dateline,
                                  fixed_keywords, room_min, room_max, context, photo_note, direction,
                                  copyright_free, symbols, never_use, photo_avoid, direct_titles=direct_titles,
-                                 style=style)
+                                 style=style, title_length=title_length)
     t0 = time.monotonic()
+    shorter_ok = "shorter" in set(options or [])
+    least = reword_title_words(title, options, title_length)[0] if "title" in fields else 0
+    kept_title = False
     debug(f"{name}: reword: fields={sorted(fields)} options={list(options or [])} instruction={_clip(instruction or '', 120)!r}")
     parsed = {}
     for attempt, temperature in ((1, 0.1 if set(options or []) <= {"check"} and not instruction else 0.3), (2, 0.5)):
@@ -3708,6 +3737,15 @@ def reword(url: str, model: str, title: str, description: str, keywords, fields,
         content = (resp.get("message") or {}).get("content", "") or ""
         parsed = _parse_json(content)
         debug(f"{name}: reword: attempt {attempt}, {time.monotonic() - t0:.1f} s: {_clip(content, 300)}")
+        got_n = len(clean_title(str(parsed.get("title", "") or "")).split())
+        if "title" in fields and not shorter_ok and got_n and got_n < least and attempt == 1 \
+                and resp.get("done_reason") != "length":
+            # small models shorten titles when rewording: say exactly how long it must be, once
+            debug(f"{name}: reword: title came back with {got_n} words, needs at least {least}: asking again")
+            prompt += (f"\n\nYour title had only {got_n} words: {json.dumps(parsed.get('title'), ensure_ascii=False)}. "
+                       f"It must have at least {least} words. Write it again, fuller, keeping every detail of the "
+                       "current title.")
+            continue
         if resp.get("done_reason") != "length" and any(parsed.get(f) for f in fields):
             break
     never = list(never_use or []) + avoid_terms(photo_avoid)
@@ -3717,7 +3755,10 @@ def reword(url: str, model: str, title: str, description: str, keywords, fields,
         t = drop_sizes(tidy_symbols(t, symbols))
         t = style_title(t, direction, title_caps, direct_titles)
         t = drop_never_from_title(t, never) if never else t
-        if len(t.split()) >= 2:
+        if not shorter_ok and len(t.split()) < len(title.split()):
+            kept_title = bool(t)                     # shorter than before, even after asking again: keep yours
+            debug(f"{name}: reword: title still shorter ({len(t.split())} < {len(title.split())} words): kept the old one")
+        elif len(t.split()) >= 2:
             new_title = t
     if "description" in fields:
         d = clean_description(str(parsed.get("description", "") or ""), symbols, never)
@@ -3745,7 +3786,7 @@ def reword(url: str, model: str, title: str, description: str, keywords, fields,
         new_title = fixed["title"] if "title" in fields else new_title
         new_desc = fixed["description"] if "description" in fields else new_desc
         new_kws = fixed["keywords"] if "keywords" in fields else new_kws
-    return {"title": new_title, "description": new_desc, "keywords": new_kws,
+    return {"title": new_title, "description": new_desc, "keywords": new_kws, "kept_title": kept_title,
             "seconds": round(time.monotonic() - t0, 1)}
 
 

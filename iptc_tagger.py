@@ -5163,7 +5163,7 @@ class MainWindow(QMainWindow):
             core.parse_word_list(s.get("never_use", "")), ph.avoid if s.get("avoid_on") else "",
             cancel=ph.token, name=os.path.basename(ph.path), title_caps=s.get("title_caps", "title"),
             direct_titles=bool(s.get("direct_titles", True)), style=self._ai_style(),
-            fix_common=bool(s.get("fix_common", True))))
+            fix_common=bool(s.get("fix_common", True)), title_length=s.get("title_length", "detailed")))
         ph.run += 1
         ph.queued = True
         run = ph.run
@@ -5204,6 +5204,9 @@ class MainWindow(QMainWindow):
             ph.status = "ready" if same and not ph.changed else "suggested"
             ph.message = ("Double-checked: nothing needed changing" if same else
                           "Reworded, not saved yet (the text before is under Earlier suggestions)")
+            if result.get("kept_title"):
+                ph.message += (". Kept your title: the AI's came out shorter. Try Reword → Make it longer, "
+                               "or a larger Text model")
             if not same:
                 self._remember_suggestion(ph, "Reworded")
             self._show(ph)
