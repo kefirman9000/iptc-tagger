@@ -1,5 +1,9 @@
 # What's new
 
+## 2026.11.09.3
+
+- **The AI only sees the photo unless you give it the location:** with Editorial on and **Give to AI** (next to the location, was *AI uses it*) unticked, nothing about the place or date reaches the AI any more. Before, the location box was held back but the title and keywords already saved on the photo still went along (*Cary, North Carolina - November 6, 2026: …*, *cary*, *november 2026*), and so did keywords to put first with *{month} {year}* in them, so the AI picked the place and date up anyway. Now they're taken out of what it's given, and out of what comes back, and the app adds the location and date to the title and the place and date keywords itself after detecting. Tick **Give to AI** to have the AI know where and when, as before. Your own Instructions and photo notes are always given to it.
+
 ## 2026.11.09.2
 
 - **Related stores and brands stay in the keywords:** other stores and brands are only taken out of the **title** and description now, which have to be accurate. A BJ's photo can keep *costco* or *kirkland* as keywords, but its title won't say *Costco*.

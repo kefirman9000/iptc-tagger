@@ -157,3 +157,66 @@ def test_a_brand_named_on_its_own_is_never_touched():
     for t in ("Hormel Chili with Beans on Grocery Shelf", "Kraft Macaroni and Cheese Boxes on Shelf",
               "Stand by the Window at Sunset"):
         assert core.drop_unproven_parents(t, " ") == t
+
+
+# ---------- the location and date: given to the AI only with "Give to AI" ticked
+def _detect_with_stand_in(win, ph, monkeypatch):
+    """Run Detect on one photo with a stand-in for the AI; returns what the AI was given."""
+    from test_window import wait
+    seen = {}
+
+    def fake_identify(path, url, model, kmin, kmax, context="", existing_title="", existing_keywords=None,
+                      direction="", photo_note="", photo_type="", lead_keywords=None, title_prefix="",
+                      date_in_title=False, revise=True, title_location="", copyright_free=False, **kw):
+        seen.update(existing_title=existing_title, existing_keywords=list(existing_keywords or []),
+                    lead_keywords=list(lead_keywords or []), title_location=title_location, style=kw.get("style", ""))
+        return {"title": "Welch's Mixed Fruit Snacks on Store Shelf", "description": "",
+                "keywords": ["welchs", "fruit snacks", "snacks", "candy", "packaged food", "treats", "boxes"],
+                "categories": ["Food and drink"], "seconds": 0.1}
+    monkeypatch.setattr(core, "identify", fake_identify)
+    monkeypatch.setattr(core, "ai_ready", lambda url, opener=None: {"version": "1", "names": [win.settings["model"]]})
+    win.keep_kw.setChecked(True)
+    win.identify_photos([ph])
+    wait(lambda: not ph.busy, what="detect")
+    return seen
+
+
+def _set_editorial(win, location_for_ai, lead=""):
+    """Editorial on, Cary, the date before the title, set the way you would in the window."""
+    from PySide6.QtCore import QDate
+    win.editorial.setChecked(True)
+    win.location.setText("Cary, North Carolina")
+    win.date_pos.setCurrentIndex(win.date_pos.findData("before_title"))
+    win.custom_date_on.setChecked(True)
+    win.custom_date.setDate(QDate(2026, 11, 6))
+    win.loc_ai.setChecked(location_for_ai)
+    win.lead.setText(lead)
+    win._remember_options()
+
+
+def test_location_and_date_stay_away_from_the_ai_unless_given(window, make_photos, monkeypatch):
+    app, win = window
+    add(win, make_photos(1))
+    ph = win.photos[0]
+    _set_editorial(win, False, "myshoot, {month} {year}")
+    # saved on the file earlier: a dateline and place / month keywords
+    ph.title = "Cary, North Carolina - November 6, 2026: Welch's Fruit Snacks on Shelf"
+    ph.keywords = ["welchs", "cary", "north carolina", "november 2026", "2026"]
+    seen = _detect_with_stand_in(win, ph, monkeypatch)
+    given = repr(seen).casefold()
+    for word in ("cary", "north carolina", "november", "2026"):
+        assert word not in given, (word, seen)
+    assert seen["lead_keywords"] == ["myshoot"]                  # your keyword without the date token
+    # and the app adds them itself afterwards
+    assert ph.title.startswith("Cary, North Carolina - November 6, 2026: ")
+    assert {"cary", "north carolina", "november 2026", "myshoot"} <= {k.casefold() for k in ph.keywords}
+
+
+def test_location_and_date_go_to_the_ai_when_given(window, make_photos, monkeypatch):
+    app, win = window
+    add(win, make_photos(1))
+    ph = win.photos[0]
+    _set_editorial(win, True)
+    seen = _detect_with_stand_in(win, ph, monkeypatch)
+    assert seen["title_location"] == "Cary, North Carolina"
+    assert ph.title.startswith("Cary, North Carolina - November 6, 2026: ")
