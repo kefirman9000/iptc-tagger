@@ -1882,11 +1882,13 @@ class MainWindow(QMainWindow):
                                       "In the keywords, the place goes right after the ones that name what's in the photo,\n"
                                       "and the month and year go at the end.")
         self.editorial_pos.currentIndexChanged.connect(lambda *_: self._date_options_changed())
-        self.loc_ai = QCheckBox("AI uses it")
+        self.loc_ai = QCheckBox("Give to AI")
         self.loc_ai.setChecked(bool(self.settings.get("location_for_ai", True)))
-        self.loc_ai.setToolTip("On: the AI is told where the photos were taken and uses the place in the keywords\n"
-                               "(it still leaves it out of its own title, since the location is added there for you).\n"
-                               "Off: the AI isn't told the location. It's still put into the titles.")
+        self.loc_ai.setToolTip("On: the AI is told where and when the photos were taken and uses the place in the\n"
+                               "keywords (it still leaves it out of its own title, since it's added there for you).\n"
+                               "Off: the AI only sees the photo and your notes: no location, no date, and no place or\n"
+                               "date from what's saved on the file. The location, date and their keywords are added\n"
+                               "to the title and keywords after detecting.")
         self.loc_ai.toggled.connect(lambda *_: self._remember_options())
         self.date_pos, self.date_fmt, self.date_sep = QComboBox(), QComboBox(), QComboBox()
         self.loc_sep = QComboBox()
@@ -4065,20 +4067,37 @@ class MainWindow(QMainWindow):
             return ""
         return ph.location or self.settings.get("title_location", "")
 
-    def _scrub_ai_text(self, ph: Photo, title: str, description: str, keywords):
+    def ai_gets_place(self) -> bool:
+        """Does the AI hear the location and date? Only with Editorial on and "Give to AI" ticked. Otherwise it
+        only sees the photo (and your own notes), and the app adds the location and date after detecting."""
+        return bool(self.settings.get("editorial_on")) and bool(self.settings.get("location_for_ai", True))
+
+    def _scrub_ai_text(self, ph: Photo, title: str, description: str, keywords, give: bool | None = None):
         """What goes to the AI and what comes back, without the location and date when they're turned off:
         with Editorial off, no place (yours or one saved on the file earlier) and no month/year keywords; with
         the date off too, no year at the ends of the title. Dates in the title always come out (the app adds
         the date itself). Anything you wrote yourself (instructions, photo note, keywords to put first) stays."""
         s = self.settings
-        ed = bool(s.get("editorial_on"))
+        ed = self.ai_gets_place() if give is None else give     # not given to the AI: none of it goes, either way
         hist = s.get("location_history") or []
         locs = [ph.location, s.get("title_location", "")] + [x for x in hist if isinstance(x, str)]
         lead = core.expand_lead_keywords(s.get("lead_keywords", ""), self.photo_date(ph))
+        if not ed:   # {month} {year} filled in from the photo isn't something you wrote: it doesn't protect a date
+            lead = [k for k in core.parse_keywords_text(s.get("lead_keywords", "")) if "{" not in k]
         keep = "\n".join([s.get("context", "") or "", s.get("direction", "") or "", ph.note or "", ", ".join(lead)])
         return core.scrub_place_date(title, description, keywords, locs, [self.photo_date(ph), ph.taken],
                                      drop_place=not ed, drop_date_keywords=not ed,
-                                     edge_years=not ed and s.get("title_date_pos", "off") == "off", keep_text=keep)
+                                     edge_years=not ed, keep_text=keep)
+
+    def _lead_for_ai(self, ph: Photo) -> list[str]:
+        """Your keywords to put first, as the AI sees them: without the ones holding a date or the place when the
+        AI isn't given those (they're still put first in the keywords afterwards)."""
+        lead = core.expand_lead_keywords(self.settings.get("lead_keywords", ""), self.photo_date(ph))
+        if self.ai_gets_place():
+            return lead
+        raw = core.parse_keywords_text(self.settings.get("lead_keywords", ""))
+        plain = {k.casefold() for k in raw if "{" not in k}
+        return self._scrub_ai_text(ph, "", "", [k for k in lead if k.casefold() in plain])[2]
 
     def _ai_style(self) -> str:
         """The standing preferences for the AI, plus 'no dates' when neither Editorial nor the date is on."""
@@ -4905,11 +4924,11 @@ class MainWindow(QMainWindow):
                   ph.path, url, model, kmin, kmax,
                   context, old_title, old_keywords, direction, ph.note,
                   core.type_description(self.settings, self.effective_type(ph)),
-                  core.expand_lead_keywords(self.settings.get("lead_keywords", ""), self.photo_date(ph)),
+                  self._lead_for_ai(ph),
                   core.expand_title_prefix(self.settings.get("title_prefix", ""), self.photo_date(ph)),
                   self.settings.get("title_date_pos", "off") != "off",
                   bool(self.settings.get("revise", True)),
-                  self.location_for(ph) if self.settings.get("location_for_ai", True) else "",
+                  self.location_for(ph) if self.ai_gets_place() else "",
                   self.effective_type(ph) == core.COPYRIGHT_FREE, cancel=ph.token)
         ph.run += 1
         ph.queued = True
@@ -5028,7 +5047,8 @@ class MainWindow(QMainWindow):
         fixed_set = {k.casefold() for k in fixed}
         editable = [k for k in ph.keywords if k.casefold() not in fixed_set]
         bare_desc = self.bare_title(ph, text=ph.description, with_prefix=False) if ph.description else ""
-        bare, bare_desc, editable = self._scrub_ai_text(ph, self.bare_title(ph), bare_desc, editable)
+        bare, bare_desc, editable = self._scrub_ai_text(ph, self.bare_title(ph), bare_desc, editable,
+                                                        give=bool(args.get("context_on")) and self.ai_gets_place())
         dateline = ""
         if args["context_on"] and s.get("editorial_on"):
             d = self.photo_date(ph)
