@@ -175,3 +175,49 @@ def test_unproven_parent_companies_come_out_of_titles():
         == "Kellogg's Frosted Flakes Cereal Boxes"
     assert core.drop_unproven_parents("Belvita Gingerbread Breakfast Boxes on Shelf, BJ's Wholesale Club Brand",
                                       norm("brand: belVita")) == "Belvita Gingerbread Breakfast Boxes on Shelf"
+
+
+def test_text_steps_go_to_the_text_model(make_photos):
+    sent = []
+
+    def record(body):
+        sent.append((body["model"], bool(body["messages"][-1].get("images"))))
+        return answer(body)
+    ai = FakeAI(record)
+    core.identify(make_photos(1)[0], "http://ollama", "vision-model", 30, 40, opener=ai, revise=True,
+                  context="It's a heron", never_use=["beautiful"], text_model="text-model")
+    assert sent and all(m == "vision-model" for m, img in sent if img)          # the photo: the photo model
+    assert any(m == "text-model" for m, img in sent if not img)                 # text only: the text model
+    assert all(m == "text-model" for m, img in sent if not img)
+    sent.clear()
+    core.identify(make_photos(1)[0], "http://ollama", "vision-model", 30, 40, opener=FakeAI(record), revise=True,
+                  context="It's a heron", never_use=["beautiful"])
+    assert {m for m, _ in sent} == {"vision-model"}                             # no text model: one does all
+
+
+def test_reword_keeps_titles_from_getting_shorter():
+    old = "Hormel Chili with Beans Cans on a Grocery Store Shelf"            # 10 words
+    replies = []
+
+    def ai_answer(body):
+        replies.append(body["messages"][-1]["content"])
+        if len(replies) == 1:
+            return {"title": "Hormel Chili", "description": "", "keywords": []}           # too short
+        return {"title": "Hormel Chili with Beans Cans on a Grocery Store Shelf for Quick Hearty Comfort Food Meals",
+                "description": "", "keywords": []}
+    r = core.reword("http://ollama", "m", old, "", [], ["title"], ["check", "longer"], opener=FakeAI(ai_answer),
+                    fix_common=False)
+    assert len(replies) == 2 and "must have at least" in replies[1]          # asked again, with the word count
+    assert "Keep everything else exactly" not in replies[0]                   # double-check doesn't cancel fuller
+    assert "never shorter than it is now (10 words)" in replies[0]
+    assert len(r["title"].split()) > 10 and not r["kept_title"]
+
+    r = core.reword("http://ollama", "m", old, "", [], ["title"], ["longer"],
+                    opener=FakeAI(lambda b: {"title": "Hormel Chili Cans", "description": "", "keywords": []}),
+                    fix_common=False)
+    assert r["title"] == old and r["kept_title"]                              # still shorter: yours is kept
+
+    r = core.reword("http://ollama", "m", old, "", [], ["title"], ["shorter"],
+                    opener=FakeAI(lambda b: {"title": "Hormel Chili Cans on Shelf", "description": "",
+                                             "keywords": []}), fix_common=False)
+    assert r["title"] == "Hormel Chili Cans on Shelf"                         # asked for shorter: fine

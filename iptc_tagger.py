@@ -141,11 +141,29 @@ def make_preview(path: str) -> QImage:
     return make_image(path, PREVIEW)
 
 
+def fill_text_models(box: QComboBox, names, wanted: str):
+    """The text-model dropdown: "Same as the photo model" first, then every installed model."""
+    box.blockSignals(True)
+    box.clear()
+    box.addItem("Same as photo model", "")
+    for n in names:
+        box.addItem(n, n)
+    if wanted and not any(same_model(wanted, n) for n in names):
+        box.addItem(f"{wanted} (not downloaded)", wanted)
+    box.setCurrentIndex(next((i for i in range(box.count()) if box.itemData(i) and same_model(box.itemData(i), wanted)),
+                             0) if wanted else 0)
+    box.blockSignals(False)
+
+
 def check_ai(url: str) -> dict:
     """Is Ollama running, and which vision models are installed?"""
     version = core.ollama_version(url)
     models = core.list_vision_models(url) if version is not None else []
-    return {"version": version, "models": models}
+    try:
+        every = core.list_models(url) if version is not None else []
+    except (core.ApiError, ValueError):
+        every = list(models)
+    return {"version": version, "models": models, "all": every}
 
 
 OLLAMA_LINKS = (f"<a href='open-ollama:'>Open Ollama</a> if it's installed, or "
@@ -309,6 +327,13 @@ class SettingsDialog(QDialog):
         form = QFormLayout()
         self.model = QComboBox()
         form.addRow("Model to use", self.model)
+        self.text_model = QComboBox()
+        self.text_model.setToolTip(
+            "A second model for the steps that only write text: Reword / Double-check, the automatic checks, and\n"
+            "rewriting a title (to remove words, or the double-check against your notes). The photo model still\n"
+            "does everything that looks at the photo. A larger text-only model often writes better titles.\n"
+            "Both models are kept loaded, so this needs more memory on the graphics card.")
+        form.addRow("Model for text steps", self.text_model)
         ai_lay.addLayout(form)
 
         ai_lay.addWidget(QLabel("Free models you can download with one click:"))
@@ -773,6 +798,8 @@ class SettingsDialog(QDialog):
 
     def _checked(self, _key, info):
         self.installed = list(info["models"])
+        fill_text_models(self.text_model, info.get("all") or self.installed,
+                         self.text_model.currentData() if self.text_model.count() else self.settings.get("text_model", ""))
         wanted = self.model.currentData() or self.settings.get("model") or core.DEFAULT_MODEL
         self.model.clear()
         if info["version"] is None and self.ollama_wait > 1:
@@ -889,6 +916,7 @@ class SettingsDialog(QDialog):
         s = dict(self.settings)
         s.update(ollama_url=self.url.text().strip() or core.DEFAULT_OLLAMA_URL,
                  model=self.model.currentData() or s.get("model") or core.DEFAULT_MODEL,
+                 text_model=(self.text_model.currentData() or "") if self.text_model.count() else s.get("text_model", ""),
                  exiftool_path=self.et.text().strip(),
                  custom_types=self.custom.toPlainText().strip(),
                  xmp2iptc_on_save=self.x2i.isChecked(), xmp2iptc_args=self.x2i_path.text().strip(),
@@ -1760,6 +1788,19 @@ class MainWindow(QMainWindow):
         self.btn_export.setToolTip("Save the titles and keywords as a spreadsheet: Shutterstock or Adobe Stock upload\n"
                                    "format, or every detail. Uses the checked photos, else the selected, else all shown.")
         self.btn_instr = button("Hide Instructions", self.toggle_instructions)
+        self.model_pick, self.text_pick = NoWheelComboBox(), NoWheelComboBox()
+        self.model_pick.setToolTip("The model that looks at the photos (Detect, Redo, descriptions). Only models that "
+                                   "can see images are listed.\nDownload more in Settings.")
+        self.text_pick.setToolTip("The model for the steps that only write text: Reword / Double-check, the automatic\n"
+                                  "checks and title rewrites. \"Same\" = the photo model does everything. A larger "
+                                  "text model often\nwrites better titles; both stay loaded, so it needs more memory.")
+        for box in (self.model_pick, self.text_pick):
+            box.setMinimumContentsLength(17)
+            box.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.model_pick.addItem(self.settings["model"], self.settings["model"])
+        fill_text_models(self.text_pick, [], self.settings.get("text_model", ""))
+        self.model_pick.activated.connect(lambda *_: self._models_picked())
+        self.text_pick.activated.connect(lambda *_: self._models_picked())
         self.btn_settings = button("Settings", self.open_settings, QStyle.SP_FileDialogDetailedView)
         self.btn_updates = button("Check for Updates", self.check_updates_now, QStyle.SP_BrowserReload)
         self.btn_updates.setToolTip(f"You have {core.APP_NAME} {core.APP_VERSION}. Asks GitHub whether a newer "
@@ -1821,7 +1862,14 @@ class MainWindow(QMainWindow):
         self.avoid_on.toggled.connect(lambda *_: (self._remember_options(), self._show_avoid_column()))
         note = QLabel("Tip: to clarify a single photo, double-click its <b>Photo notes</b> cell in the list.")
         note.setStyleSheet(f"color:{GREY}")
-        g.addWidget(about_lbl, 0, 0, 1, 2)
+        head = QHBoxLayout()                          # the help line, and the models on the right
+        head.addWidget(about_lbl, 1)
+        head.addSpacing(12)
+        head.addWidget(QLabel("Photo model:"))
+        head.addWidget(self.model_pick)
+        head.addWidget(QLabel("Text model:"))
+        head.addWidget(self.text_pick)
+        g.addLayout(head, 0, 0, 1, 2)
         g.addWidget(self.context, 1, 0, 1, 2)
         self.lead = QLineEdit(self.settings.get("lead_keywords", ""))
         self.lead.setPlaceholderText("e.g. Tokyo, Japan, Shibuya, {year}, {month} {year}")
@@ -2248,10 +2296,49 @@ class MainWindow(QMainWindow):
             self.ai_banner.show()
             QTimer.singleShot(2000, self._check_ai)
 
+    def text_model(self) -> str:
+        """The model for text-only steps: the one chosen, if it's downloaded; '' = the photo model does them."""
+        tm = self.settings.get("text_model", "") or ""
+        if not tm or same_model(tm, self.settings["model"]):
+            return ""
+        known = (getattr(self, "ai", None) or {}).get("all")
+        if known is not None and known and not any(same_model(tm, n) for n in known):
+            return ""                                 # not downloaded: don't fail, use the photo model
+        return tm
+
+    def _fill_model_picks(self, info):
+        """The model dropdowns on the main window, from what's installed."""
+        model = self.settings["model"]
+        vision = list(info.get("models") or [])
+        self.model_pick.blockSignals(True)
+        self.model_pick.clear()
+        for n in vision:
+            self.model_pick.addItem(n, n)
+        if not any(same_model(model, n) for n in vision):
+            self.model_pick.addItem(model + ("" if info.get("version") is None else " (not downloaded)"), model)
+        self.model_pick.setCurrentIndex(next((i for i in range(self.model_pick.count())
+                                              if same_model(self.model_pick.itemData(i), model)), 0))
+        self.model_pick.blockSignals(False)
+        fill_text_models(self.text_pick, info.get("all") or vision, self.settings.get("text_model", ""))
+
+    def _models_picked(self):
+        model = self.model_pick.currentData() or self.settings["model"]
+        text = self.text_pick.currentData() or ""
+        if (model, text) == (self.settings["model"], self.settings.get("text_model", "")):
+            return
+        self.settings["model"], self.settings["text_model"] = model, text
+        core.save_settings(self.settings)
+        self.models_loaded = False                   # the first photo with a new model may take longer (loading)
+        self.status.setText(f"Using {model} for the photos" + (f" and {text} for the text steps." if text else "."))
+        self._check_ai()
+        if hasattr(self, "model_timer"):
+            self._poll_model()
+
     def _ai_checked(self, _key, info):
         if info["version"] is not None:
             self.ollama_wait = 0
         self.ai = info
+        self._fill_model_picks(info)
         if (info["version"] is not None) != bool(self.model_state.get("running")) and hasattr(self, "model_timer"):
             self._poll_model()                        # Ollama started or stopped: update the light now
         model = self.settings["model"]
@@ -4930,6 +5017,7 @@ class MainWindow(QMainWindow):
                                              description=bool(self.settings.get("ai_description", True)),
                                              fix_common=bool(self.settings.get("fix_common", True)),
                                              concept=bool(self.settings.get("concept", True)),
+                                             text_model=self.text_model(),
                                              tidy=bool(self.settings.get("tidy_keywords", True))),
                   ph.path, url, model, kmin, kmax,
                   context, old_title, old_keywords, direction, ph.note,
@@ -5042,7 +5130,7 @@ class MainWindow(QMainWindow):
 
     def _start_reword(self, targets, args):
         self._begin_batch(len(targets), "Rewording")
-        self.status.setText(f"Rewording with {self.settings['model']} (text only)…")
+        self.status.setText(f"Rewording with {self.text_model() or self.settings['model']} (text only)…")
         for ph in targets:
             if not any(h["title"] == ph.title and h["keywords"] == ph.keywords
                        and h.get("description", "") == ph.description for h in ph.history):
@@ -5069,13 +5157,13 @@ class MainWindow(QMainWindow):
         ph.rewording, ph.ai_started, ph.message = True, 0.0, "Waiting in line…"
         before = (ph.title, ph.description, list(ph.keywords))
         job = Job(ph.path, functools.partial(
-            core.reword, s["ollama_url"], s["model"], bare, bare_desc, editable, args["fields"],
+            core.reword, s["ollama_url"], self.text_model() or s["model"], bare, bare_desc, editable, args["fields"],
             args["options"], args["instruction"], dateline, fixed, kmin, kmax, s.get("context", ""), ph.note,
             s.get("direction", ""), self.effective_type(ph) == core.COPYRIGHT_FREE, s.get("symbols", "convert"),
             core.parse_word_list(s.get("never_use", "")), ph.avoid if s.get("avoid_on") else "",
             cancel=ph.token, name=os.path.basename(ph.path), title_caps=s.get("title_caps", "title"),
             direct_titles=bool(s.get("direct_titles", True)), style=self._ai_style(),
-            fix_common=bool(s.get("fix_common", True))))
+            fix_common=bool(s.get("fix_common", True)), title_length=s.get("title_length", "detailed")))
         ph.run += 1
         ph.queued = True
         run = ph.run
@@ -5116,6 +5204,9 @@ class MainWindow(QMainWindow):
             ph.status = "ready" if same and not ph.changed else "suggested"
             ph.message = ("Double-checked: nothing needed changing" if same else
                           "Reworded, not saved yet (the text before is under Earlier suggestions)")
+            if result.get("kept_title"):
+                ph.message += (". Kept your title: the AI's came out shorter. Try Reword → Make it longer, "
+                               "or a larger Text model")
             if not same:
                 self._remember_suggestion(ph, "Reworded")
             self._show(ph)
