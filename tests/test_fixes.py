@@ -39,12 +39,14 @@ def test_real_keywords_with_numbers_are_kept():
 
 
 # ---------- stores
-def test_another_stores_name_is_taken_out_of_a_bjs_photo():
+def test_another_stores_name_is_taken_out_of_the_title_only():
     r = core.fix_common_problems(
         "BJ's Wholesale Club Interior Featuring Costco Baking Nuts Sweeteners Display", "",
-        ["bjs wholesale club", "costco", "kirkland baking needs", "krogerpay", "walmart", "nuts", "sweeteners"])
+        ["bjs wholesale club", "costco", "kirkland baking needs", "krogerpay", "nuts", "sweeteners"])
     assert "Costco" not in r["title"] and r["title"].startswith("BJ's Wholesale Club Interior")
-    assert r["keywords"] == ["bjs wholesale club", "nuts", "sweeteners"]
+    # related stores and brands are fine as keywords
+    assert r["keywords"] == ["bjs wholesale club", "costco", "kirkland baking needs", "krogerpay", "nuts",
+                             "sweeteners"]
 
 
 def test_a_store_named_in_your_notes_is_never_taken_out():
@@ -133,3 +135,25 @@ def test_check_before_csv_fixes_the_photos_first(window, make_photos):
     assert row["Categories"] == "Food and drink,Objects"
     assert ph.title == "Welch’s Mixed Fruit Snacks on Grocery Shelf"           # the photo in the list is fixed too
     assert any(h["how"] == "Before fixes" for h in ph.history)                  # and the old text can be had back
+
+
+# ---------- parent companies: in a title only when printed on the package or in your notes
+def test_a_guessed_parent_company_comes_out_of_the_title():
+    r = core.fix_common_problems("BelVita Crunchy Gingerbread Breakfast Boxes, Limited Edition Variety by General Mills",
+                                 "", ["belvita", "general mills", "gingerbread"], check_parents=True)
+    assert r["title"] == "BelVita Crunchy Gingerbread Breakfast Boxes, Limited Edition Variety"
+    assert "general mills" in r["keywords"]                     # keywords may keep related brands
+    assert core.drop_unproven_parents("Lays Classic Potato Chips, a PepsiCo Brand, on Store Shelf", " ") \
+        == "Lays Classic Potato Chips on Store Shelf"
+
+
+def test_a_printed_parent_company_stays_in_the_title():
+    r = core.fix_common_problems("Lays Classic Potato Chips, a PepsiCo Brand, on Store Shelf", "", ["lays"],
+                                 label="brand: Lay's; parent company: PepsiCo", check_parents=True)
+    assert r["title"] == "Lays Classic Potato Chips, a PepsiCo Brand, on Store Shelf"
+
+
+def test_a_brand_named_on_its_own_is_never_touched():
+    for t in ("Hormel Chili with Beans on Grocery Shelf", "Kraft Macaroni and Cheese Boxes on Shelf",
+              "Stand by the Window at Sunset"):
+        assert core.drop_unproven_parents(t, " ") == t
