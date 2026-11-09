@@ -39,7 +39,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.11.07.1"
+APP_VERSION = "2026.11.09.1"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 # camera RAW files: titles and keywords go into the Lightroom sidecar next to them (photo.xmp), never the RAW.
 # DNG is left out: Lightroom ignores sidecars for DNG and keeps its metadata inside the file itself.
@@ -236,8 +236,28 @@ def single_line(text: str) -> str:
 _QUOTES = "\"'“”‘’„«»"
 
 
+# The end of a title where the AI's answer ran on: `…Equipment”, “Keywords` (cut off before the colon), or a
+# field name with nothing after it. Everything from the quote on goes.
+_LEAKED_END = re.compile(r"\s*[" + _QUOTES + r"]\s*[,;:]?\s*[" + _QUOTES + r"]?\s*(?:keywords?|tags|description|"
+                         r"caption|title|categories)\b\s*[" + _QUOTES + r"]?\s*[:=]?\s*$", re.I)
+_DOUBLE_QUOTES = "\"“”„«»"
+
+
+def fix_stray_quotes(text: str) -> str:
+    """Take out double quotes that don't pair up (`Real Broth”, Six Boxes` → `Real Broth, Six Boxes`) and the
+    leftover end of an answer that ran on into the title. Quotes that pair up (`“Fresh”`) are kept."""
+    t = _LEAKED_END.sub("", text or "")
+    opens = sum(t.count(q) for q in "“„«")
+    closes = sum(t.count(q) for q in "”»")
+    plain = t.count('"')
+    if opens != closes or plain % 2:
+        t = re.sub(r"\s*[" + _DOUBLE_QUOTES + r"]\s*(?=[,;:])", "", t)          # `Broth”, Six` → `Broth, Six`
+        t = re.sub(r"[" + _DOUBLE_QUOTES + r"]", "", t)
+    return " ".join(t.split())
+
+
 def clean_title(text: str) -> str:
-    t = single_line(text).strip().strip(_QUOTES).strip()
+    t = fix_stray_quotes(single_line(text)).strip().strip(_QUOTES).strip().rstrip(",;:- ")
     return t[:-1] if t.endswith(".") and not t.endswith("..") else t
 
 
@@ -435,6 +455,8 @@ DEFAULT_SETTINGS = {
     "read_label": True,       # read the text on packaging and signs first (one quick extra step per photo)
     "tidy_keywords": True,    # remove filler keywords and put the title's words first
     "ai_description": True,   # also write a separate description (caption): Alamy, Dreamstime, Shutterstock
+    "fix_common": True,       # fix the AI's usual mistakes (stray quotes, other stores, prices and codes as keywords,
+                              # categories that don't fit) after Detect and Reword, and in the Shutterstock CSV
     "shutterstock_categories": [],  # the 1-2 categories put in the Shutterstock upload CSV (last used)
     "reword_fields": ["title", "description", "keywords"],  # Reword / Double-check: what it works on (last used)
     "reword_options": ["check"],    # ... the clean-up options ticked last time (keys from REWORD_OPTIONS)
@@ -539,8 +561,10 @@ def export_csv(path: str, rows: list[dict], fmt: str = "shutterstock", categorie
         cats = lambda r: ",".join(shutterstock_categories(r.get("categories")) or default)
         head = ["Filename", "Description", "Keywords", "Categories", "Illustration", "Mature Content", "Editorial"]
         ss = (lambda r: single_line(r["title"]) or desc(r)) if ss_text != "description" else desc
-        body = [[r["file"], ss(r), ",".join(r["keywords"]), cats(r), "No", "No",
-                 "Yes" if r.get("editorial") else "No"] for r in rows]
+        # Shutterstock asks for no special characters: curly quotes, long dashes and accents are always made
+        # plain here, whatever the Symbols setting
+        body = [[r["file"], plain_text(ss(r)), ",".join(k for k in (plain_text(x) for x in r["keywords"]) if k),
+                 cats(r), "No", "No", "Yes" if r.get("editorial") else "No"] for r in rows]
         enc = "utf-8"
     elif fmt == "adobe":
         head = ["Filename", "Title", "Keywords", "Category", "Releases"]
@@ -2553,6 +2577,245 @@ def shutterstock_categories(value) -> list[str]:
     return out[:2]
 
 
+# ----- common problems in what the AI wrote, fixed without asking it again --------------------------------------
+# Stores and their own brands. A photo taken in one of them shouldn't get another chain's name in its title or
+# keywords (a BJ's photo with "costco", "kirkland" or "krogerpay"), unless that name is really on the label or in
+# your notes.
+STORE_CHAINS = {
+    "walmart": ["walmart", "wal mart", "great value", "equate", "mainstays"],
+    "costco": ["costco", "kirkland"],
+    "bjs": ["bjs", "bj s", "bjs wholesale", "wellsley farms", "berkley jensen"],
+    "sams club": ["sams club", "sam s club", "members mark"],
+    "kroger": ["kroger", "krogerpay", "kroger pay"],
+    "target": ["target store", "up and up", "good and gather"],
+    "aldi": ["aldi"], "lidl": ["lidl"], "publix": ["publix"], "food lion": ["food lion"],
+    "harris teeter": ["harris teeter"], "whole foods": ["whole foods"], "trader joes": ["trader joes", "trader joe s"],
+    "wegmans": ["wegmans"], "safeway": ["safeway"], "meijer": ["meijer"], "heb": ["h e b"],
+    "cvs": ["cvs"], "walgreens": ["walgreens"], "rite aid": ["rite aid"],
+    "home depot": ["home depot", "husky tools", "hdx"], "lowes": ["lowes", "lowe s", "kobalt"],
+    "ace hardware": ["ace hardware", "westlake ace", "clark kensington"], "menards": ["menards"],
+    "true value": ["true value"], "harbor freight": ["harbor freight"], "tractor supply": ["tractor supply"],
+    "sheetz": ["sheetz"], "wawa": ["wawa"],
+}
+HARDWARE_STORES = {"home depot", "lowes", "ace hardware", "menards", "true value", "harbor freight", "tractor supply"}
+
+# Keywords for things that have to be in the title or description to belong in the keywords (the AI adds them to
+# almost every store photo): keyword -> words that show it's really there
+NEEDS_EVIDENCE = {
+    "shopping cart": ["cart"], "shopping carts": ["cart"], "customer service": ["service desk", "customer service"],
+    "supply chain": ["supply chain"], "food distribution": ["distribution"], "clinical trial": ["clinical"],
+    "clinical trial results": ["clinical"], "customer shopping": ["shopper", "customer", "people", "person"],
+    "customer browsing": ["shopper", "customer", "people", "person"], "customers": ["shopper", "customer", "people"],
+    "shoppers": ["shopper", "customer", "people"], "produce section": ["produce"], "bakery section": ["bakery"],
+    "dairy section": ["dairy"], "cold storage": ["refrigerat", "cooler", "freezer"], "teamwork": ["team"],
+    "warehouse": ["warehouse", "wholesale", "club"], "warehouse store": ["warehouse", "wholesale", "club"],
+    "warehouse shelves": ["warehouse", "wholesale", "club"], "warehouse storage": ["warehouse"],
+    "warehouse interior": ["warehouse", "wholesale", "club"], "storefront": ["storefront", "exterior", "facade",
+                                                                           "entrance", "outside"],
+    "machine vision system": ["machine vision"], "industrial automation": ["automation"],
+}
+_PACKAGE_COUNTS = (r"calories|pouches|servings|pancakes|pieces|count|ct|cookies|bars|packets|sticks|tablets|capsules|"
+                   r"caplets|softgels|gummies|wipes|sheets|rolls|loads|cups|pods|bags|grams|mg")
+_JUNK_KEYWORD = [
+    (re.compile(r"^\$?\d+[ .,]\d{2}$|^\$\d|(?:^| )save \$?\d+|\d+ (?:off|percent off)$|^was \d"), "a price"),
+    (re.compile(r"\b(?:date code|best before|best by|use by|lot (?:number|code)|batch code|exp(?:iration)? date|"
+                r"upc|sku|item number|model number)\b"), "a date or product code"),
+    # cs1301, ab12345, 0933 (model names like f150 or a350 are kept)
+    (re.compile(r"\b(?=\w*[a-z])\w*\d{4,}\w*\b|\b0\d{2,}\b|\b[a-z]\d \d{3,}\b|\b[a-z]\d{3} \d+x\b"), "a product code"),
+    (re.compile(r"^\d+ (?:" + _PACKAGE_COUNTS + r")$"), "a number from the package"),
+    (re.compile(r"^\d+ in (?:\d+|minutes?)$|^\d+$"), "a stray number"),
+]
+
+
+def _norm_words(text: str) -> str:
+    """'BJ’s Wholesale-Club' -> ' bjs wholesale club ' (for matching names in any spelling)."""
+    t = plain_text(text or "").casefold().replace("'", "")
+    return " " + " ".join(re.sub(r"[^a-z0-9]+", " ", t).split()) + " "
+
+
+def stores_in(text: str) -> list[str]:
+    """The store chains named in this text, in the order they appear."""
+    t = _norm_words(text)
+    found = []
+    for chain, names in STORE_CHAINS.items():
+        at = [t.find(f" {n} ") for n in names if f" {n} " in t]
+        if at:
+            found.append((min(at), chain))
+    return [c for _, c in sorted(found)]
+
+
+def junk_keyword(keyword: str) -> str:
+    """Why a keyword is no use to a buyer (a price, a date or product code, a number off the package), or ''."""
+    k = _norm_words(keyword).strip()
+    if re.fullmatch(r"(?:(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]* )?(?:19|20)\d\d", k):
+        return ""                                      # a year, or month and year
+    for pattern, why in _JUNK_KEYWORD:
+        if pattern.search(k):
+            return why
+    return ""
+
+
+CATEGORY_MEANINGS = {   # what each Shutterstock category is for, so it isn't picked for the wrong thing
+    "Abstract": "patterns, shapes and colours with no real subject", "Animals/Wildlife": "animals and pets",
+    "Arts": "art, crafts and art supplies", "Backgrounds/Textures": "a surface or texture filling the frame",
+    "Beauty/Fashion": "cosmetics, hair, clothing and style", "Buildings/Landmarks": "buildings, storefronts seen from "
+    "outside, architecture and landmarks (not products on a shelf)", "Business/Finance": "business, money, shops "
+    "and retail", "Celebrities": "famous people who are in the photo", "Education": "school and learning",
+    "Food and drink": "food, drinks and groceries", "Healthcare/Medical": "medicine, health products and care",
+    "Holidays": "Christmas, Halloween, Thanksgiving and other holidays", "Industrial": "industry, tools, machines, "
+    "fuel and building supplies", "Interiors": "the inside of a room or a whole store", "Miscellaneous": "anything "
+    "else", "Nature": "plants, trees, leaves, landscapes and weather", "Objects": "products and things, including "
+    "products on a shelf", "Parks/Outdoor": "parks, gardens and outdoor places", "People": "people who are in the "
+    "photo", "Religion": "religion", "Science": "science and labs", "Signs/Symbols": "signs, logos and symbols",
+    "Sports/Recreation": "sport, fitness and hobbies", "Technology": "electronics and computers",
+    "Transportation": "cars, roads, fuel stations and travel", "Vintage": "old or retro things",
+}
+# A category is only kept when the title, description or top keywords show it fits (the AI often adds People,
+# Celebrities or Parks/Outdoor to a box on a shelf). Not listed = always allowed.
+CATEGORY_EVIDENCE = {
+    "People": ["people", "person", "man", "men", "woman", "women", "child", "children", "kid", "kids", "boy", "girl",
+               "shopper", "shoppers", "customer", "customers", "crowd", "worker", "family", "couple", "portrait"],
+    "Celebrities": ["celebrity", "actor", "actress", "singer", "musician", "athlete", "politician"],
+    "Parks/Outdoor": ["park", "garden", "outdoor", "outdoors", "yard", "lawn", "trail", "beach", "playground",
+                      "patio", "camping", "hiking", "picnic", "street", "outside"],
+    "Sports/Recreation": ["sport", "sports", "fitness", "gym", "workout", "exercise", "protein", "athlete", "game",
+                          "ball", "bike", "bicycle", "fishing", "camping", "hiking", "golf", "running", "toy", "toys"],
+    "Buildings/Landmarks": ["building", "buildings", "storefront", "exterior", "facade", "architecture", "landmark",
+                            "house", "church", "bridge", "tower", "skyline", "entrance", "street"],
+    "Nature": ["nature", "leaf", "leaves", "tree", "trees", "forest", "flower", "flowers", "plant", "plants", "sky",
+               "rain", "snow", "river", "lake", "mountain", "landscape", "autumn", "fall foliage", "garden", "water"],
+    "Healthcare/Medical": ["medicine", "medical", "pharmacy", "health", "treatment", "drug", "hospital", "doctor",
+                           "vitamin", "vitamins", "supplement", "pain", "relief", "first aid", "minoxidil", "regrowth",
+                           "allergy", "cold", "flu", "bandage", "dental", "clinic", "healthcare", "pharmaceutical"],
+    "Signs/Symbols": ["sign", "signs", "signage", "logo", "symbol", "emblem", "billboard", "banner", "label"],
+    "Holidays": ["christmas", "halloween", "thanksgiving", "easter", "valentine", "hanukkah", "holiday", "holidays",
+                 "new year", "fourth of july", "st patrick", "gingerbread", "festive", "candy cane", "santa"],
+    "Interiors": ["interior", "inside", "room", "aisle", "kitchen", "bathroom", "bedroom", "store interior",
+                  "living room", "office", "lobby", "display", "studio"],
+    "Animals/Wildlife": ["animal", "animals", "dog", "cat", "bird", "pet", "pets", "wildlife", "horse", "fish"],
+    "Transportation": ["car", "cars", "vehicle", "truck", "suv", "sedan", "road", "fuel", "gas", "pump", "train",
+                       "bus", "airplane", "plane", "boat", "traffic", "parking", "bicycle", "automobile", "diesel"],
+    "Technology": ["technology", "computer", "phone", "smartphone", "laptop", "electronic", "electronics", "tablet",
+                   "camera", "headphones", "tv", "television", "software", "battery", "charger", "led", "smart"],
+    "Education": ["school", "education", "book", "books", "classroom", "student", "learning", "study"],
+    "Religion": ["church", "temple", "mosque", "religion", "religious", "prayer", "bible", "cross"],
+    "Science": ["science", "laboratory", "lab", "microscope", "experiment", "research"],
+    "Vintage": ["vintage", "retro", "antique", "old fashioned", "classic"],
+    "Abstract": ["abstract", "pattern", "texture"],
+    "Backgrounds/Textures": ["background", "texture", "pattern", "surface"],
+}
+_PRODUCT_WORDS = ["shelf", "shelves", "display", "package", "packaging", "box", "boxes", "can", "cans", "bottle",
+                  "bottles", "jar", "jars", "bag", "bags", "pack", "product", "products", "retail", "carton"]
+
+
+def fit_categories(categories, title: str = "", description: str = "", keywords=()) -> list[str]:
+    """The Shutterstock categories that fit (at most two): ones the text gives no sign of are taken out, and a
+    product photo that's left with none, or with only one, gets Objects."""
+    text = _norm_words(" ".join([title or "", description or "", " ".join(list(keywords or [])[:12])]))
+    # "Interior Exterior Paint" on a can says nothing about a room or a building
+    text = re.sub(r" (?:interior(?: and)? exterior|exterior(?: and)? interior|interior|exterior)"
+                  r"(?= (?:paint|primer|enamel|stain|finish|latex|acrylic|use|protection|sealer|wood|coating)\b)",
+                  " ", text)
+    out = []
+    for c in shutterstock_categories(list(categories or [])):
+        needs = CATEGORY_EVIDENCE.get(c)
+        if needs and not any(f" {w} " in text for w in needs):
+            continue
+        out.append(c)
+    product = any(f" {w} " in text for w in _PRODUCT_WORDS)
+    if product and "Objects" not in out and len(out) < 2:
+        out.append("Objects")
+    if not out:
+        out = ["Miscellaneous"]
+    return out[:2]
+
+
+def fix_common_problems(title: str, description: str, keywords, categories=(), known: str = "",
+                        label: str = "") -> dict:
+    """Fix the mistakes the AI often makes, without asking it again. known: text that is true for sure (your notes,
+    instructions), so nothing in it is ever taken out. label: the text read off the product, which keeps brand and
+    store names but not prices, codes or numbers copied off the package.
+      - the end of an answer run on into the title (`…Shelf”, “Keywords`) and quotes that don't pair up
+      - another store's name or house brand in a photo from a named store (Costco or Kirkland at BJ's)
+      - "grocery" at a hardware store
+      - prices, date and product codes and numbers off the package as keywords (13 79, l2 0933, 150 calories)
+      - "frozen" keywords for canned or boxed food
+      - keywords for things not in the photo that the AI adds to store photos (shopping cart, supply chain)
+      - categories that don't fit (People or Celebrities with nobody in the photo, Parks/Outdoor for a box)
+    Returns {'title', 'description', 'keywords', 'categories', 'fixes': [what was changed, one line each]}."""
+    fixes = []
+    t0, d0 = title or "", description or ""
+    title, description = clean_title(t0), fix_stray_quotes(norm_description(d0))
+    if title != single_line(t0).strip().strip(_QUOTES).strip():
+        fixes.append("took leftover text or a stray quote out of the title")
+    own_n = _norm_words(known)                         # yours: keeps anything
+    known_n = _norm_words(" ".join([known or "", label or ""]))
+    here = stores_in(" ".join([known, title]))        # where the photo was taken: your notes first, then the title
+    store = here[0] if here else ""
+    if store:
+        others = [n for c, names in STORE_CHAINS.items() if c != store for n in names if f" {n} " not in known_n]
+        name_rx = [re.compile(r"(?<![\w])" + r"[\s\-]*".join(r"[’']?".join(map(re.escape, part)) for part in n.split())
+                              + r"(?:[’']s)?(?![\w])", re.I) for n in sorted(others, key=len, reverse=True)]
+
+        def strip_other(text):
+            for rx in name_rx:
+                text = rx.sub("", text)
+            text = re.sub(r"\s+([,.;:])", r"\1", " ".join(text.split()))
+            # a joining word left with nothing after it ("…Featuring" at the end, "with ," in the middle)
+            text = re.sub(r"\b(?:Featuring|with|and|from|by|at|in|of)\s*(?=[,.;:]|$)", "", text, flags=re.I)
+            return " ".join(text.split()).strip(" ,;:-")
+        nt, nd = strip_other(title), strip_other(description)
+        if (nt, nd) != (title, description):
+            fixes.append(f"took another store's name out (the photo is from {store})")
+            title, description = nt, nd
+    if store in HARDWARE_STORES:
+        for a, b in (("Grocery Store Shelf", "Store Shelf"), ("Grocery Shelves", "Store Shelves"),
+                     ("Grocery Shelf", "Store Shelf"), ("Grocery Store", "Store"), ("grocery store", "store"),
+                     ("grocery shelf", "store shelf")):
+            if a in title or a in description:
+                title, description = title.replace(a, b), description.replace(a, b)
+                fixes.append("hardware store, not a grocery store")
+
+    alltext = _norm_words(" ".join([title, description]))
+    kw_text = _norm_words(" ".join(keywords or []))
+    shelf_stable = any(f" {w} " in alltext + kw_text for w in ("can", "cans", "canned", "boxed", "stuffing mix",
+                                                                "baking mix", "jar", "jars", "shelf stable"))
+    frozen_ok = any(f" {w} " in alltext + known_n for w in ("frozen", "freezer", "freezer section", "ice cream"))
+    other_stores = [n for c, names in STORE_CHAINS.items() if c != store for n in names] if store else []
+    kept, dropped = [], []
+    for k in keywords or []:
+        kn = _norm_words(k)
+        why = ""
+        if kn.strip() and f" {kn.strip()} " in own_n:
+            kept.append(k)
+            continue
+        why = junk_keyword(k)
+        if not why and kn.strip() and f" {kn.strip()} " in known_n:
+            kept.append(k)
+            continue
+        if not why and other_stores and any(f" {n} " in kn for n in other_stores) \
+                and not any(f" {n} " in known_n for n in other_stores if f" {n} " in kn):
+            why = "another store"
+        if not why and store in HARDWARE_STORES and " grocery " in kn:
+            why = "grocery at a hardware store"
+        if not why and shelf_stable and not frozen_ok and " frozen " in kn:
+            why = "frozen, for canned or boxed food"
+        if not why:
+            need = NEEDS_EVIDENCE.get(kn.strip())
+            if need is not None and not any(w in alltext + known_n for w in need):
+                why = "not in the photo"
+        if why:
+            dropped.append(k)
+        else:
+            kept.append(k)
+    if dropped:
+        fixes.append("removed keywords: " + ", ".join(dropped))
+    cats = fit_categories(categories, title, description, kept) if categories else []
+    if categories and cats != shutterstock_categories(list(categories)):
+        fixes.append("categories: " + ", ".join(cats))
+    return {"title": title, "description": description, "keywords": kept, "categories": cats, "fixes": fixes}
+
+
 def build_description_prompt(title: str, keywords, context: str = "", photo_note: str = "",
                              direction: str = "", title_location: str = "", copyright_free: bool = False,
                              symbols: str = "keep", never_use=None, photo_avoid: str = "") -> str:
@@ -2581,8 +2844,11 @@ def build_description_prompt(title: str, keywords, context: str = "", photo_note
         lines += ["", "Write words instead of symbols (\"and\" instead of \"&\")."]
     if keywords:
         lines += ["", "Keywords already chosen, for reference only: " + ", ".join(list(keywords)[:20])]
-    lines += ["", "Also choose the one or two Shutterstock categories that fit this photo best, exactly as written in "
-              "this list (the main subject first): " + ", ".join(SHUTTERSTOCK_CATEGORIES) + "."]
+    lines += ["", "Also choose the one or two Shutterstock categories that fit this photo best (the main subject "
+              "first), exactly as written here. Each is followed by what it's for: "
+              + "; ".join(f"{c} ({CATEGORY_MEANINGS[c]})" for c in SHUTTERSTOCK_CATEGORIES) + ". "
+              "A product on a store shelf is Objects or Food and drink, not Buildings/Landmarks or Nature. Only choose "
+              "People or Celebrities when a person is clearly in the photo."]
     if (direction or "").strip() and direction.strip() != (context or "").strip():
         lines += ["", "PHOTOGRAPHER'S DIRECTIONS (follow them where they apply to a description):", direction.strip()]
     lines += ["", 'Output only JSON in exactly this form: {"description": "...", "categories": ["..."]}']
@@ -2984,7 +3250,11 @@ def build_prompt(keyword_min: int, keyword_max: int, context: str = "", existing
         "or near-duplicates (such as singular and plural of the same word), and don't repeat the same word "
         "across many keywords. Cover the subject, what it is known for, its industry or category, setting, "
         "objects, colours, concepts and likely search terms. For a product or brand, include the brand, the "
-        "product line, its variety or flavour and the parent company as keywords.",
+        "product line, its variety or flavour, and the parent company only when it is printed on the package or "
+        "you are sure of it. Never use prices, sale amounts, product or barcode numbers, date or lot codes, or "
+        "numbers copied off the package (such as calories or pieces) as keywords. Don't name a store other than "
+        "the one the photo was taken in, and don't add things that aren't in the photo (a shopping cart, customers, "
+        "a warehouse) or that aren't true for the product (frozen for canned or boxed food).",
         "", COPYRIGHT_FREE_RULES if copyright_free else BRAND_RULES,
     ]
     if (style or "").strip():
@@ -3327,7 +3597,8 @@ def reword(url: str, model: str, title: str, description: str, keywords, fields,
            dateline: str = "", fixed_keywords=(), keyword_min: int = 7, keyword_max: int = 50, context: str = "",
            photo_note: str = "", direction: str = "", copyright_free: bool = False, symbols: str = "keep",
            never_use=None, photo_avoid: str = "", opener=None, cancel: CancelToken | None = None,
-           name: str = "", title_caps: str = "title", direct_titles: bool = True, style: str = "") -> dict:
+           name: str = "", title_caps: str = "title", direct_titles: bool = True, style: str = "",
+           fix_common: bool = True) -> dict:
     """Reword / double-check a photo's text with the AI, text only (no image, so it's quick). Only the fields
     asked for change; anything the AI leaves empty keeps its old value. title is the bare title (without the
     location, date or text before titles) and keywords leave out fixed_keywords: the caller puts those back.
@@ -3383,6 +3654,15 @@ def reword(url: str, model: str, title: str, description: str, keywords, fields,
             new_kws = k
     if (new_title, new_desc, new_kws) == (title, description, list(keywords or [])) and not parsed:
         raise ApiError(EMPTY_REPLY)
+    if fix_common:
+        fixed = fix_common_problems(new_title, new_desc, new_kws, (),
+                                    " ".join([context or "", photo_note or "", direction or "", instruction or "",
+                                              " ".join(fixed_keywords or [])]))
+        if fixed["fixes"]:
+            debug(f"{name}: reword: fixed automatically: " + "; ".join(fixed["fixes"]))
+        new_title = fixed["title"] if "title" in fields else new_title
+        new_desc = fixed["description"] if "description" in fields else new_desc
+        new_kws = fixed["keywords"] if "keywords" in fields else new_kws
     return {"title": new_title, "description": new_desc, "keywords": new_kws,
             "seconds": round(time.monotonic() - t0, 1)}
 
@@ -3802,7 +4082,7 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
              title_length: str = "detailed", expand_short: bool = False,
              read_label: bool = False, tidy: bool = False, never_use=None, never_in_title: bool = True,
              photo_avoid: str = "", description: bool = False, title_caps: str = "title",
-             direct_titles: bool = True, style: str = "", checks=(), limits=None) -> dict:
+             direct_titles: bool = True, style: str = "", checks=(), limits=None, fix_common: bool = True) -> dict:
     """Ask the local vision model for an SEO title and keywords.
     With revise=True and any notes or directions given, a second (text-only) pass checks the draft
     against them. With description=True a description (caption) is also written, once the title is
@@ -3996,6 +4276,10 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
     if tidy:
         keywords = tidy_keywords(keywords, title, protect)
     keywords = keywords[:keyword_max]
+    own_known = " ".join([own_context or "", photo_note or "", direction or "", " ".join(lead_keywords or [])])
+    if fix_common and title:
+        # take the junk out now, so the step below can top the list back up to the minimum
+        keywords = fix_common_problems(title, "", keywords, (), own_known, label=read)["keywords"]
 
     if title and len(keywords) < keyword_min:
         # one follow-up request for more keywords so every photo gets at least the minimum
@@ -4013,6 +4297,8 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
             extra = seo_keywords(extra, keep=list(lead_keywords or []) + keywords, lower=lower, protect=protect)
             if tidy:
                 extra = tidy_keywords(extra, title, protect)
+            if fix_common:
+                extra = fix_common_problems(title, "", extra, (), own_known, label=read)["keywords"]
             keywords += extra[:keyword_max - len(keywords)]
         except Stopped:
             raise
@@ -4042,6 +4328,11 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
     if checks and title:
         title, desc = _fix_text_problems(ask, name, title, desc, checks, limits, symbols, direction, title_caps,
                                          direct_titles, title_never, never_use, style, lo, facts)
+    if fix_common:
+        fixed = fix_common_problems(title, desc, keywords, cats, own_known, label=read)
+        if fixed["fixes"]:
+            debug(f"{name}: fixed automatically: " + "; ".join(fixed["fixes"]))
+        title, desc, keywords, cats = fixed["title"], fixed["description"], fixed["keywords"], fixed["categories"]
     debug(f"{name}: DONE in {time.monotonic() - started:.1f} s: {len(keywords)} keywords, revised={revised}, "
           f"title={title!r}")
     result = {"title": title, "keywords": keywords, "description": desc, "categories": cats,
