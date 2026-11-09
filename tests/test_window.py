@@ -214,3 +214,19 @@ def test_make_shutterstock_csv_button(window, make_photos):
     assert rows[os.path.basename(a.path)]["Categories"] == "Food and drink"
     again = win.make_shutterstock_csv(ask_categories=lambda n, t: ["Food and drink"])
     assert again != path and os.path.exists(path)                              # an earlier one is never replaced
+
+
+def test_model_switch_on_the_main_window(window):
+    app, win = window
+    win._ai_checked(None, {"version": "1", "models": ["llava:7b", "qwen2.5vl:7b"],
+                           "all": ["llava:7b", "qwen2.5vl:7b", "llama3.1:8b"]})
+    assert [win.model_pick.itemData(i) for i in range(win.model_pick.count())][:2] == ["llava:7b", "qwen2.5vl:7b"]
+    assert win.text_pick.itemData(0) == "" and win.text_pick.findData("llama3.1:8b") > 0
+    win.model_pick.setCurrentIndex(win.model_pick.findData("qwen2.5vl:7b"))
+    win.text_pick.setCurrentIndex(win.text_pick.findData("llama3.1:8b"))
+    win._models_picked()
+    assert win.settings["model"] == "qwen2.5vl:7b" and win.settings["text_model"] == "llama3.1:8b"
+    assert core.load_settings()["text_model"] == "llama3.1:8b"                 # remembered
+    assert win.text_model() == "llama3.1:8b"
+    win.ai["all"] = ["llava:7b", "qwen2.5vl:7b"]                                # not downloaded any more
+    assert win.text_model() == ""                                               # the photo model does it

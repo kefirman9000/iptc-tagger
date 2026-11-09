@@ -1,5 +1,10 @@
 # What's new
 
+## 2026.11.09.5
+
+- **Change models from the main window:** **Photo model** and **Text model** dropdowns now sit on the right of the *Instructions for the AI* box, so you can switch models without opening Settings. The photo model list only shows models that can see images.
+- **Two models, each doing what it's best at:** the **Text model** does the steps that only write text: **Reword / Double-check**, the automatic checks (*Fix automatically*), and rewriting a title to take out words or to match your notes. The photo model still does everything that looks at the photo (the title and keywords, reading the label, the description). A larger text-only model, such as *llama3.1:8b* or *qwen2.5:14b*, often writes better-worded titles than a small vision model. Leave it on **Same as photo model** to use one model for everything, as before. Both models stay loaded while you work, so a second model needs more memory on your graphics card. If the text model you chose isn't downloaded, the photo model does those steps instead. It's also in **Settings → Model for text steps**.
+
 ## 2026.11.09.4
 
 - **Titles and descriptions with context, not just what's on the shelf:** instead of *Protein Shakes on Store Shelf*, the AI now ends the title with what the product is for, who buys it or the theme around it: *Protein Shakes on a Store Shelf for Health-Conscious Consumers, Nutrition and Supplementation*, *Canned Beef Stew for Quick Comfort Food Meals and Pantry Stocking*, *Christmas Lights Display for Holiday Decorating and Seasonal Shopping*. The description gets a second sentence about the context and the mood. It stays general and true for that kind of product, never an invented detail about the photo. On to start with: **Settings → Titles & keywords → Add the context to titles and descriptions**. For photos already done, **Reword → Add the context (what it's for, who buys it)**.

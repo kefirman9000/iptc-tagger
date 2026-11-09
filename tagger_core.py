@@ -39,7 +39,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.11.09.4"
+APP_VERSION = "2026.11.09.5"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 # camera RAW files: titles and keywords go into the Lightroom sidecar next to them (photo.xmp), never the RAW.
 # DNG is left out: Lightroom ignores sidecars for DNG and keeps its metadata inside the file itself.
@@ -399,6 +399,8 @@ def config_dir() -> str:
 DEFAULT_SETTINGS = {
     "ollama_url": DEFAULT_OLLAMA_URL,
     "model": DEFAULT_MODEL,
+    "text_model": "",         # a second model for the steps that only write text (Reword, checks, rewrites);
+                              # "" = the photo model does everything
     "keyword_min": DEFAULT_KEYWORD_MIN,
     "keyword_max": DEFAULT_KEYWORD_MAX,
     "exiftool_path": "",
@@ -4163,8 +4165,9 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
              read_label: bool = False, tidy: bool = False, never_use=None, never_in_title: bool = True,
              photo_avoid: str = "", description: bool = False, title_caps: str = "title",
              direct_titles: bool = True, style: str = "", checks=(), limits=None, fix_common: bool = True,
-             concept: bool = False) -> dict:
-    """Ask the local vision model for an SEO title and keywords.
+             concept: bool = False, text_model: str = "") -> dict:
+    """Ask the local vision model for an SEO title and keywords. text_model: another model for the steps that only
+    send text (the double-check, rewrites, checks); the photo model still does everything that looks at the photo.
     With revise=True and any notes or directions given, a second (text-only) pass checks the draft
     against them. With description=True a description (caption) is also written, once the title is
     final. Returns {'title', 'keywords', 'description', 'seconds', 'revised'}."""
@@ -4198,7 +4201,7 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
         if with_image:
             user["images"] = [image_b64]
         return {
-            "model": model, "stream": False, "format": schema,
+            "model": model if with_image or not text_model else text_model, "stream": False, "format": schema,
             "keep_alive": AI_KEEP_ALIVE,                 # stay loaded between photos in a batch
             # num_predict caps the reply: a normal one is ~250 tokens, but now and then a model in JSON mode
             # gets stuck writing endless blank space; the cap ends that in seconds instead of minutes
@@ -4217,7 +4220,8 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
                 raise Stopped(STOPPED)
             t = time.monotonic()
             debug(f"{name}: {step}: request sent (attempt {attempt}, prompt {len(user_text)} chars"
-                  f"{', with image' if kw.get('with_image', True) else ', text only'})")
+                  f"{', with image' if kw.get('with_image', True) else ', text only'}"
+                  f"{' to ' + text_model if text_model and not kw.get('with_image', True) else ''})")
             try:
                 resp = _chat(url, body(user_text, schema, **kw), opener, cancel)
             except Stopped:

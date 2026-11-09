@@ -175,3 +175,21 @@ def test_unproven_parent_companies_come_out_of_titles():
         == "Kellogg's Frosted Flakes Cereal Boxes"
     assert core.drop_unproven_parents("Belvita Gingerbread Breakfast Boxes on Shelf, BJ's Wholesale Club Brand",
                                       norm("brand: belVita")) == "Belvita Gingerbread Breakfast Boxes on Shelf"
+
+
+def test_text_steps_go_to_the_text_model(make_photos):
+    sent = []
+
+    def record(body):
+        sent.append((body["model"], bool(body["messages"][-1].get("images"))))
+        return answer(body)
+    ai = FakeAI(record)
+    core.identify(make_photos(1)[0], "http://ollama", "vision-model", 30, 40, opener=ai, revise=True,
+                  context="It's a heron", never_use=["beautiful"], text_model="text-model")
+    assert sent and all(m == "vision-model" for m, img in sent if img)          # the photo: the photo model
+    assert any(m == "text-model" for m, img in sent if not img)                 # text only: the text model
+    assert all(m == "text-model" for m, img in sent if not img)
+    sent.clear()
+    core.identify(make_photos(1)[0], "http://ollama", "vision-model", 30, 40, opener=FakeAI(record), revise=True,
+                  context="It's a heron", never_use=["beautiful"])
+    assert {m for m, _ in sent} == {"vision-model"}                             # no text model: one does all
