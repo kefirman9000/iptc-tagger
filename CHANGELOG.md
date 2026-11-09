@@ -1,5 +1,10 @@
 # What's new
 
+## 2026.11.09.4
+
+- **Titles and descriptions with context, not just what's on the shelf:** instead of *Protein Shakes on Store Shelf*, the AI now ends the title with what the product is for, who buys it or the theme around it: *Protein Shakes on a Store Shelf for Health-Conscious Consumers, Nutrition and Supplementation*, *Canned Beef Stew for Quick Comfort Food Meals and Pantry Stocking*, *Christmas Lights Display for Holiday Decorating and Seasonal Shopping*. The description gets a second sentence about the context and the mood. It stays general and true for that kind of product, never an invented detail about the photo. On to start with: **Settings → Titles & keywords → Add the context to titles and descriptions**. For photos already done, **Reword → Add the context (what it's for, who buys it)**.
+- **More wrong parent companies caught in titles:** a parent company put in front of another brand (*Campbell's StoveTop Stuffing*, but Stove Top isn't Campbell's) and a store claimed as the brand (*BelVita…, BJ's Wholesale Club Brand*) come out when the label doesn't show them. A brand the label does show (*Kellogg's Frosted Flakes*) stays.
+
 ## 2026.11.09.3
 
 - **The AI only sees the photo unless you give it the location:** with Editorial on and **Give to AI** (next to the location, was *AI uses it*) unticked, nothing about the place or date reaches the AI any more. Before, the location box was held back but the title and keywords already saved on the photo still went along (*Cary, North Carolina - November 6, 2026: …*, *cary*, *november 2026*), and so did keywords to put first with *{month} {year}* in them, so the AI picked the place and date up anyway. Now they're taken out of what it's given, and out of what comes back, and the app adds the location and date to the title and the place and date keywords itself after detecting. Tick **Give to AI** to have the AI know where and when, as before. Your own Instructions and photo notes are always given to it.
