@@ -39,7 +39,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.11.09.1"
+APP_VERSION = "2026.11.09.2"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 # camera RAW files: titles and keywords go into the Lightroom sidecar next to them (photo.xmp), never the RAW.
 # DNG is left out: Lightroom ignores sidecars for DNG and keeps its metadata inside the file itself.
@@ -2655,6 +2655,46 @@ def junk_keyword(keyword: str) -> str:
     return ""
 
 
+# Big parent companies the AI likes to add to titles, often wrongly (BelVita "by General Mills"; it's Mondelez)
+PARENT_COMPANIES = [
+    "General Mills", "Kraft Heinz", "Kraft", "Heinz", "Mondelez", "Mondelez International", "Nestle", "PepsiCo",
+    "Frito-Lay", "Coca-Cola Company", "Unilever", "Procter and Gamble", "Procter & Gamble", "P&G",
+    "Johnson and Johnson", "Johnson & Johnson", "Kenvue", "Kellogg", "Kellogg's", "Kellanova", "WK Kellogg",
+    "Conagra", "Conagra Brands", "Campbell", "Campbell's", "Campbell Soup Company", "Hormel", "Hormel Foods",
+    "Del Monte", "Del Monte Foods", "Mars", "Mars Wrigley", "Hershey", "The Hershey Company", "Ferrero",
+    "J.M. Smucker", "Smucker", "Smucker's", "Post Holdings", "Post Consumer Brands", "Danone", "Keurig Dr Pepper",
+    "Colgate-Palmolive", "Clorox", "SC Johnson", "Reckitt", "Haleon", "Bayer", "Pfizer", "Kimberly-Clark",
+    "Church and Dwight", "Church & Dwight", "Spectrum Brands", "Stanley Black and Decker", "Stanley Black & Decker",
+    "Sherwin-Williams", "RPM International", "PPG", "Newell Brands", "Tyson", "Tyson Foods", "Smithfield",
+    "Hostess Brands", "Flowers Foods", "Grupo Bimbo", "Bimbo Bakeries", "Lactalis", "Molson Coors",
+    "Anheuser-Busch", "AB InBev", "Constellation Brands", "Diageo", "PIM Brands", "B&G Foods", "McCormick",
+    "TreeHouse Foods", "Utz Brands", "Lamb Weston", "Simply Good Foods", "BellRing Brands", "Hain Celestial",
+    "Edgewell", "Energizer Holdings", "Henkel", "L'Oreal", "Estee Lauder", "Coty", "Beiersdorf", "Mattel", "Hasbro",
+]
+
+
+def drop_unproven_parents(text: str, proof_n: str) -> str:
+    """Take a parent company out of a title or description unless it's in proof_n (the normalised label text and
+    notes): ", a General Mills Brand", "by General Mills", "from Kraft Heinz", "(General Mills)". A brand named on
+    its own ("Hormel Chili with Beans") is never touched: only a claim about who owns or makes it."""
+    if not text:
+        return text
+    names = sorted(PARENT_COMPANIES, key=len, reverse=True)
+    any_name = "|".join(r"\s+".join(map(re.escape, n.split())) for n in names)
+    claims = [  # (pattern, the group with the company)
+        r",?\s*(?:an?|the)\s+(?P<p>[A-Z][\w&'’.\- ]{1,40}?)\s+(?:Brand|Product|Company)\b(?:\s*,(?=\s))?",
+        r",?\s*(?:made|owned|produced|manufactured|distributed)?\s*(?:by|from)\s+(?P<p>" + any_name + r")\b",
+        r"\s*\((?P<p>" + any_name + r")\)",
+    ]
+    for rx in claims:
+        def drop(m):
+            p = m.group("p")
+            return m.group(0) if _norm_words(p) in proof_n or _norm_words(p).strip() == "" else ""
+        text = re.sub(rx, drop, text, flags=re.I if "an?" not in rx else 0)
+    text = re.sub(r"\s+([,.;:])", r"\1", " ".join(text.split()))
+    return text.strip(" ,;:-")
+
+
 CATEGORY_MEANINGS = {   # what each Shutterstock category is for, so it isn't picked for the wrong thing
     "Abstract": "patterns, shapes and colours with no real subject", "Animals/Wildlife": "animals and pets",
     "Arts": "art, crafts and art supplies", "Backgrounds/Textures": "a surface or texture filling the frame",
@@ -2731,12 +2771,15 @@ def fit_categories(categories, title: str = "", description: str = "", keywords=
 
 
 def fix_common_problems(title: str, description: str, keywords, categories=(), known: str = "",
-                        label: str = "") -> dict:
+                        label: str = "", check_parents: bool = False) -> dict:
     """Fix the mistakes the AI often makes, without asking it again. known: text that is true for sure (your notes,
     instructions), so nothing in it is ever taken out. label: the text read off the product, which keeps brand and
     store names but not prices, codes or numbers copied off the package.
       - the end of an answer run on into the title (`…Shelf”, “Keywords`) and quotes that don't pair up
-      - another store's name or house brand in a photo from a named store (Costco or Kirkland at BJ's)
+      - another store's name or house brand in the title of a photo from a named store (Costco at BJ's);
+        related stores and brands are fine in the keywords
+      - with check_parents: a parent company in the title (", a General Mills Brand", "by General Mills") that
+        isn't printed on the package (label) or in your notes
       - "grocery" at a hardware store
       - prices, date and product codes and numbers off the package as keywords (13 79, l2 0933, 150 calories)
       - "frozen" keywords for canned or boxed food
@@ -2768,6 +2811,11 @@ def fix_common_problems(title: str, description: str, keywords, categories=(), k
         if (nt, nd) != (title, description):
             fixes.append(f"took another store's name out (the photo is from {store})")
             title, description = nt, nd
+    if check_parents:
+        nt, nd = drop_unproven_parents(title, known_n), drop_unproven_parents(description, known_n)
+        if (nt, nd) != (title, description):
+            fixes.append("took a parent company out of the title (it isn't printed on the package)")
+            title, description = nt, nd
     if store in HARDWARE_STORES:
         for a, b in (("Grocery Store Shelf", "Store Shelf"), ("Grocery Shelves", "Store Shelves"),
                      ("Grocery Shelf", "Store Shelf"), ("Grocery Store", "Store"), ("grocery store", "store"),
@@ -2781,7 +2829,6 @@ def fix_common_problems(title: str, description: str, keywords, categories=(), k
     shelf_stable = any(f" {w} " in alltext + kw_text for w in ("can", "cans", "canned", "boxed", "stuffing mix",
                                                                 "baking mix", "jar", "jars", "shelf stable"))
     frozen_ok = any(f" {w} " in alltext + known_n for w in ("frozen", "freezer", "freezer section", "ice cream"))
-    other_stores = [n for c, names in STORE_CHAINS.items() if c != store for n in names] if store else []
     kept, dropped = [], []
     for k in keywords or []:
         kn = _norm_words(k)
@@ -2793,9 +2840,6 @@ def fix_common_problems(title: str, description: str, keywords, categories=(), k
         if not why and kn.strip() and f" {kn.strip()} " in known_n:
             kept.append(k)
             continue
-        if not why and other_stores and any(f" {n} " in kn for n in other_stores) \
-                and not any(f" {n} " in known_n for n in other_stores if f" {n} " in kn):
-            why = "another store"
         if not why and store in HARDWARE_STORES and " grocery " in kn:
             why = "grocery at a hardware store"
         if not why and shelf_stable and not frozen_ok and " frozen " in kn:
@@ -2893,8 +2937,8 @@ LABEL_SCHEMA = {
 LABEL_PROMPT = (
     "Look closely at this photo and copy the text you can actually read on the main product, packaging, sign, "
     "screen or storefront. Don't describe the photo. Fill in: brand (the brand or store name), product (the exact "
-    "product name or product line), variety (flavour, scent, style, colour or edition printed on it), parent_company (the company that owns the brand, only if you are sure, "
-    "otherwise empty) and other_text (up to 6 other short pieces of legible text, such as a slogan or a claim like "
+    "product name or product line), variety (flavour, scent, style, colour or edition printed on it), parent_company (the company that owns the brand, only if its name is "
+    "printed on the package, otherwise empty) and other_text (up to 6 other short pieces of legible text, such as a slogan or a claim like "
     "'gluten free'; never the weight, volume or price). Spell everything exactly as printed. Leave a field empty if it can't be read; never guess. "
     'Output only JSON: {"brand": "", "product": "", "variety": "", "parent_company": "", '
     '"other_text": []}')
@@ -2959,7 +3003,8 @@ PHOTO_TYPES = [
      "screen showing a stock market or financial performance chart"),
     ("product_shelf", "Product on a store shelf",
      "a photo of a retail product sitting on a grocery or retail store shelf; name the brand, the exact product, "
-     "its variety, flavour or scent from the packaging, and the brand's parent company (not the weight or size)"),
+     "its variety, flavour or scent from the packaging, and the brand's parent company only if it is printed on the "
+     "package (not the weight or size)"),
     ("app_store", "App in the Play Store",
      "a photo of an app shown on a phone screen in the Google Play Store"),
     ("storefront", "Store or restaurant front",
@@ -3043,7 +3088,7 @@ def type_description(settings: dict, key: str) -> str:
 
 INPUT_RULES = """How to read the photographer's input:
 - If the input is only a company name, the photo is a stock photo of that company's logo displayed on a smartphone screen, held in front of a computer screen showing a stock market or financial performance chart.
-- If the input is only a retail product name, the photo shows that product sitting on a grocery or retail store shelf; name its variety or flavour from the packaging, and its parent company.
+- If the input is only a retail product name, the photo shows that product sitting on a grocery or retail store shelf; name its variety or flavour from the packaging, and its parent company only if it is printed on the package.
 - If the input is a name followed by the word "app", the photo shows that app on a phone screen in the Google Play Store.
 - Otherwise, treat the input as accurate information about the photo.
 - If there is no input, describe what you see in the photo."""
@@ -3072,8 +3117,9 @@ def title_rules(length: str = "detailed") -> str:
             "or product line and its variety, flavour, scent or style as read from the packaging, but never the "
             "weight, volume or size such as grams, oz or ml (in the pattern '[Brand] [Product] [Flavour] [Kind of "
             "Product]' rather than 'Bag of Chips'); and for a brand, product, store, restaurant or company, you may name "
-            "its parent company too (in the pattern '[Brand], a [Parent Company] Brand'), but only when you are sure "
-            "which company owns that exact brand, and leave it out when you're not. The words in square brackets are "
+            "its parent company too (in the pattern '[Brand], a [Parent Company] Brand'), but only when the parent "
+            "company's name is printed on the package or sign, or given in the photographer's notes; never from memory "
+            "or a guess, since a wrong parent company makes the title inaccurate. The words in square brackets are "
             "placeholders: never put a brand, company or product name in the title or keywords unless that brand is "
             "really in this photo or in the photographer's notes. "
             "Join the parts naturally with commas or words such as with, on and in. "
@@ -3250,11 +3296,11 @@ def build_prompt(keyword_min: int, keyword_max: int, context: str = "", existing
         "or near-duplicates (such as singular and plural of the same word), and don't repeat the same word "
         "across many keywords. Cover the subject, what it is known for, its industry or category, setting, "
         "objects, colours, concepts and likely search terms. For a product or brand, include the brand, the "
-        "product line, its variety or flavour, and the parent company only when it is printed on the package or "
-        "you are sure of it. Never use prices, sale amounts, product or barcode numbers, date or lot codes, or "
-        "numbers copied off the package (such as calories or pieces) as keywords. Don't name a store other than "
-        "the one the photo was taken in, and don't add things that aren't in the photo (a shopping cart, customers, "
-        "a warehouse) or that aren't true for the product (frozen for canned or boxed food).",
+        "product line, its variety or flavour and the parent company as keywords; related brands and stores are fine "
+        "as keywords too. Never use prices, sale amounts, product or barcode numbers, date or lot codes, or "
+        "numbers copied off the package (such as calories or pieces) as keywords, and don't add things that aren't "
+        "in the photo (a shopping cart, customers, a warehouse) or that aren't true for the product (frozen for "
+        "canned or boxed food).",
         "", COPYRIGHT_FREE_RULES if copyright_free else BRAND_RULES,
     ]
     if (style or "").strip():
@@ -4329,7 +4375,7 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
         title, desc = _fix_text_problems(ask, name, title, desc, checks, limits, symbols, direction, title_caps,
                                          direct_titles, title_never, never_use, style, lo, facts)
     if fix_common:
-        fixed = fix_common_problems(title, desc, keywords, cats, own_known, label=read)
+        fixed = fix_common_problems(title, desc, keywords, cats, own_known, label=read, check_parents=True)
         if fixed["fixes"]:
             debug(f"{name}: fixed automatically: " + "; ".join(fixed["fixes"]))
         title, desc, keywords, cats = fixed["title"], fixed["description"], fixed["keywords"], fixed["categories"]

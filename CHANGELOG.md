@@ -1,5 +1,10 @@
 # What's new
 
+## 2026.11.09.2
+
+- **Related stores and brands stay in the keywords:** other stores and brands are only taken out of the **title** and description now, which have to be accurate. A BJ's photo can keep *costco* or *kirkland* as keywords, but its title won't say *Costco*.
+- **Parent companies only when they're real:** the AI likes to add who owns a brand (*BelVita… by General Mills*, though BelVita is Mondelez). A parent company now goes in a title only when its name is printed on the package or sign, or is in your notes or Instructions. Detect takes out *by…*, *from…* and *…, a [Company] Brand* when the company isn't on the label, and the AI is told never to add one from memory. A brand named on its own (*Hormel Chili with Beans*) is never touched, and parent companies are still fine as keywords.
+
 ## 2026.11.09.1
 
 - **The AI's usual mistakes are fixed automatically:** after Detect and Reword, and before a Shutterstock CSV is made, the app now fixes the mistakes that turned up again and again in real Shutterstock CSVs, without asking the AI again:
