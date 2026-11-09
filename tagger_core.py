@@ -39,7 +39,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.11.09.3"
+APP_VERSION = "2026.11.09.4"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 # camera RAW files: titles and keywords go into the Lightroom sidecar next to them (photo.xmp), never the RAW.
 # DNG is left out: Lightroom ignores sidecars for DNG and keeps its metadata inside the file itself.
@@ -455,6 +455,7 @@ DEFAULT_SETTINGS = {
     "read_label": True,       # read the text on packaging and signs first (one quick extra step per photo)
     "tidy_keywords": True,    # remove filler keywords and put the title's words first
     "ai_description": True,   # also write a separate description (caption): Alamy, Dreamstime, Shutterstock
+    "concept": True,          # titles and descriptions also say what it's for, who buys it, the theme around it
     "fix_common": True,       # fix the AI's usual mistakes (stray quotes, other stores, prices and codes as keywords,
                               # categories that don't fit) after Detect and Reword, and in the Shutterstock CSV
     "shutterstock_categories": [],  # the 1-2 categories put in the Shutterstock upload CSV (last used)
@@ -2683,14 +2684,21 @@ def drop_unproven_parents(text: str, proof_n: str) -> str:
     any_name = "|".join(r"\s+".join(map(re.escape, n.split())) for n in names)
     claims = [  # (pattern, the group with the company)
         r",?\s*(?:an?|the)\s+(?P<p>[A-Z][\w&'’.\- ]{1,40}?)\s+(?:Brand|Product|Company)\b(?:\s*,(?=\s))?",
+        # "…, BJ's Wholesale Club Brand" (a store or company claimed as the brand, with no "a")
+        r",\s*(?P<p>[A-Z][\w&'’.\- ]{1,40}?)\s+(?:Brand|Product)\b(?=\s*(?:,|$))",
         r",?\s*(?:made|owned|produced|manufactured|distributed)?\s*(?:by|from)\s+(?P<p>" + any_name + r")\b",
         r"\s*\((?P<p>" + any_name + r")\)",
     ]
+    if proof_n.strip():
+        # "Campbell's StoveTop Stuffing": a parent company put in front of another brand, when the label was read
+        # and doesn't show it (a brand on its own, "Hormel Chili", has no 's and is never touched)
+        claims.append(r"(?:^|(?<=\s))(?P<p>" + any_name + r")['’]s\s+(?=[A-Z])")
     for rx in claims:
         def drop(m):
             p = m.group("p")
-            return m.group(0) if _norm_words(p) in proof_n or _norm_words(p).strip() == "" else ""
-        text = re.sub(rx, drop, text, flags=re.I if "an?" not in rx else 0)
+            ok = _norm_words(p) in proof_n or _norm_words(p + "s") in proof_n or _norm_words(p).strip() == ""
+            return m.group(0) if ok else ""
+        text = re.sub(rx, drop, text, flags=re.I if ("an?" not in rx and "Brand|Product)" not in rx) else 0)
     text = re.sub(r"\s+([,.;:])", r"\1", " ".join(text.split()))
     return text.strip(" ,;:-")
 
@@ -2862,16 +2870,19 @@ def fix_common_problems(title: str, description: str, keywords, categories=(), k
 
 def build_description_prompt(title: str, keywords, context: str = "", photo_note: str = "",
                              direction: str = "", title_location: str = "", copyright_free: bool = False,
-                             symbols: str = "keep", never_use=None, photo_avoid: str = "") -> str:
+                             symbols: str = "keep", never_use=None, photo_avoid: str = "",
+                             concept: bool = False) -> str:
     """Ask for the description (caption) of a photo whose title is already written."""
     lines = ["Write the description (caption) for this stock photo. Its title is: "
              + json.dumps(title, ensure_ascii=False) + ".",
              "",
-             "The description is one or two complete, plain sentences of 12 to 30 words (never more than "
-             f"{DESCRIPTION_MAX - 20} characters) that say what the photo shows: the subject, what is happening, the "
-             "setting and the most useful visible details. Add information the title doesn't have instead of "
-             "repeating it word for word. Normal sentence capitalisation with a full stop at the end, no keyword "
-             "lists, no hashtags, no opinions or marketing words such as stunning or beautiful."]
+             "The description is one or two complete, plain sentences of " + ("20 to 35" if concept else "12 to 30")
+             + f" words (never more than {DESCRIPTION_MAX - 20} characters) that say what the photo shows: the "
+             "subject, what is happening, the setting and the most useful visible details. Add information the title "
+             "doesn't have instead of repeating it word for word. Normal sentence capitalisation with a full stop at "
+             "the end, no keyword lists, no hashtags, no hype words such as stunning or beautiful."]
+    if concept:
+        lines += ["", CONCEPT_DESCRIPTION_RULE]
     if (context or "").strip():
         lines += ["", "Facts from the photographer (true; use them where they fit):", context.strip()]
     if (photo_note or "").strip():
@@ -3103,7 +3114,24 @@ def title_words(length: str = "detailed") -> tuple[int, int]:
     return next(((lo, hi) for k, _, lo, hi in TITLE_LENGTHS if k == length), (14, 22))
 
 
-def title_rules(length: str = "detailed") -> str:
+# The context: not just "Protein Shakes on Shelf" but what they're for and who buys them
+CONCEPT_TITLE_RULE = (
+    "(5) Finish with the context, so the title isn't only a list of what's on the shelf: what the product or scene is "
+    "for, who uses or buys it, or the lifestyle, theme or concept it belongs to, in a few words joined with 'for', "
+    "'and' or a comma. For example: 'Protein Shakes on a Store Shelf for Health-Conscious Consumers, Nutrition and "
+    "Supplementation'; 'Canned Beef Stew for Quick Comfort Food Meals and Pantry Stocking'; 'Christmas Lights Display "
+    "for Holiday Decorating and Seasonal Shopping'; 'Pancake Mix for Easy Family Breakfasts and Home Baking'. This "
+    "context is general and true for that kind of product (never an invented detail about this photo), and it stays "
+    "within the word count.")
+CONCEPT_DESCRIPTION_RULE = (
+    "Make it two sentences. The first says what the photo shows. The second gives the context and the mood: what the "
+    "product or scene is for, who uses or buys it, and the lifestyle, theme or concept it relates to (for protein "
+    "shakes: nutrition, fitness and supplementation for health-conscious consumers; for Christmas lights: holiday "
+    "decorating, festive homes and seasonal shopping; for canned stew: quick, hearty comfort food and stocking the "
+    "pantry). Keep that general and true for that kind of product: never invent details about this photo.")
+
+
+def title_rules(length: str = "detailed", concept: bool = False) -> str:
     lo, hi = title_words(length)
     return (f"Title: rewrite the input (or describe the photo) as one full, descriptive, SEO-friendly title in Title "
             f"Case of {lo} to {hi} words. Build it from these parts, in a natural order: (1) the main subject, named as "
@@ -3125,7 +3153,8 @@ def title_rules(length: str = "detailed") -> str:
             "Join the parts naturally with commas or words such as with, on and in. "
             "The title must be complete and stand on its own, describing only what is in this photo. Not short and "
             "blunt: for example, instead of 'Coffee Shop Exterior' write 'Independent Coffee Shop Exterior, Cozy "
-            "Neighborhood Cafe with Brick Facade, Outdoor Seating and Hanging Sign on a City Street'. No quotation marks and no full stop at the end.")
+            "Neighborhood Cafe with Brick Facade, Outdoor Seating and Hanging Sign on a City Street'. No quotation marks and no full stop at the end."
+            + (" " + CONCEPT_TITLE_RULE if concept else ""))
 
 
 TITLE_RULES = title_rules("standard")   # (kept for anything that still reads the old constant)
@@ -3252,7 +3281,7 @@ def build_prompt(keyword_min: int, keyword_max: int, context: str = "", existing
                  date_in_title: bool = False, title_location: str = "", copyright_free: bool = False,
                  symbols: str = "keep", feedback: str = "", rejected_title: str = "",
                  title_length: str = "detailed", never_use=None, photo_avoid: str = "",
-                 direct_titles: bool = True, style: str = "") -> str:
+                 direct_titles: bool = True, style: str = "", concept: bool = False) -> str:
     """The instructions for one photo. Your notes come first and the title is built around them;
     your directions are repeated at the end. (title_prefix is never shown to the AI.)"""
     context, photo_note, direction = (context or "").strip(), (photo_note or "").strip(), (direction or "").strip()
@@ -3287,7 +3316,7 @@ def build_prompt(keyword_min: int, keyword_max: int, context: str = "", existing
         lines += ["", INPUT_RULES.replace("photographer's input", "photographer's notes above")
                   .replace("the input", "the notes")]
     lines += [
-        "", title_rules(title_length) + (" Work the facts from the photographer's notes into the title."
+        "", title_rules(title_length, concept) + (" Work the facts from the photographer's notes into the title."
                                          if context or photo_note else "")
         + (" " + DIRECT_TITLE_RULE if direct_titles else ""),
         "",
@@ -3540,6 +3569,11 @@ REWORD_TEXT_OPTIONS = [   # (key, label, what the AI is told)
      "Put the main subject at the start of the title, then the action or setting, then the details."),
     ("editorial", "Factual editorial tone",
      "Write it as a factual, neutral editorial caption: who, what, where and when, without opinion or marketing words."),
+    ("context", "Add the context (what it's for, who buys it)",
+     "Add the context at the end of the title and as a second sentence of the description: what the product or "
+     "scene is for, who uses or buys it, and the lifestyle, theme or concept it relates to (for protein shakes: "
+     "nutrition and supplementation for health-conscious consumers). Keep it general and true for that kind of "
+     "product; never invent details about the photo."),
     ("commercial", "Concept words for commercial buyers",
      "Bring out the concept the photo could illustrate for commercial buyers (for example teamwork, freedom, healthy "
      "living) where it fits."),
@@ -4128,7 +4162,8 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
              title_length: str = "detailed", expand_short: bool = False,
              read_label: bool = False, tidy: bool = False, never_use=None, never_in_title: bool = True,
              photo_avoid: str = "", description: bool = False, title_caps: str = "title",
-             direct_titles: bool = True, style: str = "", checks=(), limits=None, fix_common: bool = True) -> dict:
+             direct_titles: bool = True, style: str = "", checks=(), limits=None, fix_common: bool = True,
+             concept: bool = False) -> dict:
     """Ask the local vision model for an SEO title and keywords.
     With revise=True and any notes or directions given, a second (text-only) pass checks the draft
     against them. With description=True a description (caption) is also written, once the title is
@@ -4154,7 +4189,8 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
     prompt = build_prompt(keyword_min, keyword_max, context, existing_title, existing_keywords,
                           direction, photo_note, photo_type, lead_keywords, title_prefix, date_in_title,
                           title_location, copyright_free, symbols, feedback, rejected_title, title_length,
-                          never_use=never_use, photo_avoid=photo_avoid, direct_titles=direct_titles, style=style)
+                          never_use=never_use, photo_avoid=photo_avoid, direct_titles=direct_titles, style=style,
+                          concept=concept)
     system = system_prompt(direction)
 
     def body(user_text, schema, with_image=True, temperature=0.2):
@@ -4360,7 +4396,7 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
         # looking at the photo again so it can add what the title leaves out
         try:
             got = ask(build_description_prompt(title, keywords, own_context, photo_note, direction, title_location,
-                                               copyright_free, symbols, never_use, photo_avoid),
+                                               copyright_free, symbols, never_use, photo_avoid, concept=concept),
                       DESCRIPTION_SCHEMA, "description")
             desc = clean_description(str(got.get("description", "") or ""), symbols, never_use)
             cats = shutterstock_categories(got.get("categories"))

@@ -147,3 +147,31 @@ def test_every_title_step_keeps_the_photo_note(make_photos):
     assert len(seen) >= 4, seen                                   # draft, double-check, longer, checks…
     assert all(knows for _, knows in seen), [s for s in seen if not s[1]]
     assert "Heron" in r["title"] and "Crane" not in r["title"]
+
+
+def test_context_goes_into_title_and_description_when_on(make_photos):
+    def with_description(body):
+        f = schema_fields(body)
+        if "description" in f:
+            return {"description": "Protein shakes stand on a shelf. They suit health-conscious shoppers looking "
+                                   "for nutrition and supplementation.", "categories": ["Food and drink"]}
+        return answer(body)
+    for concept in (True, False):
+        ai = FakeAI(with_description)
+        core.identify(make_photos(1)[0], "http://ollama", "model", 30, 40, opener=ai, revise=False,
+                      description=True, concept=concept)
+        prompts = ai.prompts()
+        title_prompt = prompts[0]
+        desc_prompt = next(p for p in prompts if p.startswith("Write the description"))
+        assert ("Health-Conscious Consumers, Nutrition and Supplementation" in title_prompt) is concept
+        assert ("The second gives the context and the mood" in desc_prompt) is concept
+
+
+def test_unproven_parent_companies_come_out_of_titles():
+    norm = core._norm_words
+    assert core.drop_unproven_parents("Campbell's StoveTop Stuffing Mix - Six Boxes", norm("brand: Stove Top")) \
+        == "StoveTop Stuffing Mix - Six Boxes"
+    assert core.drop_unproven_parents("Kellogg's Frosted Flakes Cereal Boxes", norm("brand: Kellogg's")) \
+        == "Kellogg's Frosted Flakes Cereal Boxes"
+    assert core.drop_unproven_parents("Belvita Gingerbread Breakfast Boxes on Shelf, BJ's Wholesale Club Brand",
+                                      norm("brand: belVita")) == "Belvita Gingerbread Breakfast Boxes on Shelf"

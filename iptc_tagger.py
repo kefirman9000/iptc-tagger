@@ -431,6 +431,14 @@ class SettingsDialog(QDialog):
             "- Shutterstock categories that don't fit (People with nobody in the photo, Parks/Outdoor for a box)\n"
             "Anything in your Instructions, photo notes or the label text is never taken out.")
         f_text.addRow("", self.fix_common)
+        self.concept = QCheckBox("Add the context to titles and descriptions (what it's for, who buys it)")
+        self.concept.setChecked(bool(settings.get("concept", True)))
+        self.concept.setToolTip(
+            "Not just \"Protein Shakes on Store Shelf\" but \"Protein Shakes on a Store Shelf for Health-Conscious\n"
+            "Consumers, Nutrition and Supplementation\": the title ends with what the product is for, who buys it or\n"
+            "the theme around it, and the description gets a second sentence about that. Always general and true for\n"
+            "that kind of product, never an invented detail. For photos already done: Reword → Add the context.")
+        f_text.addRow("", self.concept)
         self.tidy_kw = QCheckBox("Tidy keywords: remove filler words and put the title's words first")
         self.tidy_kw.setChecked(bool(settings.get("tidy_keywords", True)))
         self.tidy_kw.setToolTip("Removes keywords nobody searches for (photo, image, stock, jpeg, high quality…) and long\n"
@@ -893,6 +901,7 @@ class SettingsDialog(QDialog):
                  confirm_save=self.confirm_save.isChecked(),
                  read_label=self.read_label.isChecked(), tidy_keywords=self.tidy_kw.isChecked(),
                  ai_description=self.ai_desc.isChecked(), fix_common=self.fix_common.isChecked(),
+                 concept=self.concept.isChecked(),
                  check_updates=self.updates.isChecked(), auto_download=self.auto_update.isChecked(),
                  preload_model=self.preload.isChecked(), keep_model_ready=self.keep_ready.isChecked(),
                  finish_alert=self.finish_alert.currentData() or "both",
@@ -4920,6 +4929,7 @@ class MainWindow(QMainWindow):
                                              limits=self.text_limits(ph),
                                              description=bool(self.settings.get("ai_description", True)),
                                              fix_common=bool(self.settings.get("fix_common", True)),
+                                             concept=bool(self.settings.get("concept", True)),
                                              tidy=bool(self.settings.get("tidy_keywords", True))),
                   ph.path, url, model, kmin, kmax,
                   context, old_title, old_keywords, direction, ph.note,
