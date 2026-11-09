@@ -1,0 +1,135 @@
+"""The AI's usual mistakes, fixed without asking it again (core.fix_common_problems), and the check before a
+Shutterstock CSV. Every example here is a real row from a Shutterstock CSV the app made."""
+import csv
+import os
+
+import tagger_core as core
+from test_window import add, qapp, window  # noqa: F401  (the real window, offscreen)
+
+
+# ---------- titles: an answer that ran on, quotes that don't pair up
+def test_run_on_answer_is_cut_out_of_the_title():
+    assert core.clean_title("Sheetz Fuel Pump Display Showing Octane Grades at Gilbarco Equipment”, “Keywords") \
+        == "Sheetz Fuel Pump Display Showing Octane Grades at Gilbarco Equipment"
+    assert core.clean_title("Welch’s Mixed Fruit Snacks on Grocery Shelf”, “Keywords") \
+        == "Welch’s Mixed Fruit Snacks on Grocery Shelf"
+
+
+def test_a_quote_that_does_not_pair_up_is_taken_out():
+    assert core.clean_title("StoveTop Stuffing Mix for Chicken with Real Broth”, Six Boxes") \
+        == "StoveTop Stuffing Mix for Chicken with Real Broth, Six Boxes"
+
+
+def test_quotes_that_pair_up_are_kept():
+    assert core.clean_title("Sign Saying “Fresh Bread” Above the Counter") \
+        == "Sign Saying “Fresh Bread” Above the Counter"
+
+
+# ---------- keywords that are no use to a buyer
+def test_prices_codes_and_package_numbers_are_junk():
+    for k in ("13 79", "11 99", "save 30", "cs1301", "n794 1x", "l2 0933", "l2 0933 date code", "best before date",
+              "150 calories", "90 pouches", "145 pancakes", "2 in minutes", "2 in 2026", "87"):
+        assert core.junk_keyword(k), k
+
+
+def test_real_keywords_with_numbers_are_kept():
+    for k in ("2026", "november 2026", "18 pack", "4 month supply", "60v max", "ms 162 chainsaw", "f150", "a350",
+              "iphone 15", "rtx 4090", "93 octane", "5 percent minoxidil", "up to 135 mph"):
+        assert not core.junk_keyword(k), k
+
+
+# ---------- stores
+def test_another_stores_name_is_taken_out_of_a_bjs_photo():
+    r = core.fix_common_problems(
+        "BJ's Wholesale Club Interior Featuring Costco Baking Nuts Sweeteners Display", "",
+        ["bjs wholesale club", "costco", "kirkland baking needs", "krogerpay", "walmart", "nuts", "sweeteners"])
+    assert "Costco" not in r["title"] and r["title"].startswith("BJ's Wholesale Club Interior")
+    assert r["keywords"] == ["bjs wholesale club", "nuts", "sweeteners"]
+
+
+def test_a_store_named_in_your_notes_is_never_taken_out():
+    r = core.fix_common_problems("BJ's Display of Kirkland Almonds", "", ["kirkland", "almonds"],
+                                 known="Kirkland almonds sold at BJ's")
+    assert "Kirkland" in r["title"] and "kirkland" in r["keywords"]
+
+
+def test_no_grocery_at_a_hardware_store():
+    r = core.fix_common_problems("Clark Kensington Paint Plus Primer on Grocery Store Shelf", "",
+                                 ["clark kensington paint", "grocery store shelf", "paint"])
+    assert r["title"] == "Clark Kensington Paint Plus Primer on Store Shelf"
+    assert r["keywords"] == ["clark kensington paint", "paint"]
+
+
+# ---------- keywords that aren't true or aren't in the photo
+def test_no_frozen_for_canned_food():
+    r = core.fix_common_problems("Dinty Moore Beef Stew Cans on Grocery Store Shelf", "",
+                                 ["dinty moore", "beef stew", "frozen meal", "frozen foods", "canned goods"])
+    assert r["keywords"] == ["dinty moore", "beef stew", "canned goods"]
+
+
+def test_frozen_food_keeps_frozen():
+    r = core.fix_common_problems("Mrs Budds Chicken Pies 4 Pack in the Freezer Section", "",
+                                 ["chicken pies", "frozen food"])
+    assert "frozen food" in r["keywords"]
+
+
+def test_store_photo_extras_go_unless_they_are_in_the_photo():
+    r = core.fix_common_problems("Walmart Produce Section Featuring Potatoes on Display", "",
+                                 ["potatoes", "shopping cart", "supply chain", "cold storage", "customer shopping"])
+    assert r["keywords"] == ["potatoes"]
+    r = core.fix_common_problems("Shopper Pushing a Shopping Cart Past Potatoes", "", ["potatoes", "shopping cart"])
+    assert "shopping cart" in r["keywords"]
+
+
+# ---------- categories
+def test_categories_that_do_not_fit_are_replaced():
+    fit = core.fit_categories
+    assert fit(["Food and drink", "People"], "Mrs Budds Chicken Pies 4 Pack on Grocery Shelf") \
+        == ["Food and drink", "Objects"]
+    assert fit(["Food and drink", "Celebrities"], "Hormel Chili with Beans on Grocery Shelf") \
+        == ["Food and drink", "Objects"]
+    assert fit(["Food and drink", "Parks/Outdoor"], "Bisquick Pancake Mix Boxes on Grocery Store Shelf") \
+        == ["Food and drink", "Objects"]
+    assert fit(["Holidays", "Nature"], "Red Snowflake Buckets Stacked on Store Shelf") == ["Objects"]
+    # paint labelled Interior Exterior isn't a room or a building
+    assert fit(["Interiors", "Buildings/Landmarks"], "Benjamin Moore Interior Exterior Paint Jars on Store Shelf") \
+        == ["Objects"]
+
+
+def test_categories_that_fit_are_kept():
+    fit = core.fit_categories
+    assert fit(["Transportation", "Nature"], "Gray Vehicle Covered in Autumn Maple Leaves, Raindrops on Windshield") \
+        == ["Transportation", "Nature"]
+    assert fit(["Buildings/Landmarks", "Business/Finance"], "Ace Hardware Storefront on a Rainy Day") \
+        == ["Buildings/Landmarks", "Business/Finance"]
+    assert fit(["Healthcare/Medical", "Beauty/Fashion"], "Rogaine 5 Percent Minoxidil Hair Regrowth Treatment") \
+        == ["Healthcare/Medical", "Beauty/Fashion"]
+
+
+# ---------- the Shutterstock CSV
+def test_shutterstock_csv_is_always_plain_characters(tmp_path):
+    path = str(tmp_path / "s.csv")
+    core.export_csv(path, [{"file": "a.jpg", "folder": "", "title": "BJ’s Wholesale Club Interior – Nuts Display",
+                            "description": "", "keywords": ["bj’s", "nuts"], "categories": ["Food and drink"]}],
+                    "shutterstock")
+    row = next(csv.DictReader(open(path, encoding="utf-8")))
+    assert row["Description"] == "BJ's Wholesale Club Interior - Nuts Display"
+    assert row["Keywords"] == "bj's,nuts"
+
+
+def test_check_before_csv_fixes_the_photos_first(window, make_photos):
+    app, win = window
+    add(win, make_photos(1))
+    ph = win.photos[0]
+    ph.title = "Welch’s Mixed Fruit Snacks on Grocery Shelf”, “Keywords"
+    ph.keywords = ["welchs", "fruit snacks", "90 pouches", "shopping cart", "snacks", "candy", "grocery store",
+                   "packaged food"]
+    ph.categories = ["Food and drink", "Healthcare/Medical"]
+    win._show(ph)
+    path = win.make_shutterstock_csv(ask_categories=lambda n, t: ["Food and drink"])
+    row = next(csv.DictReader(open(path, encoding="utf-8")))
+    assert row["Description"] == "Welch's Mixed Fruit Snacks on Grocery Shelf"
+    assert "90 pouches" not in row["Keywords"] and "shopping cart" not in row["Keywords"]
+    assert row["Categories"] == "Food and drink,Objects"
+    assert ph.title == "Welch’s Mixed Fruit Snacks on Grocery Shelf"           # the photo in the list is fixed too
+    assert any(h["how"] == "Before fixes" for h in ph.history)                  # and the old text can be had back

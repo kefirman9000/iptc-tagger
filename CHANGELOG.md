@@ -1,5 +1,19 @@
 # What's new
 
+## 2026.11.09.1
+
+- **The AI's usual mistakes are fixed automatically:** after Detect and Reword, and before a Shutterstock CSV is made, the app now fixes the mistakes that turned up again and again in real Shutterstock CSVs, without asking the AI again:
+  - **Leftover text in titles:** an answer that ran on into the title (*…on Grocery Shelf”, “Keywords*) is cut off there, and a quote that doesn't pair up (*Real Broth”, Six Boxes*) is taken out.
+  - **The wrong store:** a photo from a named store no longer gets another chain's name or house brand. A BJ's photo loses *Costco*, *Kirkland*, *KrogerPay* and *Walmart* from its title and keywords, and a photo from Ace, Home Depot or Lowe's says *Store Shelf*, not *Grocery Store Shelf*.
+  - **Junk keywords:** prices (*13 79*, *save 30*), product and date codes (*cs1301*, *l2 0933*, *best before date*) and numbers copied off the package (*150 calories*, *90 pouches*) are taken out. Real numbers stay (*18 pack*, *60v max*, *ms 162 chainsaw*, *november 2026*). So are *frozen* keywords for canned or boxed food, and the extras the AI adds to almost every store photo (*shopping cart*, *supply chain*, *customer service*, *warehouse*) unless the title or description shows them. Detect then tops the keywords back up to your minimum.
+  - **Shutterstock categories that don't fit:** *People* or *Celebrities* with nobody in the photo, *Parks/Outdoor* for a box of pancake mix, *Buildings/Landmarks* for paint on a shelf (*Interior Exterior* on the can doesn't count). A product photo gets *Objects* instead. The AI is also told what each category is for.
+  - Your Instructions, photo notes and keywords to put first are never touched. Text read off the label keeps brand names, but not prices or codes.
+- **Check before the CSV:** **Make Shutterstock CSV** and **Export CSV** (Shutterstock) look for these problems first, show every change (*Show Details*) and fix them with one click, or make the CSV as is. The photos in the list are fixed too, and the text from before is under right-click → **Earlier suggestions**.
+- **Right-click → Fix common problems** does the same for any photos already in the list.
+- **The Shutterstock CSV always uses plain characters:** curly quotes and long dashes (*BJ’s*, *–*) are made plain in the CSV whatever the Symbols setting is, since Shutterstock asks for titles without special characters.
+- The AI is told not to use prices, codes or package numbers as keywords, not to name other stores, and to name a parent company only when it's on the package.
+- Turn it off in **Settings → Titles & keywords → Fix the AI's usual mistakes automatically**.
+
 ## 2026.11.07.1
 
 - **Reword: Make it longer, add what the subject is:** a new Reword option for titles that came out too short. The AI makes the title about 10 to 16 words by adding general background about what it names: what kind of thing it is, what it's made of or used for, its category, or what it's known for. It doesn't invent details about the photo itself, and it never adds a date or the place. The old *Make it fuller* is now *Make it fuller (same details)*: it only rewords what's already there. *Make it shorter* is unchanged.

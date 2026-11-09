@@ -418,6 +418,19 @@ class SettingsDialog(QDialog):
                                 "read, and used in the Shutterstock CSV. Adds one quick step per photo. Off: the title is\n"
                                 "saved as the description, as before.")
         f_text.addRow("Description", self.ai_desc)
+        self.fix_common = QCheckBox("Fix the AI's usual mistakes automatically")
+        self.fix_common.setChecked(bool(settings.get("fix_common", True)))
+        self.fix_common.setToolTip(
+            "After Detect and Reword, and before a Shutterstock CSV is made, without asking the AI again:\n"
+            "- leftover text and stray quotes at the end of a title (…Shelf”, “Keywords)\n"
+            "- another store's name in a photo from a named store (Costco or Kirkland at BJ's), and grocery at a\n"
+            "  hardware store\n"
+            "- prices, product and date codes and numbers off the package as keywords (13 79, l2 0933, 150 calories)\n"
+            "- frozen keywords for canned or boxed food, and keywords for things that aren't in the photo\n"
+            "  (shopping cart, supply chain)\n"
+            "- Shutterstock categories that don't fit (People with nobody in the photo, Parks/Outdoor for a box)\n"
+            "Anything in your Instructions, photo notes or the label text is never taken out.")
+        f_text.addRow("", self.fix_common)
         self.tidy_kw = QCheckBox("Tidy keywords: remove filler words and put the title's words first")
         self.tidy_kw.setChecked(bool(settings.get("tidy_keywords", True)))
         self.tidy_kw.setToolTip("Removes keywords nobody searches for (photo, image, stock, jpeg, high quality…) and long\n"
@@ -879,7 +892,7 @@ class SettingsDialog(QDialog):
                  text_checks=[k for k, cb in self.check_boxes.items() if cb.isChecked()],
                  confirm_save=self.confirm_save.isChecked(),
                  read_label=self.read_label.isChecked(), tidy_keywords=self.tidy_kw.isChecked(),
-                 ai_description=self.ai_desc.isChecked(),
+                 ai_description=self.ai_desc.isChecked(), fix_common=self.fix_common.isChecked(),
                  check_updates=self.updates.isChecked(), auto_download=self.auto_update.isChecked(),
                  preload_model=self.preload.isChecked(), keep_model_ready=self.keep_ready.isChecked(),
                  finish_alert=self.finish_alert.currentData() or "both",
@@ -2788,6 +2801,101 @@ class MainWindow(QMainWindow):
                             "into the files.")
         return n
 
+    # ---------- the AI's usual mistakes, for photos already in the list (and before a Shutterstock CSV)
+    def _known_text(self, ph: Photo) -> str:
+        """What's true for sure for this photo: never taken out by the automatic fixes."""
+        s = self.settings
+        return " ".join([s.get("context", ""), s.get("direction", ""), ph.note, s.get("lead_keywords", ""),
+                         " ".join(self.editorial_keywords(ph)) if s.get("editorial_on") else "",
+                         self.location_for(ph) if s.get("editorial_on") else ""])
+
+    def _common_fixes(self, ph: Photo):
+        """(title, description, keywords, categories, fixes) for this photo with the usual mistakes fixed. Only the
+        part the AI wrote changes: the text before titles, location and date stay exactly as they are."""
+        bare = self.bare_title(ph)
+        bare_desc = self.bare_title(ph, text=ph.description, with_prefix=False) if ph.description else ""
+        r = core.fix_common_problems(bare, bare_desc, ph.keywords, ph.categories, self._known_text(ph))
+        title = self.compose_title(ph, r["title"]) if r["title"] != bare and bare and bare in ph.title else ph.title
+        if title == ph.title and r["title"] != bare:
+            title = core.clean_title(ph.title)                 # (a title without the usual parts in front)
+        desc = (self.compose_description(ph, r["description"]) if ph.description and r["description"] != bare_desc
+                else ph.description)
+        return title, desc, r["keywords"], r["categories"] or list(ph.categories), r["fixes"]
+
+    def fix_common_photos(self, photos=None, ask: bool = True) -> int:
+        """Right-click → Fix common problems: fix the AI's usual mistakes in these photos (not saved yet)."""
+        photos = [p for p in (photos if photos is not None else self.photos) if not p.busy]
+        found = [(p, self._common_fixes(p)) for p in photos]
+        found = [(p, f) for p, f in found if f[4]]
+        if not found:
+            self.status.setText("No common problems found in "
+                                + (f"those {len(photos)} photos." if len(photos) != 1 else "that photo."))
+            return 0
+        if ask and not os.environ.get("IPTC_TAGGER_OFFLINE"):
+            box = QMessageBox(QMessageBox.Question, "Fix common problems",
+                              f"Found problems in {len(found)} photo{'s' if len(found) != 1 else ''}. Fix them?\n"
+                              "Click Show Details to see every change. Nothing is saved into the files until you save.")
+            box.setDetailedText(self._fixes_report(found))
+            box.setStandardButtons(QMessageBox.Yes | QMessageBox.Cancel)
+            box.button(QMessageBox.Yes).setText("Fix them")
+            if box.exec() != QMessageBox.Yes:
+                return 0
+        self._apply_fixes(found)
+        return len(found)
+
+    def _fixes_report(self, found) -> str:
+        lines = []
+        for p, (t, _d, _k, _c, fixes) in found:
+            lines.append(os.path.basename(p.path) + (f"\n   title → {t}" if t != p.title else ""))
+            lines += ["   - " + f for f in fixes if not f.startswith("took")]
+            if len(_k) < 7:
+                lines.append(f"   ! only {len(_k)} keywords left: Shutterstock needs at least 7 (Detect again, or "
+                             "Reword → Add more keywords)")
+        return "\n".join(lines)
+
+    def _apply_fixes(self, found):
+        for ph, (t, d, k, c, fixes) in found:
+            self._remember_suggestion(ph, "Before fixes")
+            ph.title, ph.description, ph.keywords, ph.categories = t, d, k, c
+            if ph.changed and ph.status == "saved":
+                ph.status = "ready"
+            ph.message = "Fixed: " + "; ".join(f.split(":")[0] for f in fixes) + ". Not saved yet"
+            self._remember_suggestion(ph, "Fixed")
+            self._show(ph)
+        if self.review.photo is not None:
+            self.review.show_photo(self.review.photo)
+        self.apply_filter()
+        n = len(found)
+        self.status.setText(f"Fixed common problems in {n} photo{'s' if n != 1 else ''}. Save to write them into "
+                            "the files.")
+
+    def _check_before_csv(self, photos) -> bool:
+        """Before a Shutterstock CSV: offer to fix the usual mistakes first. False = cancelled."""
+        if not self.settings.get("fix_common", True):
+            return True
+        found = [(p, self._common_fixes(p)) for p in photos]
+        found = [(p, f) for p, f in found if f[4]]
+        if not found:
+            return True
+        if os.environ.get("IPTC_TAGGER_OFFLINE"):
+            self._apply_fixes(found)                      # (tests: no questions)
+            return True
+        box = QMessageBox(QMessageBox.Question, "Check before the CSV",
+                          f"{len(found)} of the {len(photos)} photos have problems Shutterstock may reject or that "
+                          "would hurt their sales: leftover text or quotes in a title, another store's name, prices or "
+                          "codes as keywords, keywords for things not in the photo, or categories that don't fit.\n\n"
+                          "Fix them before making the CSV? Click Show Details to see every change.")
+        box.setDetailedText(self._fixes_report(found))
+        fix = box.addButton("Fix and make CSV", QMessageBox.AcceptRole)
+        asis = box.addButton("Make CSV as is", QMessageBox.DestructiveRole)
+        box.addButton(QMessageBox.Cancel)
+        box.setDefaultButton(fix)
+        box.exec()
+        if box.clickedButton() is fix:
+            self._apply_fixes(found)
+            return True
+        return box.clickedButton() is asis
+
     # ---------- title capitals and wording, for titles already in the list
     def restyle_title(self, ph) -> str:
         """This photo's title with the chosen capitals and subject-first wording. Only the part the AI wrote
@@ -3010,6 +3118,8 @@ class MainWindow(QMainWindow):
         fmt = next((k for (k, label), flt in zip(core.CSV_FORMATS, filters) if flt == chosen), "shutterstock")
         if os.path.basename(path) == suggested and fmt != "shutterstock":
             path = os.path.join(os.path.dirname(path), core.csv_file_name(fmt))   # adobe_2026-11-02.csv
+        if fmt == "shutterstock" and not self._check_before_csv(photos):
+            return
         categories = []
         missing = [p for p in photos if not p.categories]
         if fmt == "shutterstock" and missing:         # photos detected with the description on have their own
@@ -3047,6 +3157,8 @@ class MainWindow(QMainWindow):
         photos = [p for p in photos if not p.busy and (p.title.strip() or p.keywords)]
         if not photos:
             self.status.setText("No photos with a title or keywords to put in a Shutterstock CSV yet.")
+            return ""
+        if not self._check_before_csv(photos):
             return ""
         categories = []
         missing = [p for p in photos if not p.categories]
@@ -3749,6 +3861,11 @@ class MainWindow(QMainWindow):
         a.setToolTip("& → and, é → e, no ™ or emoji: for sites like Shutterstock that refuse special characters")
         a.setEnabled(bool(idle))
         a.triggered.connect(lambda *_: self.clean_special_characters(idle))
+        a = menu.addAction("Fix common problems" + ("" if one else f" ({len(idle)} photos)"))
+        a.setToolTip("Leftover text or quotes in titles, other stores' names, prices and codes as keywords,\n"
+                     "keywords for things not in the photo, categories that don't fit")
+        a.setEnabled(bool(idle))
+        a.triggered.connect(lambda *_: self.fix_common_photos(idle))
         a = menu.addAction("Find and replace…")
         a.setEnabled(bool(idle))
         a.triggered.connect(lambda *_: self.find_replace())
@@ -4783,6 +4900,7 @@ class MainWindow(QMainWindow):
                                              checks=self.settings.get("text_checks", core.DEFAULT_TEXT_CHECKS),
                                              limits=self.text_limits(ph),
                                              description=bool(self.settings.get("ai_description", True)),
+                                             fix_common=bool(self.settings.get("fix_common", True)),
                                              tidy=bool(self.settings.get("tidy_keywords", True))),
                   ph.path, url, model, kmin, kmax,
                   context, old_title, old_keywords, direction, ph.note,
@@ -4926,7 +5044,8 @@ class MainWindow(QMainWindow):
             s.get("direction", ""), self.effective_type(ph) == core.COPYRIGHT_FREE, s.get("symbols", "convert"),
             core.parse_word_list(s.get("never_use", "")), ph.avoid if s.get("avoid_on") else "",
             cancel=ph.token, name=os.path.basename(ph.path), title_caps=s.get("title_caps", "title"),
-            direct_titles=bool(s.get("direct_titles", True)), style=self._ai_style()))
+            direct_titles=bool(s.get("direct_titles", True)), style=self._ai_style(),
+            fix_common=bool(s.get("fix_common", True))))
         ph.run += 1
         ph.queued = True
         run = ph.run
