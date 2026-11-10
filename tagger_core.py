@@ -39,7 +39,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.11.10.3"
+APP_VERSION = "2026.11.10.4"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 # camera RAW files: titles and keywords go into the Lightroom sidecar next to them (photo.xmp), never the RAW.
 # DNG is left out: Lightroom ignores sidecars for DNG and keeps its metadata inside the file itself.
@@ -1000,6 +1000,21 @@ def us_state(word: str) -> str:
     return next((s for s in US_STATES.values() if s.lower() == w.lower()), "")
 
 
+# Colour labels, as in Lightroom (keys 6-9) ---------------------------------------------------------------------
+LABELS = [("red", "Red", "#e5484d", "6"), ("yellow", "Yellow", "#e8b500", "7"), ("green", "Green", "#30a46c", "8"),
+          ("blue", "Blue", "#3b82f6", "9"), ("purple", "Purple", "#8e4ec6", "")]
+LABEL_NAMES = {k: name for k, name, _c, _key in LABELS}
+LABEL_COLORS = {k: c for k, _n, c, _key in LABELS}
+
+
+def color_label(value) -> str:
+    """The XMP Label as saved by Lightroom ('Red', 'Yellow'…) -> 'red'; anything else (a custom label set) -> ''."""
+    if isinstance(value, list):
+        value = value[0] if value else ""
+    v = str(value or "").strip().lower()
+    return v if v in LABEL_NAMES else ""
+
+
 def parse_location(location: str) -> dict:
     """'City, State, Country' -> parts. 'Tokyo, Japan' -> city + country; one part -> city. A US state as the
     second part ('Austin, Texas' or 'Austin, TX') is the state, and the country is United States."""
@@ -1277,7 +1292,7 @@ class ExifTool:
             for raw, car in cars.items():
                 meta = from_cars.get(car) or {}
                 result[raw] = {"title": meta.get("title", ""), "description": meta.get("description", ""),
-                               "keywords": list(meta.get("keywords", [])),
+                               "keywords": list(meta.get("keywords", [])), "label": meta.get("label", ""),
                                "taken": result.get(raw, {}).get("taken", "") or meta.get("taken", "")}
         for raw in raws:
             if raw not in cars:                  # no sidecar yet: nothing of ours, only the date taken
@@ -1292,7 +1307,7 @@ class ExifTool:
             out = self._run(["-j", "-G1", "-a", "-api", "struct=0",
                              "-XMP-dc:Title", "-IPTC:ObjectName",
                              "-XMP-dc:Description", "-IPTC:Caption-Abstract",
-                             "-XMP-dc:Subject", "-IPTC:Keywords",
+                             "-XMP-dc:Subject", "-IPTC:Keywords", "-XMP-xmp:Label",
                              "-EXIF:DateTimeOriginal", "-XMP-exif:DateTimeOriginal", "-EXIF:CreateDate"] + chunk)
             by_norm = {_norm(p): p for p in chunk}
             try:
@@ -1328,7 +1343,8 @@ class ExifTool:
                     if m and m.group(1) != "0000":
                         taken = "-".join(m.groups())
                         break
-                result[src] = {"title": str(title), "description": str(desc), "keywords": kws, "taken": taken}
+                result[src] = {"title": str(title), "description": str(desc), "keywords": kws, "taken": taken,
+                               "label": color_label(row.get("XMP-xmp:Label"))}
             for p in chunk:
                 result.setdefault(p, {"title": "", "description": "", "keywords": [], "taken": ""})
         return result
@@ -1342,7 +1358,7 @@ class ExifTool:
             raise ExifToolError("the XMP to IPTC conversion didn't update the file: " + (out.strip() or "no output"))
 
     def write(self, path: str, title: str, keywords: list[str], description: str | None = None,
-              fields=None, location: str = "") -> None:
+              fields=None, location: str = "", label: str | None = None) -> None:
         """Replace title and keywords (and the other chosen fields, see METADATA_FIELDS). Only metadata
         segments are rewritten; the image data is copied unchanged. -P keeps the file's modified date, and
         -overwrite_original stops ExifTool leaving a '_original' copy behind.
@@ -1362,6 +1378,8 @@ class ExifTool:
         for f in METADATA_FIELDS:
             if f["key"] in fields:
                 args += f["args"](title, keywords, desc, location)
+        if label is not None:                        # the colour label, as Lightroom and Bridge keep it
+            args += [f"-XMP-xmp:Label={LABEL_NAMES.get(label, '')}"]
         if path.lower().endswith(".xmp"):
             args = xmp_only(args)
         out = self._run(args + [path])
@@ -1370,7 +1388,7 @@ class ExifTool:
 
 
 # Undo a save: every tag a save can touch (as ExifTool reports it with -G1 -> the name to write it back)
-UNDO_TAGS = [("XMP-dc:Title", "XMP-dc:Title"), ("IPTC:ObjectName", "IPTC:ObjectName"),
+UNDO_TAGS = [("XMP-xmp:Label", "XMP-xmp:Label"), ("XMP-dc:Title", "XMP-dc:Title"), ("IPTC:ObjectName", "IPTC:ObjectName"),
              ("XMP-photoshop:Headline", "XMP-photoshop:Headline"), ("IPTC:Headline", "IPTC:Headline"),
              ("IFD0:XPTitle", "EXIF:XPTitle"),
              ("XMP-dc:Description", "XMP-dc:Description"), ("IPTC:Caption-Abstract", "IPTC:Caption-Abstract"),
@@ -1811,17 +1829,18 @@ def _guarded(path: str, action) -> None:
 
 
 def safe_write(et: "ExifTool", path: str, title: str, keywords: list[str], description: str | None = None,
-               xmp2iptc_args: str | None = None, fields=None, location: str = "") -> None:
+               xmp2iptc_args: str | None = None, fields=None, location: str = "", label: str | None = None) -> None:
     """Write metadata, then prove the picture itself is untouched. If the image
     data ever differs, the original file is restored exactly and an error raised.
     RAW files: the title and keywords go into the .xmp sidecar only; the RAW is verified unchanged."""
     if is_raw(path):
         def to_sidecar():
             target = sidecar_path(path)
+            extra = {} if label is None else {"label": label}
             if fields is None:
-                et.write(target, title, keywords, description)
+                et.write(target, title, keywords, description, **extra)
             else:
-                et.write(target, title, keywords, description, fields=fields, location=location)
+                et.write(target, title, keywords, description, fields=fields, location=location, **extra)
         return _guarded_raw(path, to_sidecar)
     before = jpeg_image_data_hash(path)
     st = os.stat(path)
@@ -1835,10 +1854,11 @@ def safe_write(et: "ExifTool", path: str, title: str, keywords: list[str], descr
         raise ExifToolError(reason + " (original file restored)")
 
     try:
+        extra = {} if label is None else {"label": label}
         if fields is None:
-            et.write(path, title, keywords, description)
+            et.write(path, title, keywords, description, **extra)
         else:
-            et.write(path, title, keywords, description, fields=fields, location=location)
+            et.write(path, title, keywords, description, fields=fields, location=location, **extra)
         if xmp2iptc_args:
             et.xmp_to_iptc(path, xmp2iptc_args)   # make IPTC match XMP
     except ExifToolError:

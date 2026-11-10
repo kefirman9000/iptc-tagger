@@ -16,7 +16,7 @@ import functools
 import threading
 import time
 
-from PySide6.QtCore import (QDate, QEasingCurve, QItemSelectionModel, QObject, QPoint, QPropertyAnimation, QRect,
+from PySide6.QtCore import (QDate, QEvent, QEasingCurve, QItemSelectionModel, QObject, QPoint, QPropertyAnimation, QRect,
                             QRectF, QRunnable, QSize, Qt, QThreadPool, QTimer, QUrl, Signal)
 from PySide6.QtGui import QAction, QColor, QDesktopServices, QIcon, QImage, QKeySequence, QPainter, QPixmap
 from PySide6.QtWidgets import (
@@ -433,7 +433,9 @@ FILTERS = [
     ("has_note", "With photo notes or Avoid"),
     ("site_problems", "Breaks a stock site's rules"),
     ("similar", "Near-identical titles"),
-]
+    ("label_any", "With a colour label"),
+    ("label_none", "No colour label"),
+] + [("label_" + k, f"{name} label") for k, name, _c, _key in core.LABELS]
 
 
 def photo_matches(ph, key: str, search: str = "", keyword_min: int = 0, sites=(), similar=None,
@@ -455,7 +457,9 @@ def photo_matches(ph, key: str, search: str = "", keyword_min: int = 0, sites=()
         "has_note": bool(ph.note.strip() or ph.avoid.strip()),
         "site_problems": bool(core.site_problems(ph.title, ph.keywords, sites, ph.description, ss_text)) if key == "site_problems" else True,
         "similar": ph.path in (similar or ()),
-    }.get(key, True)
+        "label_any": bool(ph.label),
+        "label_none": not ph.label,
+    }.get(key, ph.label == key[6:] if key.startswith("label_") else True)
     if not ok:
         return False
     words = search.casefold().split()
@@ -503,6 +507,8 @@ class Photo:
         self.note_sent = ""                           # the note sent with the AI request that's running
         self.fresh = False                            # Detect this one photo: replace its title even if kept
         self.saved_at = ""                            # the time it was last saved (shown in the list)
+        self.label = ""                               # colour label (red, yellow, green, blue, purple), as in Lightroom
+        self.file_label = ""                          # the colour label saved in the file
 
     track_description = True     # False while the Description field isn't saved (Settings → Saving)
 
@@ -510,13 +516,14 @@ class Photo:
     def changed(self) -> bool:
         desc = Photo.track_description and \
             core.norm_description(self.description) != core.norm_description(self.file_description)
-        return desc or (core.clean_title(self.title), core.clean_keywords(self.keywords)) != \
+        return desc or self.label != self.file_label or (core.clean_title(self.title), core.clean_keywords(self.keywords)) != \
                (core.clean_title(self.file_title), core.clean_keywords(self.file_keywords))
 
     def load_file(self, meta: dict):
         """Take what was read from the file as the saved state. A description that is just the title (what
         a save without a description of its own writes) counts as no description."""
         self.file_title, self.file_keywords = meta["title"], list(meta["keywords"])
+        self.file_label = meta.get("label", "") or ""
         d = core.norm_description(meta.get("description", ""))
         self.file_description = "" if core.clean_title(d) == core.clean_title(self.file_title) else d
 
@@ -1278,7 +1285,23 @@ class ReviewPanel(QWidget):
         self.b_save_next.setProperty("primary", True)
 
         b.addWidget(self.preview, 3)
-        b.addWidget(self.name)
+        name_row = QHBoxLayout()                       # the file name, and its colour label on the right
+        name_row.addWidget(self.name, 1)
+        self.label_btns = {}
+        for key, lname, colour, k in core.LABELS + [("", "No label", "", "")]:
+            lb = QPushButton()
+            lb.setCheckable(True)
+            lb.setFixedSize(20, 20)
+            lb.setIcon(theme.dot(colour, 11) if colour else theme.icon("x", size=12))
+            lb.setProperty("plain", True)
+            lb.setStyleSheet("QPushButton{padding:0;border-radius:10px}QPushButton:checked{border:2px solid "
+                             "palette(highlight)}")
+            lb.setToolTip(f"{lname} label" + (f" (key {k})" if k else "") if key else "Take the colour label off")
+            lb.clicked.connect(lambda *_, key=key: self.photo and self.win.set_label(
+                self.win.checked_photos() if self.photo.checked else [self.photo], key))
+            self.label_btns[key] = lb
+            name_row.addWidget(lb)
+        b.addLayout(name_row)
         b.addWidget(self.state)
         # what you use most comes first: the notes that steer the AI, right under the photo
         head("Photo notes for the AI", None, self.b_note_all)
@@ -1453,6 +1476,10 @@ class ReviewPanel(QWidget):
         self.keywords.setReadOnly(busy)
         self.desc.setReadOnly(busy)
         self._show_save_state(ph)
+        for key, lb in self.label_btns.items():
+            lb.setChecked(ph.label == key and bool(key))
+            lb.setEnabled(not busy)
+        self.label_btns[""].setVisible(bool(ph.label))
         # each box that differs from what's in the file gets an orange edge and "edited" by its name
         edited = self.win.edited_fields(ph)
         for box, key in ((self.title, "title"), (self.desc, "description"), (self.keywords, "keywords")):
@@ -2187,9 +2214,6 @@ class MainWindow(QMainWindow):
         for w in (self.btn_identify, self.btn_redo_checked, self.btn_reword, self.btn_save, self.btn_export):
             flow.addWidget(w)
         flow.addGap()
-        for w in (self.btn_check_all, self.btn_uncheck_all):
-            flow.addWidget(w)
-        flow.addGap()
         for w in (self.btn_remove, self.btn_clear):
             flow.addWidget(w)
         sp = flow_box.sizePolicy()
@@ -2583,6 +2607,10 @@ class MainWindow(QMainWindow):
             "What the AI should NOT say for this photo, e.g. crane, sunset, don't mention the weather.\n"
             "Short entries (up to 3 words, separated by commas) are also removed from its title and keywords.")
         self.table.itemChanged.connect(self._cell_edited)
+        # a click in the check column (or Space) with several rows selected ticks or unticks all of them; Qt
+        # would otherwise first shrink the selection to the clicked row
+        self.table.viewport().installEventFilter(self)
+        self.table.installEventFilter(self)
         self.table.itemSelectionChanged.connect(self._selection_changed)
         self.table.cellDoubleClicked.connect(self._open_photo)
         self.table.cellClicked.connect(self._cell_clicked)
@@ -2601,6 +2629,7 @@ class MainWindow(QMainWindow):
             self.filter_box.addItem(label, key)
         self.filter_box.setToolTip("Show only some of the photos. The buttons then work on the photos shown.")
         self.filter_box.currentIndexChanged.connect(lambda *_: self.apply_filter())
+        self.filter_box.currentIndexChanged.connect(lambda *_: self._sync_label_dots())
         self.search = QLineEdit()
         self.search.setPlaceholderText("Search file names, titles and keywords  (Ctrl/⌘+F)")
         self.search.setToolTip("Shows photos whose file name, title or keywords contain every word you type")
@@ -2612,11 +2641,34 @@ class MainWindow(QMainWindow):
         self.btn_show_all.setToolTip("Clear the filter and the search")
         self.btn_show_all.clicked.connect(lambda *_: self.show_all())
         self.filter_bar = QWidget()
-        fb = QHBoxLayout(self.filter_bar)
+        # wraps onto a second line in a narrow window (Windows' larger fonts), instead of widening it
+        fb = FlowLayout(self.filter_bar)
         fb.setContentsMargins(0, 0, 0, 4)
+        sp = self.filter_bar.sizePolicy()
+        sp.setHeightForWidth(True)
+        sp.setHorizontalPolicy(QSizePolicy.Ignored)
+        self.filter_bar.setSizePolicy(sp)
         fb.addWidget(QLabel("<b>Show</b>"))
         fb.addWidget(self.filter_box)
-        fb.addWidget(self.search, 1)
+        # colour labels, as in Lightroom: a dot per colour shows only that group
+        self.label_dots = {}
+        for key, name, colour, _k in core.LABELS:
+            d = QPushButton()
+            d.setCheckable(True)
+            d.setFixedSize(22, 22)
+            d.setIcon(theme.dot(colour, 12))
+            d.setProperty("plain", True)
+            d.setStyleSheet("QPushButton{padding:0;border-radius:11px}QPushButton:checked{border:2px solid "
+                            "palette(highlight)}")
+            d.clicked.connect(lambda *_, k=key: self.show_label(k))
+            self.label_dots[key] = d
+            fb.addWidget(d)
+        fb.addGap(4)
+        for w in (self.btn_check_all, self.btn_uncheck_all):   # right by the list and its check column
+            fb.addWidget(w)
+        fb.addGap(4)
+        self.search.setMinimumWidth(240)
+        fb.addWidget(self.search)
         fb.addWidget(self.filter_count)
         fb.addWidget(self.btn_show_all)
         self.btn_replace = QPushButton("Find && Replace…")
@@ -2655,6 +2707,8 @@ class MainWindow(QMainWindow):
         self.btn_force.hide()
         self.status = QLabel("")
         self.status.setStyleSheet(f"color:{theme.color('muted')}")
+        self.status.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)   # long messages never widen the window
+        self.status.setMinimumWidth(80)
         self.status.setTextFormat(Qt.AutoText)
         self.status.linkActivated.connect(lambda link: self.show_similar() if link == "similar" else None)
         self.model_light = QLabel("<span style='color:#8a8f98'>●</span> Checking the AI model…")
@@ -2735,6 +2789,10 @@ class MainWindow(QMainWindow):
                           (QKeySequence("Ctrl+D"), self.detect_selected),
                           (QKeySequence("Ctrl+R"), lambda: self.redo_photos(self._selected_photos())),
                           (QKeySequence("Ctrl+T"), self.toggle_check_selected),
+                          (QKeySequence("6"), lambda: self.set_label(self.label_targets(), "red", toggle=True)),
+                          (QKeySequence("7"), lambda: self.set_label(self.label_targets(), "yellow", toggle=True)),
+                          (QKeySequence("8"), lambda: self.set_label(self.label_targets(), "green", toggle=True)),
+                          (QKeySequence("9"), lambda: self.set_label(self.label_targets(), "blue", toggle=True)),
                           (QKeySequence(QKeySequence.HelpContents), self.show_shortcuts),   # F1
                           (QKeySequence("Ctrl+/"), self.show_shortcuts)):
             act = QAction(self)
@@ -3650,6 +3708,8 @@ class MainWindow(QMainWindow):
                 e["note_used"] = ph.note_used
             if ph.avoid:
                 e["avoid"] = ph.avoid
+            if ph.label:
+                e["label"] = ph.label
             if ph.location:
                 e["location"] = ph.location
             if ph.type_key:
@@ -3706,6 +3766,8 @@ class MainWindow(QMainWindow):
         ph.note = e.get("note", "") or ""
         ph.note_used = e.get("note_used")
         ph.avoid = e.get("avoid", "") or ""
+        if e.get("label") in core.LABEL_NAMES:
+            ph.label = e["label"]
         ph.location = e.get("location", "") or ""
         ph.categories = core.shutterstock_categories(e.get("categories"))
         ph.adobe_category = core.adobe_category(e.get("adobe_category")) if e.get("adobe_category") else None
@@ -4332,6 +4394,7 @@ class MainWindow(QMainWindow):
                 continue
             ph.load_file(meta)
             ph.title, ph.keywords, ph.description = ph.file_title, list(ph.file_keywords), ph.file_description
+            ph.label = ph.file_label                  # a colour label set in Lightroom comes in with the file
             ph.taken = meta.get("taken", "")
             ph.status, ph.message = "ready", ("Has metadata" if (ph.title or ph.keywords) else "No title or keywords yet")
             self._apply_restore(ph)
@@ -4402,6 +4465,9 @@ class MainWindow(QMainWindow):
         for col in (COL_NOTE, COL_AVOID, COL_TITLE, COL_KEYWORDS):
             self.table.item(row, col).setFlags(editable)
         self._show_type(ph, row)
+        thumb = self.table.item(row, COL_THUMB)                 # the colour label: a frame round the thumbnail
+        thumb.setBackground(QColor(core.LABEL_COLORS[ph.label]) if ph.label else QColor(0, 0, 0, 0))
+        thumb.setToolTip(f"{core.LABEL_NAMES[ph.label]} label" if ph.label else "")
         # saved or not, at a glance: an orange dot by the file name until the change is in the file
         f = self.table.item(row, COL_FILE)
         if ph.changed and not ph.busy:
@@ -4518,6 +4584,51 @@ class MainWindow(QMainWindow):
             self.table.selectRow(new)
             self.table.scrollToItem(self.table.item(new, COL_FILE))
 
+    def set_label(self, photos, label: str, toggle: bool = False):
+        """Give photos a colour label ('' = none). toggle: like Lightroom, pressing the same key again takes it
+        off when every one of them already has it."""
+        photos = [p for p in photos if not p.busy]
+        if not photos:
+            return
+        if toggle and label and all(p.label == label for p in photos):
+            label = ""
+        for p in photos:
+            p.label = label
+            self._show(p)
+        self.apply_filter()
+        self._refresh_buttons()
+        name = core.LABEL_NAMES.get(label, "")
+        self.status.setText(f"{name + ' label' if name else 'No colour label'} on {len(photos)} photo"
+                            f"{'s' if len(photos) != 1 else ''}. Save writes it into the file, where Lightroom and "
+                            "Bridge see it too. Show it with the colour dots above the list.")
+        if self.review.photo is not None:
+            self.review.refresh_state()
+
+    def label_targets(self) -> list:
+        """The selected photos; a checked one among them brings every checked photo along."""
+        sel = self._selected_photos()
+        if any(p.checked for p in sel):
+            return self.checked_photos()
+        return sel
+
+    def show_label(self, key: str):
+        """The colour dots above the list: show only that label (click it again to show all)."""
+        want = "label_" + key
+        cur = self.filter_box.currentData()
+        self.filter_box.setCurrentIndex(max(0, self.filter_box.findData("all" if cur == want else want)))
+
+    def _sync_label_dots(self):
+        cur = self.filter_box.currentData() or ""
+        for k, b in self.label_dots.items():
+            b.blockSignals(True)
+            b.setChecked(cur == "label_" + k)
+            b.blockSignals(False)
+        for k, b in self.label_dots.items():
+            n = sum(1 for p in self.photos if p.label == k)
+            b.setToolTip(f"Show only the {core.LABEL_NAMES[k].lower()}-labelled photos ({n})"
+                         + (f"  ·  key {dict((a, d) for a, _n, _c, d in core.LABELS)[k]}" if k != "purple" else "")
+                         + "\nThen Check All ticks just those, and every button works on them.")
+
     def edited_fields(self, ph: Photo) -> set:
         """Which of title / description / keywords differ from what's in the file."""
         out = set()
@@ -4528,6 +4639,8 @@ class MainWindow(QMainWindow):
             out.add("description")
         if core.clean_keywords(ph.keywords) != core.clean_keywords(ph.file_keywords):
             out.add("keywords")
+        if ph.label != ph.file_label:
+            out.add("label")
         return out if ph.status != "reading" else set()
 
     def note_to_checked(self, ph: Photo):
@@ -4573,6 +4686,8 @@ class MainWindow(QMainWindow):
                  ("Ctrl+D", "Detect the selected photo(s)"),
                  ("Ctrl+R", "Redo the selected photo(s) with reasons"),
                  ("Ctrl+T", "Tick / untick the selected photo(s)"),
+                 ("Space", "Tick / untick every selected photo (or click any check box in the selection)"),
+                 ("6  7  8  9", "Red, yellow, green, blue label on the selected photos (again: off), as in Lightroom"),
                  ("Ctrl+S", "Save Metadata (checked, else selected, else all shown)"),
                  ("Ctrl+C / Ctrl+V", "Copy / paste title and keywords; Ctrl+Shift+V adds the keywords"),
                  ("Ctrl+F", "Search"),
@@ -4629,6 +4744,7 @@ class MainWindow(QMainWindow):
             if ph.busy or not ph.changed:
                 continue
             ph.title, ph.keywords, ph.description = ph.file_title, list(ph.file_keywords), ph.file_description
+            ph.label = ph.file_label
             ph.status, ph.message = "ready", "Reverted to what's saved in the file"
             self._show(ph)
         self.apply_filter()
@@ -4731,6 +4847,12 @@ class MainWindow(QMainWindow):
         a.setEnabled(any(p.note.strip() for p in idle))
         a.triggered.connect(lambda *_: self.paste_notes(idle, ""))
         menu.addSeparator()
+        labels = menu.addMenu("Colour label")
+        lab_photos = self.label_targets() or idle
+        for key, name, colour, k in core.LABELS + [("", "None", "", "")]:
+            a = labels.addAction(theme.dot(colour) if colour else QIcon(), name + (f"\t{k}" if k else ""))
+            a.setEnabled(bool(lab_photos))
+            a.triggered.connect(lambda *_, key=key: self.set_label(lab_photos, key))
         types = menu.addMenu("Set photo type")
         for key, label in [("", self._default_label())] + self.type_items():
             a = types.addAction(label)
@@ -5448,6 +5570,26 @@ class MainWindow(QMainWindow):
         if self.photos:
             self.search.setFocus()
             self.search.selectAll()
+
+    def eventFilter(self, obj, e):
+        table = getattr(self, "table", None)
+        if table is not None and obj is table.viewport() and e.type() in (
+                QEvent.MouseButtonPress, QEvent.MouseButtonRelease, QEvent.MouseButtonDblClick) \
+                and e.button() == Qt.LeftButton and e.modifiers() == Qt.NoModifier:
+            idx = table.indexAt(e.position().toPoint())
+            sel = self._selected_photos()
+            if idx.isValid() and idx.column() == COL_CHECK and 0 <= idx.row() < len(self.photos):
+                ph = self.photos[idx.row()]
+                if e.type() == QEvent.MouseButtonPress:   # anywhere in the cell, not just on the little box
+                    self.set_checked(sel if len(sel) > 1 and ph in sel else [ph], not ph.checked)
+                return True                           # handled: the selection stays as it is
+        if table is not None and obj is table and e.type() == QEvent.KeyPress and e.key() == Qt.Key_Space \
+                and e.modifiers() == Qt.NoModifier and table.state() != QAbstractItemView.EditingState:
+            sel = self._selected_photos()
+            if len(sel) > 1:
+                self.set_checked(sel, not all(p.checked for p in sel))
+                return True
+        return super().eventFilter(obj, e)
 
     def set_checked(self, photos, on: bool):
         self._filling = True                          # one refresh at the end, not one per row
@@ -6339,7 +6481,9 @@ class MainWindow(QMainWindow):
         if s.get("xmp2iptc_on_save", False):
             args = core.find_xmp2iptc_args(self.exiftool.exe if self.exiftool else None, s.get("xmp2iptc_args", ""))
         return {"fields": core.meta_fields(s), "xmp2iptc_args": args,
-                "location": self.location_for(ph) if ph is not None else self.editorial_location()}
+                "location": self.location_for(ph) if ph is not None else self.editorial_location(),
+                # the colour label is written only when you changed it here (so Lightroom / Bridge see it)
+                "label": ph.label if ph is not None and ph.label != ph.file_label else None}
 
     def _write_one(self, path, title, keywords, opts, description=""):
         try:
@@ -6348,7 +6492,7 @@ class MainWindow(QMainWindow):
             before = None
             core.debug(f"{os.path.basename(path)}: couldn't keep a copy for Undo: {e!r}", always=True)
         core.safe_write(self.exiftool, path, title, keywords, description or None, xmp2iptc_args=opts["xmp2iptc_args"],
-                        fields=opts["fields"], location=opts["location"])
+                        fields=opts["fields"], location=opts["location"], label=opts.get("label"))
         if before is not None:
             try:
                 core.remember_for_undo(path, before)
