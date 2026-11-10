@@ -1,5 +1,19 @@
 # What's new
 
+## 2026.11.10.2
+
+- **Photo notes up front:** the **Photo notes** column now comes right after the file name (your own column order is moved once to match), and empty cells say *Add a note for the AI…*. In the side panel the notes sit right under the photo.
+- **One note for all checked photos:** type a note on a checked photo and every checked photo gets it (the same goes for Avoid). In the side panel, **Use for N checked** gives the note shown to every checked photo.
+- **Notes now change the title:** a photo whose note is new since its title was written gets a new title when you Detect it, even with *Keep existing titles* on. **Detect Again** on one photo always writes a new title. Until a note has been used, the side panel says *Not used yet: Detect Again*.
+- **Saved or not, at a glance:**
+  - The side panel says it in one coloured line: *● Not saved yet: 2 changes only in this list. Save now*, or *✓ Saved to the file at 7:52*.
+  - Each edited box (title, description, keywords) gets an orange edge and *● edited* next to its name until it's saved.
+  - In the list, an orange dot by the file name means unsaved and a green tick means saved, with the time in the Status column.
+  - At the bottom, **● 3 not saved yet · Save all** saves them in one click, then turns into *✓ All changes saved to the files*. The window title shows the count too.
+- **Instructions for the AI take far less room:** the box is now four tabs, about a third of the height: *Instructions for the AI* (with the photo and text models), *Editorial titling* (all of it, as before), *Keywords & title text* and *Options*. The tab names show what's on (*Editorial titling: Tokyo, Japan*). The profile stays beside the tabs. The tab you were on is remembered.
+- **Smaller side panel:** the counts sit next to each field's name instead of on lines of their own, the description and keywords boxes are shorter (they scroll), and the preview scales to fit. Before, the preview could push the panel wider than its space and cut things off on the right.
+- **Photo type, lighter:** the list's Type column is a short label (*Default*, *Product on a store shelf*) instead of a full-width dropdown in every row. Click it to choose, and on a checked photo the choice goes to every checked photo. In the side panel it's one small *Type* row, and the default type is under *Options*.
+
 ## 2026.11.10.1
 
 - **Dark mode:** the app now follows Windows' light or dark setting, and switches by itself when Windows does. To choose one, use **Settings → Appearance** (*Follow Windows*, *Light*, *Dark*). The banners, the Upload window and the drop area have dark versions too.

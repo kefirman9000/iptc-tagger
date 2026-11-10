@@ -244,8 +244,9 @@ def test_fits_a_laptop_screen(window, make_photos):
     assert hint.width() <= 1366 and hint.height() <= 740, hint
     h = win.table.horizontalHeader()
     import iptc_tagger as app_mod
-    assert [h.logicalIndex(i) for i in range(5)] == [app_mod.COL_CHECK, app_mod.COL_THUMB, app_mod.COL_FILE,
-                                                       app_mod.COL_TITLE, app_mod.COL_KEYWORDS]
+    assert [h.logicalIndex(i) for i in range(6)] == [app_mod.COL_CHECK, app_mod.COL_THUMB, app_mod.COL_FILE,
+                                                       app_mod.COL_NOTE, app_mod.COL_AVOID, app_mod.COL_TITLE]
+    assert win.instructions.sizeHint().height() < 220             # the tabs, not the old tall box
     win.toggle_instructions()                                   # folded and unfolded both remembered
     assert win.settings["instructions_folded"] == win.instr_summary.isVisibleTo(win)
 
@@ -280,3 +281,68 @@ def test_busy_rows_show_a_bar_and_toasts_pop_up(window, make_photos):
     win.batch_total, win.batch_label, win.batch_started, win.batch_quiet = 2, "Detecting", time.monotonic(), False
     win._batch_finished()
     assert win.toast_box.isVisible() and "Detect finished: 2 photos" in win.toast_box.text()
+
+
+def test_notes_go_to_every_checked_photo(window, make_photos):
+    import iptc_tagger as app_mod
+    _mod, win = window
+    add(win, make_photos(3))
+    a, b, c = win.photos
+    win.set_checked([a, b], True)
+    win.table.item(win.rows[a.path], app_mod.COL_NOTE).setText("BJ's Wholesale store")   # typed on a checked row
+    assert a.note == b.note == "BJ's Wholesale store" and c.note == ""
+    win.table.item(win.rows[c.path], app_mod.COL_NOTE).setText("Costco")                 # an unchecked row: just it
+    assert c.note == "Costco" and a.note == "BJ's Wholesale store"
+    win._select_rows([win.rows[c.path]])
+    wait(lambda: win.review.photo is c, what="select")
+    assert win.review.b_note_all.isVisibleTo(win.review) and "2 checked" in win.review.b_note_all.text()
+    win.review.b_note_all.click()                                                          # side panel button
+    assert a.note == b.note == "Costco"
+    # the photo type is a plain cell now; a checked photo's type change goes to every checked photo
+    win.set_photo_type([a, b], "product_shelf")
+    assert win.table.item(win.rows[a.path], app_mod.COL_TYPE).text() == "Product on a store shelf"
+    assert win.table.item(win.rows[c.path], app_mod.COL_TYPE).text() == "Default"
+
+
+def test_saved_or_not_is_plain_to_see(window, make_photos):
+    _mod, win = window
+    add(win, make_photos(2))
+    ph = win.photos[0]
+    win._select_rows([win.rows[ph.path]])
+    wait(lambda: win.review.photo is ph, what="select")
+    ph.title, ph.keywords = "Red Barn in Snow", ["barn", "snow"]
+    win._show(ph)
+    wait(lambda: win.btn_unsaved.isVisibleTo(win), what="the unsaved count")
+    assert "1 not saved" in win.btn_unsaved.text() and "1 unsaved" in win.windowTitle()
+    assert win.review.state.property("pill") == "unsaved" and "Not saved yet" in win.review.state.text()
+    assert win.review.title.property("edited") is True and "edited" in win.review.title_info.text()
+    assert not win.table.item(win.rows[ph.path], 2).icon().isNull()                      # the orange dot
+    win.btn_unsaved.click()                                                                # Save all
+    wait(lambda: ph.status == "saved", what="saving")
+    wait(lambda: win.lbl_all_saved.isVisibleTo(win), what="all saved")
+    assert not win.btn_unsaved.isVisibleTo(win) and "unsaved" not in win.windowTitle()
+    assert win.review.state.property("pill") == "saved" and ph.saved_at in win.review.state.text()
+    assert win.review.title.property("edited") is False
+
+
+def test_a_new_note_or_detect_again_replaces_a_kept_title(window, make_photos):
+    _mod, win = window
+    add(win, make_photos(1))
+    ph = win.photos[0]
+    win.keep_titles.setChecked(True)
+    result = {"title": "Kirkland Protein Bars at Costco", "keywords": ["protein bar"], "description": ""}
+
+    def run(note="", fresh=False):
+        ph.title, ph.note, ph.fresh, ph.note_sent = "Old Title", note, fresh, note
+        ph.busy, ph.status = True, "identifying"
+        win._identified(ph.path, dict(result))
+        return ph.title
+
+    assert run() == "Old Title"                                   # Keep existing titles: kept
+    assert "Protein Bars" in run(note="BJ's Wholesale store")    # a new note: rewritten with it
+    assert run(note="BJ's Wholesale store") == "Old Title"       # the same note again: kept
+    assert "Protein Bars" in run(fresh=True)                      # Detect Again on this photo: rewritten
+    ph.note, ph.note_used = "Sam's Club", "BJ's Wholesale store"
+    win.review.show_photo(ph)
+    win.review.refresh_state()
+    assert win.review.note_hint.isVisibleTo(win.review) and "Not used yet" in win.review.note_hint.text()

@@ -17,7 +17,8 @@ MODES = [("system", "Follow Windows"), ("light", "Light"), ("dark", "Dark")]
 LIGHT = {
     "warn_bg": "#fff4d6", "warn_fg": "#5c4400", "warn_border": "#e9cf7a",
     "info_bg": "#e8f1fd", "info_fg": "#1c3d6e", "info_border": "#b5cff3", "link": "#0b3a82",
-    "unsaved_bg": "#fff4e5", "unsaved_fg": "#7a4b00",
+    "unsaved_bg": "#fff4e5", "unsaved_fg": "#7a4b00", "unsaved_border": "#f0a640", "unsaved_dot": "#f08c00",
+    "saved_bg": "#e6f4ea", "saved_fg": "#1e6b34",
     "ok": "#2e7d32", "bad": "#c62828", "muted": "#6b7280", "grey": "#8a8f98",
     "drop_border": "#9aa3ad", "preview_bg": "#7f7f7f18",
     "primary": "#2f7ddd", "primary_hover": "#3d8af0", "primary_border": "#2569bd", "primary_off": "#9dbbe2",
@@ -27,7 +28,8 @@ LIGHT = {
 DARK = {
     "warn_bg": "#3a3016", "warn_fg": "#f3dd9b", "warn_border": "#6b5a24",
     "info_bg": "#16273f", "info_fg": "#cfe0f7", "info_border": "#2e4a73", "link": "#8fbaf5",
-    "unsaved_bg": "#3a2c16", "unsaved_fg": "#f3cf96",
+    "unsaved_bg": "#3a2c16", "unsaved_fg": "#f3cf96", "unsaved_border": "#c98a2e", "unsaved_dot": "#f5a524",
+    "saved_bg": "#17321f", "saved_fg": "#9be0a9",
     "ok": "#6fcf7a", "bad": "#ff8a80", "muted": "#9aa0a6", "grey": "#8a8f98",
     "drop_border": "#5a626b", "preview_bg": "#ffffff10",
     "primary": "#2f7ddd", "primary_hover": "#4a92f0", "primary_border": "#1f5fae", "primary_off": "#2c4363",
@@ -101,20 +103,39 @@ def _pixmap(name: str, colour: str, size: int) -> QPixmap:
     return pm
 
 
-def icon(name: str, on_primary: bool = False, size: int = 16) -> QIcon:
-    """A Lucide icon in the current text colour (white on a blue button), with a faded version when disabled."""
-    key = (name, on_primary, size, _state["dark"])
+def icon(name: str, on_primary: bool = False, size: int = 16, colour: str = "") -> QIcon:
+    """A Lucide icon in the current text colour (white on a blue button, or a colour of its own), with a faded
+    version when disabled."""
+    key = (name, on_primary, size, _state["dark"], colour)
     if key in _icon_cache:
         return _icon_cache[key]
     if not os.path.exists(os.path.join(ICON_DIR, name + ".svg")):
         return QIcon()
-    normal = "#ffffff" if on_primary else ("#e8eaed" if _state["dark"] else "#2b2f36")
+    normal = colour or ("#ffffff" if on_primary else ("#e8eaed" if _state["dark"] else "#2b2f36"))
     faded = "#ffffffaa" if on_primary else ("#6b7078" if _state["dark"] else "#a3a8b0")
     ic = QIcon()
     ic.addPixmap(_pixmap(name, normal, size), QIcon.Normal)
     ic.addPixmap(_pixmap(name, faded, size), QIcon.Disabled)
     _icon_cache[key] = ic
     return ic
+
+
+def dot(colour: str, size: int = 10) -> QIcon:
+    """A small filled circle (the "unsaved changes" mark in the list)."""
+    key = ("dot", colour, size)
+    if key not in _icon_cache:
+        scale = 2
+        pm = QPixmap(size * scale, size * scale)
+        pm.fill(Qt.transparent)
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(colour))
+        p.drawEllipse(QRectF(1, 1, size * scale - 2, size * scale - 2))
+        p.end()
+        pm.setDevicePixelRatio(scale)
+        _icon_cache[key] = QIcon(pm)
+    return _icon_cache[key]
 
 
 def stylesheet() -> str:
@@ -135,4 +156,18 @@ def stylesheet() -> str:
         QPushButton[plain="true"]::menu-indicator{{subcontrol-position:right center;right:4px}}
         QTableWidget{{font-size:13px;alternate-background-color:rgba(127,127,127,13)}}
         QGroupBox{{font-weight:600}}
+        QTabWidget#instrTabs::pane{{border:1px solid palette(mid);border-radius:6px;top:-1px}}
+        QTabWidget#instrTabs QTabBar::tab{{padding:5px 12px}}
+        QLabel[pill="unsaved"]{{background:{c['unsaved_bg']};color:{c['unsaved_fg']};border-radius:6px;
+            padding:5px 8px;font-weight:600}}
+        QLabel[pill="saved"]{{background:{c['saved_bg']};color:{c['saved_fg']};border-radius:6px;padding:5px 8px;
+            font-weight:600}}
+        QLabel[pill="busy"]{{background:{c['info_bg']};color:{c['info_fg']};border-radius:6px;padding:5px 8px}}
+        QLabel[pill="plain"]{{background:{c['plain_hover']};border-radius:6px;padding:5px 8px}}
+        QLineEdit[edited="true"],QPlainTextEdit[edited="true"]{{border:1px solid {c['unsaved_border']};
+            border-left:4px solid {c['unsaved_border']};border-radius:3px}}
+        QPushButton#unsavedPill{{color:{c['unsaved_fg']};background:{c['unsaved_bg']};border:1px solid
+            {c['unsaved_border']};border-radius:6px;padding:5px 10px;font-weight:600}}
+        QPushButton#unsavedPill:hover{{border-color:{c['unsaved_fg']}}}
+        QLabel#allSaved{{color:{c['ok']};padding:0 6px}}
     """
