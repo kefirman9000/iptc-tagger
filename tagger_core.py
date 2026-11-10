@@ -39,7 +39,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.11.09.9"
+APP_VERSION = "2026.11.09.10"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 # camera RAW files: titles and keywords go into the Lightroom sidecar next to them (photo.xmp), never the RAW.
 # DNG is left out: Lightroom ignores sidecars for DNG and keeps its metadata inside the file itself.
@@ -572,7 +572,7 @@ def export_csv(path: str, rows: list[dict], fmt: str = "shutterstock", categorie
         enc = "utf-8"
     elif fmt == "adobe":
         head = ["Filename", "Title", "Keywords", "Category", "Releases"]
-        body = [[r["file"], r["title"], ",".join(r["keywords"]), "", ""] for r in rows]
+        body = [[r["file"], r["title"], ",".join(r["keywords"]), r.get("adobe_category") or "", ""] for r in rows]
         enc = "utf-8"
     else:
         head = ["File", "Folder", "Title", "Title length", "Description", "Description length", "Keywords",
@@ -2112,7 +2112,7 @@ def expand_title_prefix(text: str, taken: str = "") -> str:
         filled = re.sub(r"\{\w*\}", "", text)
         filled = re.sub(r"\(\s*\)", "", filled)                            # "Photo ({year})" -> "Photo"
         filled = re.sub(r"[,;:|–—-]\s*(?=[,;:|–—-])", "", filled)           # keep the last separator in a run
-        filled = re.sub(r"\s+([,;:])", r"\1", " ".join(filled.split()))   # "Durham :" -> "Durham:"
+        filled = re.sub(r"\s+([,;:])", r"\1", " ".join(filled.split()))   # "Tokyo :" -> "Tokyo:"
         filled = filled.lstrip(",;:|–—- ")
         if not any(ch.isalnum() for ch in filled):
             filled = ""
@@ -2140,7 +2140,7 @@ DATE_FORMATS = [   # (key, strftime-like pattern, built without locale so it's t
 ]
 DATE_SEPARATORS = [("colon", "Colon   :"), ("dash", "Dash   –"), ("comma", "Comma   ,"), ("bar", "Bar   |"),
                    ("space", "Space only"), ("paren", "Parentheses   ( )")]
-# what goes between the location and the date ("Durham, NC - October 26, 2026")
+# what goes between the location and the date ("Tokyo, Japan - October 26, 2026")
 LOCATION_SEPARATORS = [("dash", "Hyphen   -"), ("endash", "Dash   –"), ("comma", "Comma   ,"),
                        ("bar", "Bar   |"), ("space", "Space only")]
 _LOC_JOIN = {"dash": " - ", "endash": " – ", "comma": ", ", "bar": " | ", "space": " "}
@@ -2176,7 +2176,7 @@ def _date_after(text: str, date: str, sep: str) -> str:
     return text + {"space": " ", "comma": ", ", "dash": " – ", "bar": " | ", "colon": ", "}.get(sep, " ") + date
 
 
-LOCATION_DATE_JOIN = _LOC_JOIN["dash"]   # editorial dateline: "Durham, North Carolina, USA - October 26, 2026"
+LOCATION_DATE_JOIN = _LOC_JOIN["dash"]   # editorial dateline: "Tokyo, Japan - October 26, 2026"
 
 
 def title_dateline(location: str = "", date: str = "", loc_sep: str = "dash") -> str:
@@ -2282,7 +2282,7 @@ def strip_title_extras(title: str, prefix: str = "", date: str = "", location: s
             x = generic[0].sub("", x, count=1)
         for p in pats:
             x = re.sub(r"^\s*[\(\[]?\s*" + p + r"\s*[\)\]]?" + seps, "", x, flags=re.I)
-        if location:   # the location on its own only counts when punctuation follows it ("Durham:" not "Durham Bulls")
+        if location:   # the location on its own only counts when punctuation follows it ("Tokyo:" not "Tokyo Tower")
             x = re.sub(r"^\s*" + re.escape(location) + r"\s*[,;:|–—-]+\s*", "", x, flags=re.I)
         return x
 
@@ -2300,7 +2300,7 @@ def strip_title_extras(title: str, prefix: str = "", date: str = "", location: s
 
 
 def drop_trailing_location(title: str, location: str) -> str:
-    """'Pier at Sunset in Durham, North Carolina' -> 'Pier at Sunset' when that location is added
+    """'Pier at Sunset in Tokyo, Japan' -> 'Pier at Sunset' when that location is added
     to the title separately (so the place isn't in the title twice)."""
     location = (location or "").strip()
     if not location or not title:
@@ -2308,7 +2308,7 @@ def drop_trailing_location(title: str, location: str) -> str:
     parts = [re.escape(location)]
     first = location.split(",")[0].strip()
     if first and first != location:
-        parts.append(re.escape(first) + r"(?:\s*,[^,]{1,40}){0,2}")        # "in Durham, NC" with a shorter location form
+        parts.append(re.escape(first) + r"(?:\s*,[^,]{1,40}){0,2}")        # "in Tokyo, Japan" with a shorter location form
     for p in parts:
         new = re.sub(r"\s*,?\s+(?:in|at|near|on|of|from)\s+(?:the\s+)?" + p + r"\s*$", "", title, flags=re.I)
         if new != title and new.strip():
@@ -2395,7 +2395,7 @@ def is_date_keyword(keyword: str, years=()) -> bool:
 
 
 def _place_terms(locations) -> set[str]:
-    """Every keyword form of these locations: the whole thing and each part ('durham', 'nc', 'durham nc')."""
+    """Every keyword form of these locations: the whole thing and each part ('tokyo', 'japan', 'tokyo japan')."""
     out = set()
     for loc in locations or ():
         parts = [" ".join(p.split()).casefold() for p in str(loc or "").split(",") if p.strip()]
@@ -2562,8 +2562,10 @@ DESCRIPTION_SCHEMA = {
     "type": "object",
     "properties": {"description": {"type": "string"},
                    # the Shutterstock categories, chosen while the model is looking at the photo anyway
-                   "categories": {"type": "array", "items": {"type": "string", "enum": SHUTTERSTOCK_CATEGORIES}}},
-    "required": ["description", "categories"],
+                   "categories": {"type": "array", "items": {"type": "string", "enum": SHUTTERSTOCK_CATEGORIES}},
+                   "adobe_category": {"type": "integer", "enum": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
+                                                                  15, 16, 17, 18, 19, 20, 21]}},
+    "required": ["description", "categories", "adobe_category"],
 }
 DESCRIPTION_MAX = 200       # Shutterstock's limit for the description; Alamy and Dreamstime take this too
 
@@ -2736,6 +2738,25 @@ def drop_unproven_parents(text: str, proof_n: str) -> str:
         text = re.sub(rx, drop, text, flags=re.I if ("an?" not in rx and "Brand|Product)" not in rx) else 0)
     text = re.sub(r"\s+([,.;:])", r"\1", " ".join(text.split()))
     return text.strip(" ,;:-")
+
+
+# Adobe Stock's 21 categories (the number goes in its CSV) and what each is for
+ADOBE_CATEGORIES = {
+    1: "Animals", 2: "Buildings and Architecture", 3: "Business", 4: "Drinks", 5: "The Environment",
+    6: "States of Mind", 7: "Food", 8: "Graphic Resources", 9: "Hobbies and Leisure", 10: "Industry",
+    11: "Landscapes", 12: "Lifestyle", 13: "People", 14: "Plants and Flowers", 15: "Culture and Religion",
+    16: "Science", 17: "Social Issues", 18: "Sports", 19: "Technology", 20: "Transport", 21: "Travel",
+}
+
+
+def adobe_category(value) -> int | None:
+    """A valid Adobe Stock category number from what the AI (or a saved list) gave, else None."""
+    try:
+        n = int(str(value).strip().split()[0].rstrip(".:"))
+    except (ValueError, IndexError):
+        low = str(value or "").strip().casefold()
+        n = next((k for k, v in ADOBE_CATEGORIES.items() if v.casefold() == low), 0)
+    return n if n in ADOBE_CATEGORIES else None
 
 
 CATEGORY_MEANINGS = {   # what each Shutterstock category is for, so it isn't picked for the wrong thing
@@ -2948,10 +2969,15 @@ def build_description_prompt(title: str, keywords, context: str = "", photo_note
               "first), exactly as written here. Each is followed by what it's for: "
               + "; ".join(f"{c} ({CATEGORY_MEANINGS[c]})" for c in SHUTTERSTOCK_CATEGORIES) + ". "
               "A product on a store shelf is Objects or Food and drink, not Buildings/Landmarks or Nature. Only choose "
-              "People or Celebrities when a person is clearly in the photo."]
+              "People or Celebrities when a person is clearly in the photo.",
+              "", "And the one Adobe Stock category that fits best, as its number: "
+              + "; ".join(f"{n} {name}" for n, name in ADOBE_CATEGORIES.items()) + ". Food is 7 and drinks are 4 "
+              "(also for products on a shelf); tools, paint and building supplies are 10 Industry; shops and "
+              "products that are neither are 3 Business."]
     if (direction or "").strip() and direction.strip() != (context or "").strip():
         lines += ["", "PHOTOGRAPHER'S DIRECTIONS (follow them where they apply to a description):", direction.strip()]
-    lines += ["", 'Output only JSON in exactly this form: {"description": "...", "categories": ["..."]}']
+    lines += ["", 'Output only JSON in exactly this form: {"description": "...", "categories": ["..."], '
+              '"adobe_category": 0}']
     return "\n".join(lines)
 
 
@@ -4486,7 +4512,7 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
     if not title and not keywords:
         debug(f"{name}: FAILED: no title or keywords after {time.monotonic() - started:.1f} s")
         raise ApiError(EMPTY_REPLY)
-    desc, cats = "", []
+    desc, cats, adobe = "", [], None
     if description and title:
         # the description (caption) Alamy, Dreamstime and Shutterstock want: written from the finished title,
         # looking at the photo again so it can add what the title leaves out
@@ -4496,6 +4522,7 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
                       DESCRIPTION_SCHEMA, "description")
             desc = clean_description(str(got.get("description", "") or ""), symbols, never_use)
             cats = shutterstock_categories(got.get("categories"))
+            adobe = adobe_category(got.get("adobe_category"))
             if len(desc.split()) < 5 or desc.rstrip(".").casefold() == title.casefold():
                 desc = ""                            # nothing better than the title: it stands in for it
             debug(f"{name}: description: {desc!r}")
@@ -4513,7 +4540,7 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
         title, desc, keywords, cats = fixed["title"], fixed["description"], fixed["keywords"], fixed["categories"]
     debug(f"{name}: DONE in {time.monotonic() - started:.1f} s: {len(keywords)} keywords, revised={revised}, "
           f"title={title!r}")
-    result = {"title": title, "keywords": keywords, "description": desc, "categories": cats,
+    result = {"title": title, "keywords": keywords, "description": desc, "categories": cats, "adobe_category": adobe,
               "seconds": round(time.monotonic() - started, 1),
               "revised": revised, "label": read}
     if copyright_free:

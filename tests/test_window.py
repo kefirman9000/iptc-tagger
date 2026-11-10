@@ -199,7 +199,7 @@ def test_make_shutterstock_csv_button(window, make_photos):
     import csv
     app, win = window
     add(win, make_photos(2))
-    title = ("Holly Springs, North Carolina - November 4, 2026: Gerber Puffs Cereal Snacks Variety Pack on Grocery "
+    title = ("Tokyo, Japan - November 4, 2026: Gerber Puffs Cereal Snacks Variety Pack on Grocery "
              "Store Shelf, Featuring Banana, Apple Cinnamon, Sweet Potato and Strawberry Flavors")
     a, b = win.photos
     a.title, a.description, a.keywords = title, "A colorful display of Gerber Puffs on a shelf.", ["gerber", "puffs"]
@@ -211,7 +211,7 @@ def test_make_shutterstock_csv_button(window, make_photos):
     path = win.make_shutterstock_csv(ask_categories=lambda n, t: ["Food and drink"])
     rows = {r["Filename"]: r for r in csv.DictReader(open(path, encoding="utf-8"))}
     assert rows[os.path.basename(a.path)]["Description"] == title             # the title, as in the list
-    assert rows[os.path.basename(a.path)]["Categories"] == "Food and drink"
+    assert rows[os.path.basename(a.path)]["Categories"] == "Food and drink,Objects"   # picked by itself
     again = win.make_shutterstock_csv(ask_categories=lambda n, t: ["Food and drink"])
     assert again != path and os.path.exists(path)                              # an earlier one is never replaced
 

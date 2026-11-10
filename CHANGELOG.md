@@ -1,5 +1,13 @@
 # What's new
 
+## 2026.11.09.10
+
+- **Categories for every stock site, picked for you:** each photo now gets its Shutterstock, Adobe Stock and Dreamstime categories, shown in the side panel (*Categories: Shutterstock: Food and drink, Objects · Adobe: Drinks · Dreamstime: Commercial, Food & Beverages*). The AI picks the Adobe Stock category along with the Shutterstock ones; for photos detected earlier they're worked out from the title and keywords (StockUp's category picker), and categories the photo gives no sign of are left out. **Make Shutterstock CSV** no longer asks you for categories.
+- **A CSV for each stock site:** **Export CSV…** is now one window: tick Shutterstock, Adobe Stock, Dreamstime, Depositphotos, 123RF, Pond5 or *All details*, choose the folder, and each gets its own CSV in the format that site asks for, with its categories filled in and the date in the name (*dreamstime_2026-11-09.csv*). Your choice of sites is remembered.
+- **More agencies to upload to:** besides Shutterstock, Adobe Stock, Dreamstime, Alamy, Depositphotos, 123RF and Pond5, **Upload…** now sends to **Freepik (Magnific)**, **Vecteezy**, **Yay Images** and **Colourbox**, which show their upload server on your contributor page (copy it into Logins once), and to **any other agency with FTP**: the two *Other agency* slots take a name and the server details. Agencies such as iStock, Canva and Pixta only take uploads through their websites.
+- **Logins, organised:** **Logins…** groups the agencies (*known upload server*, *server on your contributor page*, *your own*), with server, port and FTP / FTPS / SFTP for the ones that need them. The Upload window only lists agencies you've added a login for, so it stays short.
+- Example locations in the notes and tests are now Tokyo, Japan.
+
 ## 2026.11.09.9
 
 - **Fits a laptop screen, with a photo selected too:** the side panel now scrolls when the window is shorter than everything in it. Before, selecting a photo made the window grow to about 1,100 pixels tall, taller than a laptop's screen. At 1366 × 768 everything now fits.
@@ -29,7 +37,7 @@
 
 ## 2026.11.09.6
 
-- **Editorial titles without the place and date in the keywords:** a new **Add to keywords** box next to *Editorial (include location and date)*. Untick it and the location and date still go in front of the title (and the description), but *cary*, *north carolina*, *november 2026* and *2026* aren't added to the keywords. Ones the AI writes or that are already saved on the photo are taken out too, and the AI is told to leave them out. Your keywords to put first are always kept, even with a place or *{month} {year}* in them. Unticking it offers to take them out of the photos already in the list as well. On to start with, as before.
+- **Editorial titles without the place and date in the keywords:** a new **Add to keywords** box next to *Editorial (include location and date)*. Untick it and the location and date still go in front of the title (and the description), but *tokyo*, *japan*, *november 2026* and *2026* aren't added to the keywords. Ones the AI writes or that are already saved on the photo are taken out too, and the AI is told to leave them out. Your keywords to put first are always kept, even with a place or *{month} {year}* in them. Unticking it offers to take them out of the photos already in the list as well. On to start with, as before.
 
 ## 2026.11.09.5
 
@@ -44,7 +52,7 @@
 
 ## 2026.11.09.3
 
-- **The AI only sees the photo unless you give it the location:** with Editorial on and **Give to AI** (next to the location, was *AI uses it*) unticked, nothing about the place or date reaches the AI any more. Before, the location box was held back but the title and keywords already saved on the photo still went along (*Cary, North Carolina - November 6, 2026: …*, *cary*, *november 2026*), and so did keywords to put first with *{month} {year}* in them, so the AI picked the place and date up anyway. Now they're taken out of what it's given, and out of what comes back, and the app adds the location and date to the title and the place and date keywords itself after detecting. Tick **Give to AI** to have the AI know where and when, as before. Your own Instructions and photo notes are always given to it.
+- **The AI only sees the photo unless you give it the location:** with Editorial on and **Give to AI** (next to the location, was *AI uses it*) unticked, nothing about the place or date reaches the AI any more. Before, the location box was held back but the title and keywords already saved on the photo still went along (*Tokyo, Japan - November 6, 2026: …*, *tokyo*, *november 2026*), and so did keywords to put first with *{month} {year}* in them, so the AI picked the place and date up anyway. Now they're taken out of what it's given, and out of what comes back, and the app adds the location and date to the title and the place and date keywords itself after detecting. Tick **Give to AI** to have the AI know where and when, as before. Your own Instructions and photo notes are always given to it.
 
 ## 2026.11.09.2
 
@@ -68,7 +76,7 @@
 ## 2026.11.07.1
 
 - **Reword: Make it longer, add what the subject is:** a new Reword option for titles that came out too short. The AI makes the title about 10 to 16 words by adding general background about what it names: what kind of thing it is, what it's made of or used for, its category, or what it's known for. It doesn't invent details about the photo itself, and it never adds a date or the place. The old *Make it fuller* is now *Make it fuller (same details)*: it only rewords what's already there. *Make it shorter* is unchanged.
-- **Fix: location and date stay out when they're off:** with Editorial off, the AI could still pick up a place or a date from text saved on the photo earlier, such as an old title with a dateline or keywords like *durham* or *october 2026*, and put them back into the new title and keywords. Detect and Reword now take the location and the month/year out of what the AI is given, and out of what comes back, including old keywords kept with *Keep existing keywords*. With Editorial and the date both off, the AI is also told not to add any date. A place or date you wrote yourself in your Instructions, a photo note or your keywords to put first is still used.
+- **Fix: location and date stay out when they're off:** with Editorial off, the AI could still pick up a place or a date from text saved on the photo earlier, such as an old title with a dateline or keywords like *tokyo* or *october 2026*, and put them back into the new title and keywords. Detect and Reword now take the location and the month/year out of what the AI is given, and out of what comes back, including old keywords kept with *Keep existing keywords*. With Editorial and the date both off, the AI is also told not to add any date. A place or date you wrote yourself in your Instructions, a photo note or your keywords to put first is still used.
 
 ## 2026.11.05.4
 

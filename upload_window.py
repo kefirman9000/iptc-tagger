@@ -21,52 +21,96 @@ STATE_WORDS = {"waiting": "Waiting", "connecting": "Connecting…", "uploading":
 
 
 class LoginsDialog(QDialog):
-    """Your login for each site. Passwords go in the computer's keychain."""
+    """Your login for each agency, in three groups. Passwords go in the computer's keychain."""
 
     def __init__(self, parent, settings: dict):
         super().__init__(parent)
-        self.setWindowTitle("Upload logins")
-        self.setMinimumWidth(720)
+        self.setWindowTitle("Agencies and logins")
+        self.setMinimumWidth(900)
         self.settings = settings
         lay = QVBoxLayout(self)
         where = up.keychain_name()
-        info = QLabel("Your FTP login for each site you upload to. "
-                      + (f"Passwords are kept in {where}; " if where else
-                         "Passwords are kept in a settings file only you can read; ")
-                      + "usernames in IPTC Tagger's settings. Logins you saved in StockUp are used here too, "
-                      "until you save one here.")
+        info = QLabel("Your FTP login for each agency you upload to. Leave the others empty: only agencies with a "
+                      "login show in the Upload window. "
+                      + (f"Passwords are kept in {where}. " if where else
+                         "Passwords are kept in a settings file only you can read. ")
+                      + "Logins you saved in StockUp are used here too, until you save one here.")
         info.setWordWrap(True)
         lay.addWidget(info)
-        grid = QGridLayout()
-        grid.addWidget(QLabel("<b>Site</b>"), 0, 0)
-        grid.addWidget(QLabel("<b>Username</b>"), 0, 1)
-        grid.addWidget(QLabel("<b>Password</b>"), 0, 2)
+        body = QWidget()
+        grid = QGridLayout(body)
+        grid.setHorizontalSpacing(8)
         self.rows = {}
-        for r, s in enumerate(up.load_sites(), start=1):
-            name = s["name"]
-            lbl = QLabel(s["label"])
-            lbl.setToolTip(up.SITES[name]["login_hint"])
-            user = QLineEdit(s["username"])
-            user.setPlaceholderText(up.SITES[name]["login_hint"][:60])
-            user.setToolTip(up.SITES[name]["login_hint"])
-            pw = QLineEdit()
-            pw.setEchoMode(QLineEdit.Password)
-            pw.setPlaceholderText("saved" + (" in StockUp" if s["source"] == "StockUp" else "")
-                                  if s["password"] else "password")
-            test = QPushButton("Test")
-            test.setToolTip("Try this login now (takes up to 15 seconds)")
-            result = QLabel()
-            result.setWordWrap(True)
-            result.setMinimumWidth(160)
-            test.clicked.connect(lambda *_, n=name: self._test(n))
-            for c, w in enumerate((lbl, user, pw, test, result)):
-                grid.addWidget(w, r, c)
-            self.rows[name] = (user, pw, result, s)
+        logins = {s["name"]: s for s in up.load_sites()}
+        r = 0
+        for title, names in up.SITE_GROUPS:
+            head = QLabel(f"<b>{title}</b>")
+            head.setStyleSheet("padding-top:8px")
+            grid.addWidget(head, r, 0, 1, 6)
+            r += 1
+            if any(up.SITES[n].get("needs_host") for n in names):
+                for c, h in enumerate(("Agency", "Username", "Password", "Server", "Port / type")):
+                    grid.addWidget(QLabel(f"<span style='color:{GREY}'>{h}</span>"), r, c)
+                r += 1
+            for name in names:
+                s, rules = logins[name], up.SITES[name]
+                if rules.get("custom"):
+                    lbl = QLineEdit(s["label"] if s["label"] != rules["label"] else "")
+                    lbl.setPlaceholderText(rules["label"] + ": its name")
+                else:
+                    lbl = QLabel(s["label"])
+                lbl.setToolTip(rules["login_hint"])
+                user = QLineEdit(s["username"])
+                user.setPlaceholderText("username")
+                user.setToolTip(rules["login_hint"])
+                pw = QLineEdit()
+                pw.setEchoMode(QLineEdit.Password)
+                pw.setPlaceholderText(("saved" + (" in StockUp" if s["source"] == "StockUp" else ""))
+                                      if s["password"] else "password")
+                host = port = proto = None
+                if rules.get("needs_host"):
+                    host = QLineEdit(s["host"])
+                    host.setPlaceholderText("server, from the agency's upload page")
+                    host.setToolTip(rules["login_hint"])
+                    port = QLineEdit(str(s["port"]))
+                    port.setMaximumWidth(56)
+                    from PySide6.QtWidgets import QComboBox
+                    proto = QComboBox()
+                    for key, text in (("ftp", "FTP"), ("ftps", "FTPS"), ("sftp", "SFTP")):
+                        proto.addItem(text, key)
+                    proto.setCurrentIndex(max(0, proto.findData(s["protocol"])))
+                    proto.currentIndexChanged.connect(
+                        lambda *_, pr=proto, po=port: po.setText("22" if pr.currentData() == "sftp" else "21"))
+                test = QPushButton("Test")
+                test.setToolTip("Try this login now (takes up to 15 seconds)")
+                result = QLabel()
+                result.setWordWrap(True)
+                result.setMinimumWidth(150)
+                test.clicked.connect(lambda *_, n=name: self._test(n))
+                grid.addWidget(lbl, r, 0)
+                grid.addWidget(user, r, 1)
+                grid.addWidget(pw, r, 2)
+                if host is not None:
+                    grid.addWidget(host, r, 3)
+                    pp = QHBoxLayout()
+                    pp.addWidget(port)
+                    pp.addWidget(proto)
+                    grid.addLayout(pp, r, 4)
+                grid.addWidget(test, r, 5)
+                grid.addWidget(result, r, 6)
+                self.rows[name] = {"label": lbl, "user": user, "pw": pw, "host": host, "port": port,
+                                   "proto": proto, "result": result, "site": s}
+                r += 1
         grid.setColumnStretch(1, 2)
-        grid.setColumnStretch(2, 1)
-        grid.setColumnStretch(4, 2)
-        lay.addLayout(grid)
-        self.enc_only = QCheckBox("Encrypted connections only (skip a site that only offers plain FTP)")
+        grid.setColumnStretch(3, 2)
+        grid.setColumnStretch(6, 2)
+        from PySide6.QtWidgets import QFrame, QScrollArea
+        scroll = QScrollArea()
+        scroll.setWidget(body)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        lay.addWidget(scroll, 1)
+        self.enc_only = QCheckBox("Encrypted connections only (skip an agency that only offers plain FTP)")
         self.enc_only.setChecked(bool(settings.get("upload_encrypted_only", False)))
         lay.addWidget(self.enc_only)
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
@@ -75,15 +119,22 @@ class LoginsDialog(QDialog):
         lay.addWidget(buttons)
 
     def _site_now(self, name):
-        user, pw, _r, s = self.rows[name]
-        site = dict(s, username=user.text().strip())
-        if pw.text():
-            site["password"] = pw.text()
+        w = self.rows[name]
+        site = dict(w["site"], username=w["user"].text().strip())
+        if w["pw"].text():
+            site["password"] = w["pw"].text()
+        if w["host"] is not None:
+            site["host"] = w["host"].text().strip()
+            try:
+                site["port"] = int(w["port"].text())
+            except ValueError:
+                pass
+            site["protocol"] = w["proto"].currentData()
         return site
 
     def _test(self, name):
         """Try the login in the background (up to 15 seconds) and show the answer when it comes."""
-        _u, _p, result, _s = self.rows[name]
+        result = self.rows[name]["result"]
         result.setText("Testing…")
         answer = []
         site, enc = self._site_now(name), self.enc_only.isChecked()
@@ -100,12 +151,20 @@ class LoginsDialog(QDialog):
         QTimer.singleShot(200, check)
 
     def _save(self):
-        for name, (user, pw, _r, s) in self.rows.items():
-            u = user.text().strip()
+        for name, w in self.rows.items():
+            s = w["site"]
+            u = w["user"].text().strip()
+            extra = {}
+            if w["host"] is not None:
+                extra = {"host": w["host"].text().strip(), "port": w["port"].text().strip() or None,
+                         "protocol": w["proto"].currentData()}
+            if isinstance(w["label"], QLineEdit):
+                extra["label"] = w["label"].text().strip()
             if not u and s["source"] == "IPTC Tagger":
                 up.save_login(name, "", clear=True)
-            elif u and (u != s["username"] or pw.text() or s["source"] != "IPTC Tagger"):
-                up.save_login(name, u, pw.text() or (s["password"] if s["source"] == "StockUp" else ""))
+            elif u and (u != s["username"] or w["pw"].text() or s["source"] != "IPTC Tagger" or extra):
+                up.save_login(name, u, w["pw"].text() or (s["password"] if s["source"] == "StockUp" else ""),
+                              **extra)
         self.settings["upload_encrypted_only"] = self.enc_only.isChecked()
         core.save_settings(self.settings)
         self.accept()
@@ -213,9 +272,20 @@ class UploadWindow(QDialog):
                     w.deleteLater()
         self.rows = {}
         chosen = set(self.win.settings.get("upload_sites") or [])
-        for r, s in enumerate(up.load_sites(), start=1):
+        sites = up.load_sites()
+        usable = [s for s in sites if s["username"] and s["password"] and s["host"]]
+        others = [s["label"] for s in sites if s not in usable]
+        if hasattr(self, "more"):
+            self.more.deleteLater()
+        self.more = QLabel((f"No agency logins yet. Click <b>Logins…</b> to add yours." if not usable else
+                            f"<span style='color:{GREY}'>{len(others)} more agencies (" + ", ".join(others[:4])
+                            + ("…" if len(others) > 4 else "") + ") can be added under Logins….</span>")
+                           if others else "")
+        self.more.setWordWrap(True)
+        self.grid.addWidget(self.more, len(usable) + 1, 0, 1, 4)
+        for r, s in enumerate(usable, start=1):
             name = s["name"]
-            ready = bool(s["username"] and s["password"])
+            ready = True
             cb = QCheckBox(s["label"])
             cb.setChecked(ready and (name in chosen if chosen else True))
             cb.setEnabled(ready)
@@ -378,3 +448,75 @@ class UploadWindow(QDialog):
             self.uploader.stop()
         self.timer.stop()
         super().closeEvent(e)
+
+
+class SiteCsvDialog(QDialog):
+    """Export CSV… : tick the stock sites, and each gets its own CSV with categories picked for every photo."""
+
+    def __init__(self, parent, count: int, settings: dict, folder: str):
+        import site_files
+        super().__init__(parent)
+        self.settings = settings
+        self.setWindowTitle("Export CSV for your stock sites")
+        self.setMinimumWidth(560)
+        lay = QVBoxLayout(self)
+        head = QLabel(f"<b>{count} photo{'s' if count != 1 else ''}.</b> Each site you tick gets its own CSV, in "
+                      "the format that site asks for. Categories are picked for every photo (the AI's choice "
+                      "first), so you don't have to. They're shown in the side panel.")
+        head.setWordWrap(True)
+        lay.addWidget(head)
+        chosen = set(settings.get("csv_sites") or ["shutterstock", "adobe"])
+        self.boxes = {}
+        grid = QGridLayout()
+        for r, (key, label, what) in enumerate(site_files.SITE_CSVS):
+            cb = QCheckBox(label)
+            cb.setChecked(key in chosen)
+            cb.toggled.connect(lambda *_: self._update())
+            note = QLabel(what)
+            note.setStyleSheet(f"color:{GREY}")
+            grid.addWidget(cb, r, 0)
+            grid.addWidget(note, r, 1)
+            self.boxes[key] = cb
+        grid.setColumnStretch(1, 1)
+        lay.addLayout(grid)
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Save in:"))
+        self.where = QLineEdit(folder)
+        row.addWidget(self.where, 1)
+        pick = QPushButton("Choose…")
+        pick.clicked.connect(lambda *_: self._choose())
+        row.addWidget(pick)
+        lay.addLayout(row)
+        tip = QLabel("Named by site and date, like shutterstock_2026-11-09.csv. Upload the photos to a site first, "
+                     "then its CSV there.")
+        tip.setWordWrap(True)
+        tip.setStyleSheet(f"color:{GREY}")
+        lay.addWidget(tip)
+        self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        self.buttons.accepted.connect(self._accept)
+        self.buttons.rejected.connect(self.reject)
+        lay.addWidget(self.buttons)
+        self._update()
+
+    def _choose(self):
+        from PySide6.QtWidgets import QFileDialog
+        d = QFileDialog.getExistingDirectory(self, "Save the CSVs in", self.where.text())
+        if d:
+            self.where.setText(d)
+
+    def chosen(self) -> list[str]:
+        return [k for k, cb in self.boxes.items() if cb.isChecked()]
+
+    def folder(self) -> str:
+        return self.where.text().strip()
+
+    def _update(self):
+        n = len(self.chosen())
+        b = self.buttons.button(QDialogButtonBox.Ok)
+        b.setEnabled(n > 0)
+        b.setText(f"Make {n} CSV{'s' if n != 1 else ''}" if n else "Make CSVs")
+
+    def _accept(self):
+        self.settings["csv_sites"] = self.chosen()
+        core.save_settings(self.settings)
+        self.accept()

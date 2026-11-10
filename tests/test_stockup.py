@@ -32,9 +32,9 @@ def test_mac_command_shapes():
     assert cmd[:3] == ["open", "-n", "-a"]
 
 
-TITLE = ("Holly Springs, North Carolina - November 4, 2026: Gerber Puffs Cereal Snacks Variety Pack on Grocery "
+TITLE = ("Tokyo, Japan - November 4, 2026: Gerber Puffs Cereal Snacks Variety Pack on Grocery "
          "Store Shelf, Featuring Banana, Apple Cinnamon, Sweet Potato and Strawberry Flavors")
-CAPTION = ("Holly Springs, North Carolina - November 4, 2026: A colorful display of Gerber Graduates Puffs cereal "
+CAPTION = ("Tokyo, Japan - November 4, 2026: A colorful display of Gerber Graduates Puffs cereal "
            "snacks is arranged on a grocery store shelf, showcasing various flavors like banana.")
 
 

@@ -318,6 +318,7 @@ class Photo:
         self.title = ""
         self.description = ""            # own description (caption); "" = the title is saved as the description
         self.categories: list[str] = []  # Shutterstock categories the AI chose (for the upload CSV only)
+        self.adobe_category = None       # the Adobe Stock category the AI chose (its number)
         self.rewording = False           # the AI is rewording the text (not looking at the photo)
         self.keywords: list[str] = []
         self.file_title = ""             # what is currently saved in the file
@@ -1174,6 +1175,16 @@ class ReviewPanel(QWidget):
         self.b_prev.clicked.connect(lambda *_: win.select_offset(-1))
         self.b_next.clicked.connect(lambda *_: win.select_offset(1))
 
+    def _categories_line(self, ph) -> str:
+        """Each site's categories for this photo, as the CSVs will have them."""
+        if not (ph.title.strip() or ph.keywords):
+            return ""
+        import site_files
+        c = site_files.pick_categories(ph.title, ph.description, ph.keywords, self.win.is_editorial(ph),
+                                       ph.categories, ph.adobe_category)
+        line = site_files.describe_categories(c).replace("&", "&amp;").replace("<", "&lt;")
+        return f"<br><b>Categories</b> ({'the AI' if ph.categories else 'picked'}): {line}"
+
     def show_photo(self, ph: Photo | None, selected: int = 1):
         """Load a photo into the panel (or show a hint when 0 or several are selected)."""
         new_photo = ph is not self.photo
@@ -1232,7 +1243,7 @@ class ReviewPanel(QWidget):
         d = ph.description
         self.desc_info.setText((f"{len(d)} characters, {len(d.split())} words" if d else
                                 "No description of its own: the title is saved as the description")
-                               + (f"<br>Shutterstock categories: {', '.join(ph.categories)}" if ph.categories else ""))
+                               + self._categories_line(ph))
         kw = f"{len(ph.keywords)} keyword{'s' if len(ph.keywords) != 1 else ''}"
         if problems:
             kw += "".join(f"<br><span style='color:{WARN_FG}'>⚠ {p}</span>" for p in problems)
@@ -1868,8 +1879,9 @@ class MainWindow(QMainWindow):
         self.btn_ss_csv.setToolTip("One click: the Shutterstock upload CSV for the checked photos (or all of them),\n"
                                    "saved next to the photos as shutterstock_<date>.csv, with the titles exactly as in\n"
                                    "the list. Upload it on Shutterstock's Submit page with the CSV button.")
-        self.btn_export.setToolTip("Save the titles and keywords as a spreadsheet: Shutterstock or Adobe Stock upload\n"
-                                   "format, or every detail. Uses the checked photos, else the selected, else all shown.")
+        self.btn_export.setToolTip("Make a CSV for each stock site you tick (Shutterstock, Adobe Stock, Dreamstime,\n"
+                                   "Depositphotos, 123RF, Pond5) with categories picked for every photo, or one with\n"
+                                   "every detail. Uses the checked photos, else the selected, else all shown.")
         self.btn_instr = button("Hide Instructions", self.toggle_instructions)
         self.model_pick, self.text_pick = NoWheelComboBox(), NoWheelComboBox()
         self.model_pick.setToolTip("The model that looks at the photos (Detect, Redo, descriptions). Only models that "
@@ -2037,7 +2049,7 @@ class MainWindow(QMainWindow):
         self.editorial_pos.currentIndexChanged.connect(lambda *_: self._date_options_changed())
         self.ed_kw = QCheckBox("Add to keywords")
         self.ed_kw.setChecked(bool(self.settings.get("editorial_keywords", True)))
-        self.ed_kw.setToolTip("On: the location's parts and the month and year (cary, north carolina, november 2026,\n"
+        self.ed_kw.setToolTip("On: the location's parts and the month and year (tokyo, japan, november 2026,\n"
                               "2026) are added to the keywords too.\nOff: they only go in the title (and the "
                               "description). Your keywords to put first are always kept.")
         self.ed_kw.toggled.connect(lambda on: self._editorial_keywords_toggled(on))
@@ -3242,6 +3254,8 @@ class MainWindow(QMainWindow):
                 e["history"] = ph.history
             if ph.categories:
                 e["categories"] = ph.categories
+            if ph.adobe_category:
+                e["adobe_category"] = ph.adobe_category
             title, keywords = ph.redo["before"] if (ph.redo and "before" in ph.redo) else (ph.title, ph.keywords)
             desc = ph.redo.get("description", ph.description) if ph.redo else ph.description
             if ph.status != "reading" and ((core.clean_title(title), core.clean_keywords(keywords)) !=
@@ -3289,6 +3303,7 @@ class MainWindow(QMainWindow):
         ph.avoid = e.get("avoid", "") or ""
         ph.location = e.get("location", "") or ""
         ph.categories = core.shutterstock_categories(e.get("categories"))
+        ph.adobe_category = core.adobe_category(e.get("adobe_category")) if e.get("adobe_category") else None
         ph.history = [h for h in e.get("history") or [] if isinstance(h, dict)][-core.SUGGESTIONS_PER_PHOTO:]
         if e.get("type"):
             ph.type_key = e["type"]
@@ -3373,6 +3388,45 @@ class MainWindow(QMainWindow):
         return bool(self.settings.get("editorial_on"))
 
     def export_csv(self):
+        """Export CSV… : one CSV for each stock site you tick, with categories picked for every photo."""
+        from upload_window import SiteCsvDialog
+        import site_files
+        photos, scope = self.targets()
+        photos = [p for p in photos if p.title.strip() or p.keywords]
+        if not photos:
+            self.status.setText("Nothing to export yet: the photos have no titles or keywords.")
+            return
+        dlg = SiteCsvDialog(self, len(photos), self.settings, os.path.dirname(photos[0].path))
+        if not dlg.exec():
+            return
+        sites, folder = dlg.chosen(), dlg.folder()
+        if "shutterstock" in sites and not self._check_before_csv(photos):
+            return
+        try:
+            files = site_files.write_site_csvs(folder, self._csv_rows(photos), sites,
+                                               ss_text=self.settings.get("shutterstock_text", "title"))
+        except OSError as e:
+            QMessageBox.warning(self, "Export CSV", f"The CSVs couldn't be saved:\n{e}")
+            return
+        unsaved = sum(1 for p in photos if p.changed)
+        names = ", ".join(os.path.basename(f) for f in files)
+        self.status.setText(f"Saved {len(files)} CSV{'s' if len(files) != 1 else ''} for {len(photos)} photo"
+                            f"{'s' if len(photos) != 1 else ''} in {folder}: {names}."
+                            + (f" {unsaved} of the photos {'has' if unsaved == 1 else 'have'} changes that aren't "
+                               "saved into the files yet." if unsaved else ""))
+        if not os.environ.get("IPTC_TAGGER_OFFLINE"):
+            box = QMessageBox(QMessageBox.Information, "Export CSV",
+                              f"Saved in {folder}:\n\n" + "\n".join("  " + os.path.basename(f) for f in files)
+                              + "\n\nEach site's categories are picked for every photo. Upload the photos to a "
+                              "site first, then upload its CSV there.", parent=self)
+            show = box.addButton("Show in Folder", QMessageBox.ActionRole)
+            box.addButton(QMessageBox.Ok)
+            box.exec()
+            if box.clickedButton() is show:
+                QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
+
+    def export_one_csv(self):
+        """The older Export CSV: one file, in the format you pick (kept for the tests and the 'All details' file)."""
         photos, scope = self.targets()
         photos = [p for p in photos if p.title.strip() or p.keywords]
         if not photos:
@@ -3417,9 +3471,22 @@ class MainWindow(QMainWindow):
         return [{"file": (os.path.splitext(os.path.basename(p.path))[0] + ".jpg") if core.is_raw(p.path)
                  else os.path.basename(p.path), "folder": os.path.dirname(p.path), "title": p.title,
                  "description": p.description, "categories": list(p.categories),
+                 "adobe_category": p.adobe_category,
+                 "city": (self.location_for(p).split(",") + [""])[0].strip(),
+                 "region": (self.location_for(p).split(",") + ["", ""])[1].strip(),
                  "keywords": list(p.keywords), "editorial": self.is_editorial(p),
                  "type": labels.get(self.effective_type(p), ""), "note": p.note, "taken": p.taken,
                  "saved": not p.changed} for p in photos]
+
+    def _rows_with_categories(self, photos) -> list[dict]:
+        """CSV rows with every site's categories picked (the AI's own choice first)."""
+        import site_files
+        rows = self._csv_rows(photos)
+        for r in rows:
+            c = site_files.pick_categories(r["title"], r["description"], r["keywords"], r["editorial"],
+                                           r["categories"], r.get("adobe_category"))
+            r["categories"], r["adobe_category"] = c["shutterstock"], c["adobe"]
+        return rows
 
     def make_shutterstock_csv(self, photos=None, ask_categories=None) -> str:
         """One click: the Shutterstock upload CSV for the checked photos (or all of them), saved next to the
@@ -3432,19 +3499,14 @@ class MainWindow(QMainWindow):
             return ""
         if not self._check_before_csv(photos):
             return ""
-        categories = []
-        missing = [p for p in photos if not p.categories]
-        if missing:
-            categories = (ask_categories or self._ask_shutterstock_categories)(len(missing), len(photos))
-            if categories is None:
-                return ""
+        categories = []                               # each photo gets its own (site_files.pick_categories)
         folder = os.path.dirname(photos[0].path)
         base = os.path.splitext(core.csv_file_name("shutterstock"))[0]
         path, n = os.path.join(folder, base + ".csv"), 2
         while os.path.exists(path):                      # never replace an earlier one
             path, n = os.path.join(folder, f"{base} ({n}).csv"), n + 1
         try:
-            count = core.export_csv(path, self._csv_rows(photos), "shutterstock", categories,
+            count = core.export_csv(path, self._rows_with_categories(photos), "shutterstock", categories,
                                     self.settings.get("shutterstock_text", "title"))
         except OSError as e:
             QMessageBox.warning(self, "Shutterstock CSV", f"The CSV couldn't be saved:\n{e}")
@@ -4408,7 +4470,7 @@ class MainWindow(QMainWindow):
         if not os.environ.get("IPTC_TAGGER_OFFLINE") and QMessageBox.question(
                 self, "Place and date keywords",
                 f"Take the location and date keywords out of the {n} photo{'s' if n != 1 else ''} already in the list "
-                "too? (Like cary, north carolina, november 2026.) Their titles keep the location and date.\n\n"
+                "too? (Like tokyo, japan, november 2026.) Their titles keep the location and date.\n\n"
                 "Nothing is saved into the files until you save.") != QMessageBox.Yes:
             return
         for ph, k in found:
@@ -5577,6 +5639,8 @@ class MainWindow(QMainWindow):
                 ph.description = self.compose_description(ph, result["description"])
             if result.get("categories"):
                 ph.categories = list(result["categories"])
+            if result.get("adobe_category"):
+                ph.adobe_category = result["adobe_category"]
             # order: your "keywords to put first", then existing keywords (if kept), then suggestions
             kmax = core.keyword_range(self.settings.get("keyword_min"), self.settings.get("keyword_max"))[1]
             lead = core.expand_lead_keywords(self.settings.get("lead_keywords", ""), self.photo_date(ph))
