@@ -22,6 +22,7 @@ import json
 import os
 import re
 import shutil
+import unicodedata
 import subprocess
 import sys
 import tempfile
@@ -39,7 +40,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.11.10.4"
+APP_VERSION = "2026.11.10.5"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 # camera RAW files: titles and keywords go into the Lightroom sidecar next to them (photo.xmp), never the RAW.
 # DNG is left out: Lightroom ignores sidecars for DNG and keeps its metadata inside the file itself.
@@ -457,6 +458,9 @@ DEFAULT_SETTINGS = {
     "confirm_save": True,     # ask before saving with Save metadata
     "read_label": True,       # read the text on packaging and signs first (one quick extra step per photo)
     "tidy_keywords": True,    # remove filler keywords and put the title's words first
+    "keyword_order": True,    # the first ten keywords: the title's subject and brand, specific before general
+    "brand_spellings": None,  # None = the built-in list (DEFAULT_BRAND_SPELLINGS); your own edits otherwise
+    "brand_alternates": True, # add the other ways buyers search for a brand (bjs, coca cola) to the keywords
     "ai_description": True,   # also write a separate description (caption): Alamy, Dreamstime, Shutterstock
     "concept": True,          # titles and descriptions also say what it's for, who buys it, the theme around it
     "fix_common": True,       # fix the AI's usual mistakes (stray quotes, other stores, prices and codes as keywords,
@@ -4620,3 +4624,233 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
         if names:
             result["warning"] = "check the title, it may name a brand: " + ", ".join(names)
     return result
+
+
+# Brand spellings ---------------------------------------------------------------------------------------------
+# One brand per line: the right spelling = wrong spellings (fixed everywhere) | other ways buyers search for it
+# (added to the keywords, when there's room). Edit the list in Settings → Brands.
+DEFAULT_BRAND_SPELLINGS = """\
+BJ's = BJs, Bjs | bjs
+BJ's Wholesale Club = BJs Wholesale Club, BJs Wholesale | bjs wholesale
+Sam's Club = Sams Club | sams club
+Trader Joe's = Trader Joes | trader joes
+Kellogg's = Kelloggs, Kellog's, Kellogs | kelloggs
+McDonald's = McDonalds, Mc Donalds, Mcdonald's | mcdonalds
+Lowe's = Lowes | lowes
+Macy's = Macys | macys
+Kohl's = Kohls | kohls
+Dick's Sporting Goods = Dicks Sporting Goods | dicks sporting goods
+Walgreens = Walgreen's
+Wegmans = Wegman's
+Albertsons = Albertson's
+Walmart = Wal-Mart, Wal Mart | wal-mart
+H-E-B = HEB, H.E.B. | heb
+7-Eleven = 7 Eleven, 7Eleven, Seven Eleven, Seven-Eleven | 7 eleven, 711
+Chick-fil-A = Chick fil A, Chickfila, Chick-Fil-A | chick fil a
+Coca-Cola = Coca Cola, CocaCola | coca cola, coke
+Dr Pepper = Dr. Pepper | dr. pepper
+Red Bull = Redbull, Red-Bull | redbull
+PepsiCo = Pepsico, Pepsi Co | pepsico
+Frito-Lay = Frito Lay, Fritolay | frito lay
+Häagen-Dazs = Haagen-Dazs, Haagen Dazs, Häagen Dazs | haagen dazs
+Ben & Jerry's = Ben and Jerry's, Ben & Jerrys, Ben and Jerrys | ben and jerrys
+M&M's = M&Ms, M and M's, M & M's | m&ms, m and ms
+Reese's = Reeses | reeses
+Hershey's = Hersheys | hersheys
+Campbell's = Campbells | campbells
+Hellmann's = Hellmanns, Hellmans, Hellman's | hellmanns
+Kit Kat = KitKat, Kit-Kat | kitkat
+Nestlé = Nestle | nestle
+L'Oréal = L'Oreal, Loreal | loreal
+Procter & Gamble = Procter and Gamble, Proctor & Gamble, Proctor and Gamble | p&g
+Johnson & Johnson = Johnson and Johnson | j&j
+Arm & Hammer = Arm and Hammer
+Bath & Body Works = Bath and Body Works | bath and body works
+Colgate-Palmolive = Colgate Palmolive
+Anheuser-Busch = Anheuser Busch
+Kraft Heinz = Kraft-Heinz
+IKEA = Ikea | ikea
+LEGO = Lego | lego
+FedEx = Fed Ex | fedex
+T-Mobile = TMobile, T Mobile | t mobile
+iPhone = I-Phone, I Phone | iphone
+YouTube = You Tube | youtube
+PlayStation = Play Station | playstation
+"""
+
+
+def parse_brand_spellings(text: str) -> list[tuple[str, list[str], list[str]]]:
+    """'Right = wrong, wrong | also, also' lines -> [(right, [wrong…], [search alternates…])]. Lines starting
+    with # are notes."""
+    out = []
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        main, _, alts = line.partition("|")
+        right, _, wrong = main.partition("=")
+        right = right.strip()
+        if not right:
+            continue
+        split = lambda s: [w.strip() for w in s.split(",") if w.strip()]
+        out.append((right, split(wrong), split(alts)))
+    return out
+
+
+def _brand_pattern(name: str) -> str:
+    """A loose pattern for a name: any case, straight or curly apostrophe (or none), hyphen / space / nothing
+    between parts, accents optional, & or 'and'."""
+    accents = {"a": "aàáâäã", "e": "eèéêë", "i": "iìíîï", "o": "oòóôöõ", "u": "uùúûü", "c": "cç", "n": "nñ"}
+    out = []
+    for ch in unicodedata.normalize("NFC", name):
+        base = unicodedata.normalize("NFKD", ch)[0].lower()
+        if ch in "'’‘`":
+            out.append("['’‘`]?")
+        elif ch in "-– ":
+            out.append(r"[-–\s]?")
+        elif ch == ".":
+            out.append(r"\.?")
+        elif ch == "&":
+            out.append(r"(?:&|\s?and\s?)")
+        elif base in accents:
+            out.append("[" + accents[base] + accents[base].upper() + "]")
+        else:
+            out.append(re.escape(ch))
+    body = "".join(out)
+    return r"(?<![\w'’])" + body + r"(?![\w’]|'\w)"
+
+
+def brand_rules(text: str):
+    """Compiled rules: [(right, regex matching it or a wrong spelling, search alternates)]. Longer names first,
+    so 'BJ's Wholesale Club' wins over 'BJ's'."""
+    rules = []
+    for right, wrong, alts in parse_brand_spellings(text):
+        names = sorted({right, *wrong}, key=len, reverse=True)
+        rx = re.compile("|".join(_brand_pattern(n) for n in names), re.IGNORECASE)
+        rules.append((right, rx, alts))
+    rules.sort(key=lambda r: len(r[0]), reverse=True)
+    return rules
+
+
+def fix_brand_spellings(title: str, description: str, keywords, rules, add_alternates: bool = True,
+                        keyword_max: int = 50) -> dict:
+    """Write every brand the way it's spelled (in the title, description and keywords), and add the other ways
+    buyers search for it to the keywords, right after the brand, while there's room.
+    Returns {'title', 'description', 'keywords', 'fixes': ["BJs → BJ's", …]}."""
+    fixes = []
+
+    def fix_text(text, lower=False):
+        if not text:
+            return text
+        found = []                                   # longer names first; each match becomes a placeholder,
+        for right, rx, _alts in rules:              # so a shorter name can't match inside it afterwards
+            want = right.lower() if lower else right
+
+            def sub(m, want=want):
+                if m.group(0) != want:
+                    fixes.append(f"{m.group(0)} → {want}")
+                found.append(want)
+                return f"\x00{len(found) - 1}\x00"
+            text = rx.sub(sub, text)
+        return re.sub(r"\x00(\d+)\x00", lambda m: found[int(m.group(1))], text)
+
+    title = fix_text(title)
+    description = fix_text(description)
+    kws, seen, added = [], set(), []
+    for k in keywords or []:
+        lower = k == k.lower()
+        nk = fix_text(k, lower=lower)
+        if nk.casefold() not in seen:
+            seen.add(nk.casefold())
+            kws.append(nk)
+    if add_alternates:
+        out = []
+        for k in kws:
+            out.append(k)
+            for right, rx, alts in rules:
+                if alts and rx.fullmatch(k):
+                    for a in alts[:2]:
+                        if a.casefold() not in seen and len(kws) + len(added) < keyword_max:
+                            seen.add(a.casefold())
+                            added.append(a)
+                            out.append(a)
+        kws = out
+    if added:
+        fixes.append("added " + ", ".join(added))
+    return {"title": title, "description": description, "keywords": kws, "fixes": fixes}
+
+
+# Keyword order --------------------------------------------------------------------------------------------------
+# general words that rarely win a search on their own: fine to have, but not in the first ten
+GENERIC_KEYWORDS = {
+    "food", "shelf", "shelves", "store", "retail", "product", "products", "grocery", "supermarket", "shopping",
+    "display", "business", "commercial", "consumer", "consumers", "sale", "sales", "market", "aisle", "background",
+    "closeup", "close-up", "object", "objects", "item", "items", "package", "packaging", "nobody", "indoors",
+    "indoor", "outdoors", "colorful", "color", "colour", "variety", "selection", "choice", "group", "many",
+    "lifestyle", "concept", "design", "brand", "brands", "logo", "editorial", "illustrative editorial",
+}
+
+
+def order_keywords(keywords, title: str, lead: int = 0, keep_last=()) -> list[str]:
+    """Put the keywords that matter in the first ten (stock sites weigh those the most): your keywords to put
+    first (the first `lead`) stay first; then the ones that name what's in the title (subject, brand, product),
+    specific before general; then the rest, with general words like 'food', 'shelf', 'retail' last.
+    keep_last: keywords left at the very end (the month and year)."""
+    keywords = list(keywords or [])
+    head, rest = keywords[:lead], keywords[lead:]
+    last_set = {k.casefold() for k in keep_last}
+    tail = [k for k in rest if k.casefold() in last_set]
+    rest = [k for k in rest if k.casefold() not in last_set]
+    words = {_singular(w) for w in re.findall(r"[\w']+", (title or "").casefold().replace("'", ""))
+             if w not in SMALL_WORDS}
+
+    def in_title(k):
+        ws = [_singular(w) for w in re.findall(r"[\w']+", k.casefold().replace("'", "")) if w not in SMALL_WORDS]
+        return bool(ws) and all(w in words for w in ws)
+
+    generic = lambda k: k.casefold() in GENERIC_KEYWORDS
+    tiers = ([k for k in rest if in_title(k) and not generic(k)], [k for k in rest if in_title(k) and generic(k)],
+             [k for k in rest if not in_title(k) and not generic(k)], [k for k in rest if not in_title(k) and generic(k)])
+    return head + [k for t in tiers for k in t] + tail
+
+
+def keyword_order_problem(keywords, title: str, lead: int = 0, keep_last=()) -> str:
+    """What's wrong with the first ten keywords, in a few words ('' when they're fine)."""
+    better = order_keywords(keywords, title, lead, keep_last)
+    now, want = list(keywords or [])[:10], better[:10]
+    missing = [k for k in want if k not in now]
+    if not missing:
+        return ""
+    return ("not in the first ten: " + ", ".join(missing[:4]) + ("…" if len(missing) > 4 else ""))
+
+
+# Look-alike photos (the same shot twice: Shutterstock and Adobe reject near-duplicates) -------------------------
+def image_hash(gray_9x8: list[int]) -> int:
+    """A difference hash from a 9 × 8 grayscale thumbnail (row by row): 64 bits, each 'is this pixel brighter
+    than the next one'. Near-identical photos get hashes a few bits apart."""
+    h = 0
+    for y in range(8):
+        row = gray_9x8[y * 9:(y + 1) * 9]
+        for x in range(8):
+            h = (h << 1) | (1 if row[x] > row[x + 1] else 0)
+    return h
+
+
+def look_alike_groups(hashes: dict, max_bits: int = 6) -> list[list[str]]:
+    """Groups of keys whose image hashes differ by at most max_bits of 64 (the same scene, moments apart)."""
+    keys = [k for k, h in hashes.items() if h is not None]
+    parent = {k: k for k in keys}
+
+    def find(k):
+        while parent[k] != k:
+            parent[k] = parent[parent[k]]
+            k = parent[k]
+        return k
+    for i, a in enumerate(keys):
+        for b in keys[i + 1:]:
+            if bin(hashes[a] ^ hashes[b]).count("1") <= max_bits:
+                parent[find(a)] = find(b)
+    groups = {}
+    for k in keys:
+        groups.setdefault(find(k), []).append(k)
+    return [g for g in groups.values() if len(g) > 1]

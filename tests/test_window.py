@@ -313,7 +313,7 @@ def test_saved_or_not_is_plain_to_see(window, make_photos):
     ph.title, ph.keywords = "Red Barn in Snow", ["barn", "snow"]
     win._show(ph)
     wait(lambda: win.btn_unsaved.isVisibleTo(win), what="the unsaved count")
-    assert "1 not saved" in win.btn_unsaved.text() and "1 unsaved" in win.windowTitle()
+    assert "1 unsaved" in win.btn_unsaved.text() and "1 unsaved" in win.windowTitle()
     assert win.review.state.property("pill") == "unsaved" and "Not saved yet" in win.review.state.text()
     assert win.review.title.property("edited") is True and "edited" in win.review.title_info.text()
     assert not win.table.item(win.rows[ph.path], 2).icon().isNull()                      # the orange dot
@@ -402,3 +402,68 @@ def test_colour_labels_like_lightroom(window, make_photos):
     win.save_photos([a])                                          # Save writes the label into the file
     wait(lambda: a.status == "saved", what="saving")
     assert win.exiftool.read([a.path])[a.path]["label"] == "red" and not a.changed
+
+
+def _pictures(folder, n):
+    """Real-looking test pictures: the first two the same shot, the rest different."""
+    from PIL import Image, ImageDraw
+    os.makedirs(folder, exist_ok=True)
+    out = []
+    for i in range(n):
+        im = Image.new("RGB", (480, 360), (200, 200, 200))
+        d = ImageDraw.Draw(im)
+        k = 0 if i < 2 else i
+        for j in range(6):
+            d.rectangle([((j * 97 + k * 61) % 400), ((j * 53 + k * 37) % 300), ((j * 97 + k * 61) % 400) + 70,
+                         ((j * 53 + k * 37) % 300) + 50], fill=((j * 40 + k * 70) % 255, 40 * j % 255, 90))
+        p = os.path.join(folder, f"shot_{i}.jpg")
+        im.save(p, quality=90 - i)
+        out.append(p)
+    return out
+
+
+def test_brands_keyword_order_look_alikes_and_the_check(window, tmp_path):
+    _mod, win = window
+    add(win, _pictures(str(tmp_path / "pics"), 3))
+    wait(lambda: all(p.image_hash is not None for p in win.photos), what="fingerprints")
+    a, b, c = win.photos
+    groups = win.look_alike_groups()
+    assert [[p.path for p in g] for g in groups] == [[a.path, b.path]]
+    win.filter_box.setCurrentIndex(win.filter_box.findData("lookalike"))
+    assert win.visible_photos() == [a, b]
+    win.filter_box.setCurrentIndex(0)
+    # after Detect: brands spelled right and the subject first
+    result = {"title": "Kelloggs Frosted Flakes Cereal on a Shelf", "description": "",
+              "keywords": ["food", "shelf", "retail", "breakfast", "grocery", "box", "sugar", "morning", "price",
+                           "aisle", "kelloggs", "frosted flakes"]}
+    c.busy, c.status, c.note_sent = True, "identifying", ""
+    win._identified(c.path, result)
+    assert "Kellogg's Frosted Flakes" in c.title
+    assert c.keywords[:3] == ["kellogg's", "kelloggs", "frosted flakes"]
+    # Check Before Upload sees the unsaved change, the small picture and the look-alikes
+    res = win.precheck_results([a, b, c])
+    whats = {ph: {i["what"] for i in issues} for ph, issues in res.items()}
+    assert "Not saved" in whats[c] and "Too small" in whats[c] and "Look-alike" in whats[a]
+    assert win.check_before_upload([a, b, c]) is True          # (offline tests: no window)
+
+
+def test_one_step_for_a_colour_group(window, make_photos, monkeypatch):
+    import iptc_tagger as app_mod
+    _mod, win = window
+    add(win, make_photos(3))
+    a, b, c = win.photos
+    win.set_label([a, b], "green")
+    started = []
+    monkeypatch.setattr(win, "identify_photos", lambda ps, fresh=False: started.append((list(ps), fresh)))
+
+    def fake_exec(dlg):
+        dlg.note.setText("BJ's Wholesale store")
+        dlg.type.setCurrentIndex(dlg.type.findData("product_shelf"))
+        return app_mod.QDialog.Accepted
+    monkeypatch.setattr(app_mod.GroupDialog, "exec", fake_exec)
+    win.group_dialog("green")
+    assert a.note == b.note == "BJ's Wholesale store" and c.note == ""
+    assert a.type_key == b.type_key == "product_shelf" and c.type_key == ""
+    assert started == [([a, b], True)]
+    win.show_label("green")
+    assert win.btn_group.isVisibleTo(win) and "Green group" in win.btn_group.text()
