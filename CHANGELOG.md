@@ -1,5 +1,13 @@
 # What's new
 
+## 2026.11.09.9
+
+- **Fits a laptop screen, with a photo selected too:** the side panel now scrolls when the window is shorter than everything in it. Before, selecting a photo made the window grow to about 1,100 pixels tall, taller than a laptop's screen. At 1366 × 768 everything now fits.
+- **Title and Keywords come first in the list:** right after the file name, so they're in view on a laptop, with the status, the Detect / Save buttons, type and notes after them. Drag a column heading to put the columns in your own order: it's remembered.
+- **The Instructions fold into one line:** **Hide Instructions** now leaves a summary of what's in use (profile, instructions, Editorial location, model) with an **Edit Instructions** button, so the photo list gets the screen. It's folded to start with on a smaller screen, and remembered.
+- **One way to upload:** **Upload…** is now the main blue button at the bottom right, where you finish a batch. *Send to StockUp* is still there, as one **Open in StockUp** button with a menu (the checked photos, or all).
+- **No more squashed buttons in the side panel:** Detect, Redo with Reasons, Reword, Revert, Copy and Paste wrap onto a second line in a narrow panel instead of being cut off.
+
 ## 2026.11.09.8
 
 - **Upload to your stock sites:** a new **Upload…** button sends the checked photos (or the selected, or all shown) to Shutterstock, Adobe Stock, Dreamstime, Alamy, Depositphotos, 123RF and Pond5, all at once, in its own window, so you can keep working while it runs. The uploading comes from **StockUp**:
