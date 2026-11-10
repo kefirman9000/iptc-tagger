@@ -16,10 +16,11 @@ import functools
 import threading
 import time
 
-from PySide6.QtCore import QDate, QItemSelectionModel, QObject, QRunnable, QSize, Qt, QThreadPool, QTimer, QUrl, Signal
+from PySide6.QtCore import (QDate, QItemSelectionModel, QObject, QPoint, QRect, QRunnable, QSize, Qt, QThreadPool,
+                            QTimer, QUrl, Signal)
 from PySide6.QtGui import QAction, QColor, QDesktopServices, QIcon, QImage, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
-    QAbstractItemView, QApplication, QCheckBox, QComboBox, QDateEdit, QDialog, QDialogButtonBox, QFileDialog,
+    QAbstractItemView, QApplication, QCheckBox, QLayout, QSizePolicy, QComboBox, QDateEdit, QDialog, QDialogButtonBox, QFileDialog,
     QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit, QMainWindow,
     QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QSpinBox, QSplitter, QStackedWidget,
     QStyle, QSystemTrayIcon, QTableWidget, QTableWidgetItem, QTabWidget, QTextBrowser, QVBoxLayout, QWidget,
@@ -103,6 +104,70 @@ def run_job(owner, job: Job, pool: QThreadPool, on_done, on_failed, on_progress=
     if on_started:
         job.signals.started.connect(on_started)
     pool.start(job)
+
+
+class FlowLayout(QLayout):
+    """Lays its widgets out in a row and wraps onto the next line when there isn't room (so the window fits a
+    laptop screen). A group gap is a fixed-width spacer widget."""
+
+    def __init__(self, parent=None, spacing: int = 6):
+        super().__init__(parent)
+        self._items = []
+        self._gap = spacing
+        self.setContentsMargins(0, 0, 0, 0)
+
+    def addItem(self, item):
+        self._items.append(item)
+
+    def addGap(self, width: int = 16):
+        gap = QWidget()
+        gap.setFixedSize(width, 1)
+        self.addWidget(gap)
+
+    def count(self):
+        return len(self._items)
+
+    def itemAt(self, i):
+        return self._items[i] if 0 <= i < len(self._items) else None
+
+    def takeAt(self, i):
+        return self._items.pop(i) if 0 <= i < len(self._items) else None
+
+    def expandingDirections(self):
+        return Qt.Orientation(0)
+
+    def hasHeightForWidth(self):
+        return True
+
+    def heightForWidth(self, width):
+        return self._place(QRect(0, 0, width, 0), apply=False)
+
+    def setGeometry(self, rect):
+        super().setGeometry(rect)
+        self._place(rect, apply=True)
+
+    def sizeHint(self):
+        w = sum(i.sizeHint().width() + self._gap for i in self._items)
+        h = max((i.sizeHint().height() for i in self._items), default=0)
+        return QSize(w, h)
+
+    def minimumSize(self):
+        size = QSize()
+        for i in self._items:
+            size = size.expandedTo(i.minimumSize())
+        return size
+
+    def _place(self, rect, apply: bool) -> int:
+        x, y, line = rect.x(), rect.y(), 0
+        for item in self._items:
+            hint = item.sizeHint()
+            if x + hint.width() > rect.right() + 1 and line > 0:
+                x, y, line = rect.x(), y + line + self._gap, 0
+            if apply:
+                item.setGeometry(QRect(QPoint(x, y), hint))
+            x += hint.width() + self._gap
+            line = max(line, hint.height())
+        return y + line - rect.y()
 
 
 class NoWheelComboBox(QComboBox):
@@ -1773,6 +1838,10 @@ class MainWindow(QMainWindow):
         self.btn_reword.setToolTip("Double-check or reword the titles, descriptions and keywords already written, text\n"
                                    "only (quick). Uses the checked photos, else the selected, else all shown.")
         self.btn_export = button("Export CSV…", self.export_csv)
+        self.btn_upload = button("Upload…", lambda: self.open_upload())
+        self.btn_upload.setToolTip("Send the photos to your stock sites by FTP (Shutterstock, Adobe Stock, Dreamstime,\n"
+                                   "Alamy, Depositphotos, 123RF, Pond5), with a progress bar for each site.\n"
+                                   "Uses the checked photos, else the selected, else all shown.")
         self.btn_stockup_all = button("Send All to StockUp", lambda: self.open_in_stockup(list(self.photos)),
                                       QStyle.SP_ArrowRight, primary=True)
         self.btn_stockup_all.setToolTip("When you're done: open every photo in the list in StockUp, to check them for\n"
@@ -1806,22 +1875,34 @@ class MainWindow(QMainWindow):
         self.btn_updates.setToolTip(f"You have {core.APP_NAME} {core.APP_VERSION}. Asks GitHub whether a newer "
                                     "version is out.\nNothing is downloaded unless you say so.")
 
-        top = QHBoxLayout()
+        # the buttons wrap onto a second line on a narrower screen (a laptop), instead of making the window too wide
+        flow_box = QWidget()
+        flow = FlowLayout(flow_box)
         for w in (self.btn_add, self.btn_folder, self.btn_watch):
-            top.addWidget(w)
-        top.addSpacing(16)
-        for w in (self.btn_identify, self.btn_redo_checked, self.btn_reword, self.btn_save, self.btn_export):
-            top.addWidget(w)
-        top.addSpacing(16)
+            flow.addWidget(w)
+        flow.addGap()
+        for w in (self.btn_identify, self.btn_redo_checked, self.btn_reword, self.btn_save, self.btn_export,
+                  self.btn_upload):
+            flow.addWidget(w)
+        flow.addGap()
         for w in (self.btn_check_all, self.btn_uncheck_all):
-            top.addWidget(w)
-        top.addSpacing(16)
+            flow.addWidget(w)
+        flow.addGap()
         for w in (self.btn_remove, self.btn_clear):
-            top.addWidget(w)
-        top.addStretch(1)
-        top.addWidget(self.btn_instr)
-        top.addWidget(self.btn_updates)
-        top.addWidget(self.btn_settings)
+            flow.addWidget(w)
+        sp = flow_box.sizePolicy()
+        sp.setHeightForWidth(True)
+        sp.setHorizontalPolicy(QSizePolicy.Expanding)
+        flow_box.setSizePolicy(sp)
+        top = QHBoxLayout()
+        top.addWidget(flow_box, 1)
+        right = QVBoxLayout()                           # Settings and the rest stay at the top right
+        right_row = QHBoxLayout()
+        for w in (self.btn_instr, self.btn_updates, self.btn_settings):
+            right_row.addWidget(w)
+        right.addLayout(right_row)
+        right.addStretch(1)
+        top.addLayout(right)
 
         # ----- instructions for the AI
         self.instructions = QGroupBox("Instructions for the AI (used every time you click Detect)")
@@ -1862,6 +1943,8 @@ class MainWindow(QMainWindow):
         self.avoid_on.toggled.connect(lambda *_: (self._remember_options(), self._show_avoid_column()))
         note = QLabel("Tip: to clarify a single photo, double-click its <b>Photo notes</b> cell in the list.")
         note.setStyleSheet(f"color:{GREY}")
+        note.setWordWrap(True)                          # wraps instead of widening the window
+        note.setMinimumWidth(120)
         head = QHBoxLayout()                          # the help line, and the models on the right
         head.addWidget(about_lbl, 1)
         head.addSpacing(12)
@@ -2743,7 +2826,7 @@ class MainWindow(QMainWindow):
 
     # ---------- profiles
     PROFILE_KEYS = ("context", "detect_style", "default_type", "lead_keywords", "title_prefix", "editorial_on",
-                    "title_location")
+                    "title_location", "editorial_pos", "editorial_keywords", "location_for_ai")
     NO_PROFILE = "No profile"
 
     def _profile_values(self, save: bool = True) -> dict:
@@ -2838,6 +2921,15 @@ class MainWindow(QMainWindow):
         self.prefix.setText(values.get("title_prefix", "") or "")
         self.location.setText(values.get("title_location", "") or "")
         self.editorial.setChecked(bool(values.get("editorial_on")))
+        # the newer Editorial choices (profiles saved before them keep what's set now)
+        if values.get("editorial_pos"):
+            self.editorial_pos.setCurrentIndex(max(0, self.editorial_pos.findData(values["editorial_pos"])))
+        if values.get("location_for_ai") is not None:
+            self.loc_ai.setChecked(bool(values["location_for_ai"]))
+        if values.get("editorial_keywords") is not None:
+            self._switching_profile = True             # (no "take them out of the list?" question here)
+            self.ed_kw.setChecked(bool(values["editorial_keywords"]))
+            self._switching_profile = False
         dt = values.get("default_type") or "auto"
         i = self.default_type.findData(dt)
         if i >= 0:
@@ -4229,7 +4321,7 @@ class MainWindow(QMainWindow):
 
     def _editorial_keywords_toggled(self, on: bool):
         self._remember_options()
-        if on or not self._ready:
+        if on or not self._ready or getattr(self, "_switching_profile", False):
             return
         idle = [p for p in self.photos if not p.busy]
         found = [(p, self.drop_place_date_keywords(p, p.keywords)) for p in idle]
@@ -5283,6 +5375,35 @@ class MainWindow(QMainWindow):
                               if timed else f"Not reworded: {msg}")
             self._show(ph)
         self._tick()
+
+    # ---------- uploading to the stock sites (the uploading itself comes from StockUp: uploader.py)
+    def make_job(self, key, fn, *args) -> "Job":
+        return Job(key, fn, *args)
+
+    def start_job(self, job, pool, on_done, on_failed):
+        run_job(self, job, pool, on_done, on_failed)
+
+    def open_upload(self, photos=None):
+        """Upload… : the checked photos, else the selected, else all shown, in their own window."""
+        from upload_window import UploadWindow
+        if photos is None:
+            photos, scope = self.targets()
+        else:
+            scope = "chosen"
+        photos = [p for p in photos if p in self.photos]
+        if not photos:
+            self.status.setText("Add some photos first.")
+            return None
+        old = getattr(self, "upload_window", None)
+        if old is not None and old.isVisible() and old.uploader and old.uploader.status()["running"]:
+            old.raise_()
+            old.activateWindow()
+            self.status.setText("An upload is already running: it's in the Upload window.")
+            return old
+        scope_words = {"checked": "the checked ones", "selected": "the selected ones"}.get(scope, "all shown")
+        self.upload_window = UploadWindow(self, photos, scope_words)
+        self.upload_window.show()
+        return self.upload_window
 
     # ---------- stopping
     def _detect_clicked(self, ph):

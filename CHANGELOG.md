@@ -1,5 +1,18 @@
 # What's new
 
+## 2026.11.09.8
+
+- **Upload to your stock sites:** a new **Upload…** button sends the checked photos (or the selected, or all shown) to Shutterstock, Adobe Stock, Dreamstime, Alamy, Depositphotos, 123RF and Pond5, all at once, in its own window, so you can keep working while it runs. The uploading comes from **StockUp**:
+  - A progress bar for each site, with the photo it's on and whether the connection is encrypted.
+  - **Pause**, **Resume** and **Stop** work part-way through a photo, and a half-sent photo is removed from the site, so a site never gets half a photo. A dropped connection is tried again.
+  - Encrypted connections first (FTPS or SFTP); plain FTP only for a site that doesn't offer encryption, and you can turn that off.
+  - Nothing already on a site's server is overwritten, and nothing is sent twice: photos already sent to a site, by IPTC Tagger or by StockUp, are skipped, even when renamed.
+  - Photos with changes that aren't saved yet have to be saved first (**Save Metadata first**), since the sites read the title, description and keywords from inside the photos. Only JPEGs are sent, exactly as they are.
+  - Afterwards it lists what's left on each site, with **Make Shutterstock CSV** right there (Shutterstock needs the CSV for categories and the editorial flag), and **Open Receipt**: every photo sent, where, when and whether encrypted.
+  - **Logins…** keeps your username for each site, and the password in your computer's keychain (Windows Credential Manager). **Test** tries a login. Logins you saved in StockUp are used here too, so you don't type them again.
+- **Fits a laptop screen:** the top buttons wrap onto a second line when the window is narrower, instead of the window needing 1,734 pixels. It now fits a 1366-pixel screen.
+- **Profiles keep the newer Editorial choices too:** *Add to keywords*, *Give to AI* and before or after the title.
+
 ## 2026.11.09.7
 
 - **The store in your photo note decides the title:** with a note like *BJ's Wholesale* (or the store in your Instructions), titles and descriptions no longer name Costco, Kirkland or any other chain, even when the AI thinks it read *Kirkland* on a sign. If the title names no store at all, *at BJ's Wholesale Club* is added to the end. A store's own brand in your note (*Kirkland almonds at BJ's*) stays, and isn't mistaken for the store. Related stores and brands are still fine as keywords.

@@ -1,2 +1,4 @@
 PySide6>=6.5
 Pillow>=10.0
+keyring>=24
+paramiko>=3.0
