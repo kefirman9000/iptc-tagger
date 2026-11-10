@@ -12,13 +12,14 @@ from __future__ import annotations
 
 import os
 import sys
+import copy
 import functools
 import threading
 import time
 
 from PySide6.QtCore import (QDate, QEvent, QEasingCurve, QItemSelectionModel, QObject, QPoint, QPropertyAnimation, QRect,
                             QRectF, QRunnable, QSize, Qt, QThreadPool, QTimer, QUrl, Signal)
-from PySide6.QtGui import QAction, QColor, QDesktopServices, QIcon, QImage, QKeySequence, QPainter, QPixmap
+from PySide6.QtGui import QAction, QColor, QCursor, QDesktopServices, QIcon, QImage, QKeySequence, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QFrame, QLayout, QScrollArea, QSizePolicy, QComboBox, QDateEdit, QDialog, QDialogButtonBox, QFileDialog,
     QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit, QMainWindow,
@@ -282,6 +283,8 @@ class Toast(QLabel):
         self.setGraphicsEffect(self.effect)
         self.anim = QPropertyAnimation(self.effect, b"opacity", self)
         self.anim.setEasingCurve(QEasingCurve.InOutQuad)
+        self._fading = False
+        self.anim.finished.connect(self._anim_done)
         self.timer = QTimer(self)
         self.timer.setSingleShot(True)
         self.timer.timeout.connect(self.fade_out)
@@ -307,6 +310,7 @@ class Toast(QLabel):
         self.raise_()
         self.show()
         self.anim.stop()
+        self._fading = False
         self.anim.setDuration(160)
         self.anim.setStartValue(0.0)
         self.anim.setEndValue(1.0)
@@ -318,12 +322,12 @@ class Toast(QLabel):
         self.anim.setDuration(400)
         self.anim.setStartValue(1.0)
         self.anim.setEndValue(0.0)
-        try:
-            self.anim.finished.disconnect()
-        except (RuntimeError, TypeError):
-            pass
-        self.anim.finished.connect(self.hide)
+        self._fading = True                           # hidden when this fade ends (not after a fade-in)
         self.anim.start()
+
+    def _anim_done(self):
+        if getattr(self, "_fading", False):
+            self.hide()
 
     def mousePressEvent(self, e):
         self.fade_out()
@@ -433,6 +437,7 @@ FILTERS = [
     ("has_note", "With photo notes or Avoid"),
     ("site_problems", "Breaks a stock site's rules"),
     ("similar", "Near-identical titles"),
+    ("lookalike", "Look-alike photos (the same shot twice)"),
     ("label_any", "With a colour label"),
     ("label_none", "No colour label"),
 ] + [("label_" + k, f"{name} label") for k, name, _c, _key in core.LABELS]
@@ -457,6 +462,7 @@ def photo_matches(ph, key: str, search: str = "", keyword_min: int = 0, sites=()
         "has_note": bool(ph.note.strip() or ph.avoid.strip()),
         "site_problems": bool(core.site_problems(ph.title, ph.keywords, sites, ph.description, ss_text)) if key == "site_problems" else True,
         "similar": ph.path in (similar or ()),
+        "lookalike": ph.path in (similar or ()),
         "label_any": bool(ph.label),
         "label_none": not ph.label,
     }.get(key, ph.label == key[6:] if key.startswith("label_") else True)
@@ -507,6 +513,7 @@ class Photo:
         self.note_sent = ""                           # the note sent with the AI request that's running
         self.fresh = False                            # Detect this one photo: replace its title even if kept
         self.saved_at = ""                            # the time it was last saved (shown in the list)
+        self.image_hash = None                        # fingerprint of the picture (look-alike photos)
         self.label = ""                               # colour label (red, yellow, green, blue, purple), as in Lightroom
         self.file_label = ""                          # the colour label saved in the file
 
@@ -712,6 +719,14 @@ class SettingsDialog(QDialog):
                                 "phrases, then moves the keywords that name what's in the title to the front, because\n"
                                 "stock sites weigh the first ten the most. Keywords from your own instructions are kept.")
         f_text.addRow("Keywords", self.tidy_kw)
+        self.kw_order = QCheckBox("Keep the first ten keywords for what matters: the title's subject and brand first, "
+                                  "general words (food, shelf, retail…) after")
+        self.kw_order.setChecked(bool(settings.get("keyword_order", True)))
+        self.kw_order.setToolTip("Stock sites (Adobe Stock in particular) weigh the first ten keywords the most. After every\n"
+                                 "Detect, Reword and Fix common problems, and in Check Before Upload, the keywords that\n"
+                                 "name the title's subject and brand go first; your keywords to put first stay first, the\n"
+                                 "place stays right after the subject, and the month and year stay at the end.")
+        f_text.addRow("", self.kw_order)
         self.check_boxes = {}
         checks_lay = QVBoxLayout()
         checks_lay.setContentsMargins(0, 0, 0, 0)
@@ -983,10 +998,45 @@ class SettingsDialog(QDialog):
         self.sites_from_su.toggled.connect(sync)
         sync()
 
+        # ----- brands: spelled your way everywhere, with the other ways buyers search for them
+        f_brands = QVBoxLayout()
+        bh = QLabel("One brand per line: <b>the right spelling = wrong spellings | other ways buyers search for it</b>."
+                    "<br>The wrong spellings are fixed in titles, descriptions and keywords (any case, with or without "
+                    "the apostrophe, hyphen or accent). The search spellings after | are added to the keywords, right "
+                    "after the brand, while there's room.<br>e.g. <code>BJ's = BJs, Bjs | bjs</code> &nbsp; "
+                    "<code>Coca-Cola = Coca Cola | coca cola, coke</code>")
+        bh.setWordWrap(True)
+        bh.setTextFormat(Qt.RichText)
+        f_brands.addWidget(bh)
+        brands = settings.get("brand_spellings")
+        self.brands = QPlainTextEdit(core.DEFAULT_BRAND_SPELLINGS if brands is None else str(brands))
+        self.brands.setMinimumHeight(260)
+        self.brands.setLineWrapMode(QPlainTextEdit.NoWrap)
+        f_brands.addWidget(self.brands)
+        brow = QHBoxLayout()
+        self.brand_alts = QCheckBox("Add the search spellings to the keywords (bjs, coca cola, haagen dazs…)")
+        self.brand_alts.setChecked(bool(settings.get("brand_alternates", True)))
+        brow.addWidget(self.brand_alts, 1)
+        b_reset = QPushButton("Add the Built-in Brands")
+        b_reset.setToolTip("Adds the built-in brands that aren't in your list yet (your own lines are kept)")
+
+        def add_builtin():
+            have = {r.casefold() for r, _w, _a in core.parse_brand_spellings(self.brands.toPlainText())}
+            new = [ln for ln in core.DEFAULT_BRAND_SPELLINGS.splitlines()
+                   if ln.strip() and ln.split("=")[0].strip().casefold() not in have]
+            if new:
+                text = self.brands.toPlainText().rstrip("\n")
+                self.brands.setPlainText((text + "\n" if text else "") + "\n".join(new) + "\n")
+        b_reset.clicked.connect(lambda *_: add_builtin())
+        brow.addWidget(b_reset)
+        f_brands.addLayout(brow)
+        brands_box = QWidget()
+        brands_box.setLayout(f_brands)
+
         # ----- pages
         self.pages = QTabWidget()
         for title, widgets in (("AI", [ai, f_ai]), ("Titles && keywords", [f_text]), ("Saving", [f_save]),
-                               ("Stock sites", [f_sites]), ("Photo types", [f_types]), ("General", [f_general])):
+                               ("Stock sites", [f_sites]), ("Brands", [brands_box]), ("Photo types", [f_types]), ("General", [f_general])):
             page = QWidget()
             pl = QVBoxLayout(page)
             for w in widgets:
@@ -1180,7 +1230,11 @@ class SettingsDialog(QDialog):
                  stockup_path=self.stockup.text().strip(), stockup_after_save=self.stockup_after.isChecked(),
                  stock_sites=[k for k, cb in self.site_boxes.items() if cb.isChecked()],
                  stock_sites_from_stockup=self.sites_from_su.isChecked(),
-                 shutterstock_text=self.ss_text.currentData() or "title")
+                 shutterstock_text=self.ss_text.currentData() or "title",
+                 keyword_order=self.kw_order.isChecked(), brand_alternates=self.brand_alts.isChecked(),
+                 # unchanged built-in list: stays None, so later versions' additions still arrive
+                 brand_spellings=(None if self.brands.toPlainText().strip() == core.DEFAULT_BRAND_SPELLINGS.strip()
+                                  else self.brands.toPlainText()))
         s["keyword_min"], s["keyword_max"] = core.keyword_range(self.kmin.value(), self.kmax.value())
         return s
 
@@ -2026,6 +2080,146 @@ class RewordDialog(QDialog):
 UPDATE_LINK = "#0b3a82"        # links on the light blue update banner
 
 
+class GroupDialog(QDialog):
+    """One step for a colour group: a note, a photo type, and Detect, for every photo with that label."""
+
+    def __init__(self, win, label: str, photos):
+        super().__init__(win)
+        name = core.LABEL_NAMES.get(label, "")
+        self.setWindowTitle(f"{name} photos")
+        lay = QVBoxLayout(self)
+        head = QLabel(f"<b>{len(photos)} {name.lower()}-labelled photo{'s' if len(photos) != 1 else ''}</b>: "
+                      "give them all the same note and type, and Detect them, in one go.")
+        head.setWordWrap(True)
+        lay.addWidget(head)
+        form = QFormLayout()
+        self.note = QLineEdit()
+        notes = {p.note for p in photos}
+        self.note.setText(notes.pop() if len(notes) == 1 else "")
+        self.note.setPlaceholderText("e.g. BJ's Wholesale store (empty: each photo keeps its own note)")
+        self.note.setClearButtonEnabled(True)
+        form.addRow("Photo note", self.note)
+        self.type = QComboBox()
+        self.type.addItem("Keep each photo's type", None)
+        self.type.addItem(win._default_label(), "")
+        for key, lab in win.type_items():
+            self.type.addItem(lab, key)
+        form.addRow("Photo type", self.type)
+        lay.addLayout(form)
+        self.detect = QCheckBox("Detect them now, with new titles")
+        self.detect.setChecked(True)
+        self.detect.setToolTip("Runs the AI on every photo in the group. Their titles are rewritten, even when Keep "
+                               "existing titles is on.")
+        lay.addWidget(self.detect)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.button(QDialogButtonBox.Ok).setText("Apply")
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        lay.addWidget(bb)
+
+
+class CheckDialog(QDialog):
+    """Check Before Upload: one line per problem, the worst first. Double-click a line to go to the photo."""
+
+    def __init__(self, win, results: dict, sites, for_upload: bool, batch_notes=()):
+        super().__init__(win)
+        import precheck
+        self.win, self.results, self.choice = win, results, ""
+        self.setWindowTitle("Check Before Upload")
+        self.resize(940, 520)
+        lay = QVBoxLayout(self)
+        fix, warn, good = precheck.summary(results)
+        names = ", ".join(core.STOCK_SITES.get(s, {}).get("label", s) for s in sites) or "your stock sites"
+        head = QLabel(f"<b>{len(results)} photo{'s' if len(results) != 1 else ''} checked</b> for {names}: "
+                      + (f"<span style='color:{theme.color('bad')}'>{fix} to fix</span> · " if fix else "")
+                      + (f"<span style='color:{WARN_FG}'>{warn} to check</span> · " if warn else "")
+                      + f"<span style='color:{theme.color('ok')}'>{good} all good</span>")
+        head.setTextFormat(Qt.RichText)
+        head.setWordWrap(True)
+        lay.addWidget(head)
+        hint = QLabel("<b>To fix</b>: a site would reject it. <b>To check</b>: worth a look (releases, look-alikes, "
+                      "spelling, keyword order). Double-click a line to open that photo.")
+        hint.setStyleSheet(f"color:{GREY}")
+        hint.setWordWrap(True)
+        lay.addWidget(hint)
+        for n in batch_notes:
+            nl = QLabel("! " + n)
+            nl.setWordWrap(True)
+            nl.setStyleSheet(f"color:{WARN_FG}")
+            lay.addWidget(nl)
+        self.table = QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(["Photo", "Problem", "What to do", "Sites"])
+        self.table.verticalHeader().setVisible(False)
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setWordWrap(True)
+        hh = self.table.horizontalHeader()
+        hh.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(2, QHeaderView.Stretch)
+        hh.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        rows = [(ph, i) for ph, issues in results.items() for i in issues]
+        rows.sort(key=lambda r: (r[1]["level"] != precheck.SEVERE, win.rows.get(r[0].path, 0)))
+        self.row_photos = []
+        for ph, i in rows:
+            r = self.table.rowCount()
+            self.table.insertRow(r)
+            mark = "✕ " if i["level"] == precheck.SEVERE else "! "
+            cells = [os.path.basename(ph.path), mark + i["what"], i["detail"], ", ".join(i["sites"]) or "all"]
+            for c, text in enumerate(cells):
+                item = QTableWidgetItem(text)
+                item.setToolTip(text)
+                if c == 1:
+                    item.setForeground(QColor(theme.color("bad") if i["level"] == precheck.SEVERE else WARN_FG))
+                self.table.setItem(r, c, item)
+            self.row_photos.append(ph)
+        self.table.resizeRowsToContents()
+        self.table.cellDoubleClicked.connect(self._go_to)
+        lay.addWidget(self.table, 1)
+        if not rows:
+            lay.addWidget(QLabel("Nothing to fix: every photo looks ready to upload."))
+        btns = QHBoxLayout()
+        fixable = [ph for ph, issues in results.items() if any(i["fixable"] and i["what"] != "Not saved"
+                                                                  for i in issues)]
+        self.b_fix = QPushButton(f"Fix Spelling && Keyword Order ({len(fixable)})")
+        self.b_fix.setToolTip("Spell the brands your way and put the title's subject and brand in the first ten "
+                              "keywords,\nin these photos (not saved yet: save them after)")
+        self.b_fix.setVisible(bool(fixable))
+        self.b_fix.clicked.connect(lambda *_: self._done("fix"))
+        unsaved = [ph for ph in results if ph.changed]
+        self.b_save = QPushButton(f"Save ({len(unsaved)})")
+        self.b_save.setToolTip("Save the photos with unsaved changes into their files")
+        self.b_save.setVisible(bool(unsaved))
+        self.b_save.clicked.connect(lambda *_: self._done("save"))
+        flagged = [ph for ph, issues in results.items() if issues]
+        self.b_tick = QPushButton(f"Check Just These ({len(flagged)})")
+        self.b_tick.setToolTip("Tick only the photos listed here, so the buttons (Detect, Reword, Save…) work on them")
+        self.b_tick.setVisible(bool(flagged))
+        self.b_tick.clicked.connect(lambda *_: self._done("tick"))
+        for b in (self.b_fix, self.b_save, self.b_tick):
+            btns.addWidget(b)
+        btns.addStretch(1)
+        if for_upload:
+            go = QPushButton("Upload Anyway" if fix else "Continue to Upload")
+            go.setProperty("primary", True)
+            go.clicked.connect(lambda *_: self._done("upload"))
+            btns.addWidget(go)
+        close = QPushButton("Close")
+        close.clicked.connect(self.reject)
+        btns.addWidget(close)
+        lay.addLayout(btns)
+
+    def _go_to(self, row, _col):
+        ph = self.row_photos[row]
+        if ph.path in self.win.rows:
+            self.win._select_rows([self.win.rows[ph.path]])
+            self.win.table.scrollToItem(self.win.table.item(self.win.rows[ph.path], COL_FILE))
+
+    def _done(self, choice):
+        self.choice = choice
+        self.accept()
+
+
 def banner_label() -> QLabel:
     b = QLabel()
     b.setWordWrap(True)
@@ -2180,6 +2374,11 @@ class MainWindow(QMainWindow):
             "All photos in the list", lambda: self.open_in_stockup(list(self.photos)))
         self.btn_stockup.setMenu(self.stockup_menu)
         self.btn_ss_csv = button("Make Shutterstock CSV", lambda: self.make_shutterstock_csv(), "file-check")
+        self.btn_check = button("Check", lambda: self.check_before_upload(), "circle-check")
+        self.btn_check.setToolTip("Check Before Upload: everything the stock sites would reject, or that would hurt sales, in one list: titles\n"
+                                  "and keywords, picture size, editorial captions, releases, look-alike photos, brand\n"
+                                  "spelling and keyword order. Runs by itself when you click Upload….\n"
+                                  "Uses the checked photos, else the selected, else all shown.")
         self.btn_ss_csv.setToolTip("One click: the Shutterstock upload CSV for the checked photos (or all of them),\n"
                                    "saved next to the photos as shutterstock_<date>_<time>.csv, with the titles exactly as in\n"
                                    "the list. Upload it on Shutterstock's Submit page with the CSV button.")
@@ -2661,8 +2860,19 @@ class MainWindow(QMainWindow):
             d.setStyleSheet("QPushButton{padding:0;border-radius:11px}QPushButton:checked{border:2px solid "
                             "palette(highlight)}")
             d.clicked.connect(lambda *_, k=key: self.show_label(k))
+            d.setContextMenuPolicy(Qt.CustomContextMenu)
+            d.customContextMenuRequested.connect(lambda _pos, k=key: self.group_menu(k))
             self.label_dots[key] = d
             fb.addWidget(d)
+        self.btn_group = QPushButton("Group")             # shown while one colour is shown
+        self.btn_group.setProperty("plain", True)
+        self.btn_group.setToolTip("Do something to every photo with this label: note, type and Detect in one step,\n"
+                                  "Reword, Check Before Upload, Save, Upload…")
+        self.btn_group.clicked.connect(lambda *_: self.group_menu(
+            (self.filter_box.currentData() or "")[6:],
+            self.btn_group.mapToGlobal(self.btn_group.rect().bottomLeft())))
+        self.btn_group.hide()
+        fb.addWidget(self.btn_group)
         fb.addGap(4)
         for w in (self.btn_check_all, self.btn_uncheck_all):   # right by the list and its check column
             fb.addWidget(w)
@@ -2718,7 +2928,8 @@ class MainWindow(QMainWindow):
         self.btn_unsaved.setObjectName("unsavedPill")
         self.btn_unsaved.clicked.connect(lambda *_: self.save_all_unsaved())
         self.btn_unsaved.hide()
-        self.lbl_all_saved = QLabel("✓ All changes saved to the files")
+        self.lbl_all_saved = QLabel("✓ All saved")
+        self.lbl_all_saved.setToolTip("Every change is saved into the files")
         self.lbl_all_saved.setObjectName("allSaved")
         self.lbl_all_saved.hide()
         self.unsaved_timer = QTimer(self)             # counted a moment after changes, not on every row update
@@ -2735,6 +2946,7 @@ class MainWindow(QMainWindow):
         bottom.addWidget(self.btn_unsaved)
         bottom.addWidget(self.lbl_all_saved)
         bottom.addSpacing(16)
+        bottom.addWidget(self.btn_check)
         bottom.addWidget(self.btn_ss_csv)
         bottom.addWidget(self.btn_stockup)
         bottom.addWidget(self.btn_upload)
@@ -3564,7 +3776,11 @@ class MainWindow(QMainWindow):
             title = core.clean_title(ph.title)                 # (a title without the usual parts in front)
         desc = (self.compose_description(ph, r["description"]) if ph.description and r["description"] != bare_desc
                 else ph.description)
-        return title, desc, r["keywords"], r["categories"] or list(ph.categories), r["fixes"]
+        # then brand spellings and keyword order, worked out on a copy (nothing changes until you say so)
+        tmp = copy.copy(ph)
+        tmp.title, tmp.description, tmp.keywords = title, desc, list(r["keywords"])
+        more = self.polish(tmp)
+        return tmp.title, tmp.description, tmp.keywords, r["categories"] or list(ph.categories), r["fixes"] + more
 
     def fix_common_photos(self, photos=None, ask: bool = True) -> int:
         """Right-click → Fix common problems: fix the AI's usual mistakes in these photos (not saved yet)."""
@@ -4415,6 +4631,11 @@ class MainWindow(QMainWindow):
         row = self.rows.get(path)
         if row is not None:
             self.table.item(row, COL_THUMB).setIcon(QIcon(QPixmap.fromImage(qimg)))
+        ph = self._photo(path)
+        if ph is not None and not qimg.isNull():         # a fingerprint, to spot the same shot twice
+            small = qimg.scaled(9, 8, Qt.IgnoreAspectRatio, Qt.SmoothTransformation).convertToFormat(
+                QImage.Format_Grayscale8)
+            ph.image_hash = core.image_hash([small.pixelColor(x, y).red() for y in range(8) for x in range(9)])
 
     # ---------- table helpers
     def _photo(self, path) -> Photo | None:
@@ -4611,6 +4832,61 @@ class MainWindow(QMainWindow):
             return self.checked_photos()
         return sel
 
+    def label_group(self, key: str) -> list:
+        return [p for p in self.photos if p.label == key]
+
+    def group_menu(self, key: str, at=None):
+        """Everything you can do to one colour group at once (right-click a colour dot, or the group button)."""
+        ps = self.label_group(key)
+        idle = [p for p in ps if not p.busy]
+        name = core.LABEL_NAMES[key]
+        menu = QMenu(self)
+        menu.addSection(f"{name} photos ({len(ps)})")
+        acts = [("Show only these", lambda: self.show_label(key) if self.filter_box.currentData() != "label_" + key
+                 else None, True),
+                (f"Check only these ({len(ps)})", lambda: (self.set_checked(self.photos, False),
+                                                          self.set_checked(ps, True)), bool(ps)),
+                (None, None, None),
+                ("Note, type and Detect…", lambda: self.group_dialog(key), bool(idle)),
+                (f"Detect ({len(idle)})", lambda: self.identify_photos(idle, fresh=True), bool(idle)),
+                (f"Reword / double-check ({len(idle)})…", lambda: self.reword_photos(idle), bool(idle)),
+                (None, None, None),
+                (f"Check before upload ({len(idle)})", lambda: self.check_before_upload(idle), bool(idle)),
+                (f"Save ({sum(1 for p in idle if p.changed)})", lambda: self.save_photos([p for p in idle if p.changed]),
+                 any(p.changed for p in idle)),
+                (f"Upload… ({len(idle)})", lambda: self.open_upload(idle), bool(idle)),
+                (None, None, None),
+                ("Take the label off", lambda: self.set_label(idle, ""), bool(idle))]
+        for text, fn, on in acts:
+            if text is None:
+                menu.addSeparator()
+                continue
+            a = menu.addAction(text)
+            a.setEnabled(on)
+            a.triggered.connect(lambda *_, fn=fn: fn())
+        menu.exec(at or QCursor.pos())
+
+    def group_dialog(self, key: str):
+        ps = [p for p in self.label_group(key) if not p.busy]
+        if not ps:
+            return
+        dlg = GroupDialog(self, key, ps)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        note = core.single_line(dlg.note.text())
+        if note:
+            for p in ps:
+                p.note = note
+                self._show(p)
+        kind = dlg.type.currentData()
+        if kind is not None:
+            self.set_photo_type(ps, kind)
+        if dlg.detect.isChecked():
+            self.identify_photos(ps, fresh=True)
+        self.toast(f"{core.LABEL_NAMES[key]} photos: " + ", ".join(
+            x for x in ("note set" if note else "", "type set" if kind is not None else "",
+                        f"detecting {len(ps)}" if dlg.detect.isChecked() else "") if x) + ".", "ok", 4)
+
     def show_label(self, key: str):
         """The colour dots above the list: show only that label (click it again to show all)."""
         want = "label_" + key
@@ -4619,6 +4895,11 @@ class MainWindow(QMainWindow):
 
     def _sync_label_dots(self):
         cur = self.filter_box.currentData() or ""
+        group = cur[6:] if cur.startswith("label_") and cur[6:] in core.LABEL_NAMES else ""
+        self.btn_group.setVisible(bool(group))
+        if group:
+            self.btn_group.setText(f"{core.LABEL_NAMES[group]} group ▾")
+            self.btn_group.setIcon(theme.dot(core.LABEL_COLORS[group], 10))
         for k, b in self.label_dots.items():
             b.blockSignals(True)
             b.setChecked(cur == "label_" + k)
@@ -4627,7 +4908,151 @@ class MainWindow(QMainWindow):
             n = sum(1 for p in self.photos if p.label == k)
             b.setToolTip(f"Show only the {core.LABEL_NAMES[k].lower()}-labelled photos ({n})"
                          + (f"  ·  key {dict((a, d) for a, _n, _c, d in core.LABELS)[k]}" if k != "purple" else "")
-                         + "\nThen Check All ticks just those, and every button works on them.")
+                         + "\nThen Check All ticks just those, and every button works on them.\n"
+                         "Right-click: note, type and Detect, Save, Upload… for the whole group in one step.")
+
+    # ---------- brand spellings and keyword order
+    def brand_rules(self):
+        text = self.settings.get("brand_spellings")
+        text = core.DEFAULT_BRAND_SPELLINGS if text is None else text
+        if getattr(self, "_brand_cache", (None,))[0] != text:
+            self._brand_cache = (text, core.brand_rules(text))
+        return self._brand_cache[1]
+
+    def polish(self, ph: Photo) -> list[str]:
+        """After the AI (or Reword, or Fix common problems): brands spelled your way, their other search spellings
+        added, and the keywords that matter in the first ten. Returns what was changed."""
+        fixes = []
+        rules = self.brand_rules()
+        if rules:
+            kmax = core.keyword_range(self.settings.get("keyword_min"), self.settings.get("keyword_max"))[1]
+            r = core.fix_brand_spellings(ph.title, ph.description, ph.keywords, rules,
+                                         bool(self.settings.get("brand_alternates", True)),
+                                         keyword_max=max(kmax, len(ph.keywords)))
+            ph.title, ph.description, ph.keywords = core.clean_title(r["title"]), r["description"], r["keywords"]
+            fixes += r["fixes"]
+        if self.settings.get("keyword_order", True):
+            before = list(ph.keywords)
+            ph.keywords = self.ordered_keywords(ph)
+            if ph.keywords[:10] != before[:10]:
+                fixes.append("keyword order")
+        return fixes
+
+    def ordered_keywords(self, ph: Photo, keywords=None) -> list[str]:
+        """The keywords with the title's subject and brand in the first ten, your keywords to put first still
+        first, the place right after the subject (Editorial) and the month and year at the end."""
+        keywords = list(ph.keywords if keywords is None else keywords)
+        lead = core.expand_lead_keywords(self.settings.get("lead_keywords", ""), self.photo_date(ph))
+        n_lead = 0
+        for a, b in zip(keywords, lead):
+            if a.casefold() != b.casefold():
+                break
+            n_lead += 1
+        ed = self.editorial_keywords(ph)
+        ed_set = {k.casefold() for k in ed}
+        rest = [k for i, k in enumerate(keywords) if i < n_lead or k.casefold() not in ed_set]
+        bare = self.bare_title(ph)
+        ordered = core.order_keywords(rest, bare, n_lead)
+        if not ed or not any(k.casefold() in ed_set for k in keywords):
+            return ordered
+        present = [k for k in keywords if k.casefold() in ed_set]
+        return core.place_editorial_keywords(ordered, present, self.settings.get("editorial_pos", "before"),
+                                             after=n_lead, title=bare)
+
+    def keyword_order_note(self, ph: Photo) -> str:
+        better = self.ordered_keywords(ph)
+        missing = [k for k in better[:10] if k not in ph.keywords[:10]]
+        return ("not in the first ten: " + ", ".join(missing[:4]) + ("…" if len(missing) > 4 else "")) if missing else ""
+
+    # ---------- Check Before Upload
+    def check_sites(self) -> list[str]:
+        """The sites you sell on (Settings → Stock sites) and the ones you have an upload login for."""
+        sites = list(core.stock_sites(self.settings))
+        try:
+            import uploader
+            sites += [s["name"] for s in uploader.load_sites() if s.get("username") and s["name"] not in sites]
+        except Exception as e:                       # (no logins file yet, keyring trouble…)
+            core.debug(f"check: couldn't read the upload logins: {e!r}")
+        return sites
+
+    def precheck_results(self, photos) -> dict:
+        import precheck
+        from PySide6.QtGui import QImageReader
+        sites = self.check_sites()
+        known = set(core.STOCK_SITES)
+        site_rules = [s for s in sites if s in known]
+        twins = {}
+        for g in self.look_alike_groups(photos):
+            for p in g:
+                twins[p.path] = [os.path.basename(o.path) for o in g if o is not p]
+        rules = self.brand_rules()
+        out = {}
+        self._check_infos = []
+        for ph in photos:
+            size = QImageReader(ph.path).size() if not core.is_raw(ph.path) else QSize()
+            spelled = core.fix_brand_spellings(ph.title, ph.description, ph.keywords, rules, False)["fixes"] \
+                if rules else []
+            info = {"file": os.path.basename(ph.path), "title": ph.title, "description": ph.description,
+                    "keywords": list(ph.keywords), "editorial": self.is_editorial(ph), "unsaved": ph.changed,
+                    "width": size.width() if size.isValid() else 0, "height": size.height() if size.isValid() else 0,
+                    "bytes": os.path.getsize(ph.path) if os.path.exists(ph.path) else 0,
+                    "raw": core.is_raw(ph.path),
+                    "site_problems": core.site_problems(ph.title, ph.keywords, site_rules, ph.description,
+                                                        self.settings.get("shutterstock_text", "title")),
+                    "order_note": self.keyword_order_note(ph) if self.settings.get("keyword_order", True) else "",
+                    "brand_fixes": spelled, "look_alikes": twins.get(ph.path, []),
+                    "ss_text": self.settings.get("shutterstock_text", "title")}
+            out[ph] = precheck.check_photo(info, sites)
+            self._check_infos.append(info)
+        return out
+
+    def check_before_upload(self, photos=None, for_upload: bool = False) -> bool:
+        """The checks every site would run, before you send anything. Returns True to go on with the upload."""
+        import precheck
+        if photos is None:
+            photos = self.targets()[0]
+        photos = [p for p in photos if not p.busy and p.status != "reading"]
+        if not photos:
+            self.status.setText("No photos to check yet.")
+            return False
+        results = self.precheck_results(photos)
+        fix, warn, good = precheck.summary(results)
+        self.last_check = results
+        if not fix and not warn:
+            self.toast(f"Check Before Upload: all {len(photos)} photo{'s look' if len(photos) != 1 else ' looks'} "
+                       "ready.", "ok", 4)
+            return True
+        if os.environ.get("IPTC_TAGGER_OFFLINE"):
+            return True                               # (tests: no window)
+        sites = self.check_sites()
+        dlg = CheckDialog(self, results, sites, for_upload, precheck.notes(self._check_infos, sites))
+        dlg.exec()
+        flagged = [ph for ph, issues in results.items() if issues]
+        if dlg.choice == "fix":
+            fixed = 0
+            for ph, issues in results.items():
+                if any(i["fixable"] and i["what"] != "Not saved" for i in issues) and not ph.busy:
+                    self._remember_suggestion(ph, "Before fixes")
+                    self.polish(ph)
+                    if ph.status == "saved" and ph.changed:
+                        ph.status = "ready"
+                    self._show(ph)
+                    fixed += 1
+            self.toast(f"Fixed spelling and keyword order in {fixed} photo{'s' if fixed != 1 else ''}. "
+                       "Save them, then upload.", "ok", 6)
+        elif dlg.choice == "save":
+            self.save_photos([ph for ph in results if ph.changed])
+        elif dlg.choice == "tick":
+            self.set_checked(self.photos, False)
+            self.set_checked(flagged, True)
+        return dlg.choice == "upload"
+
+    def look_alike_groups(self, photos=None) -> list[list]:
+        """Photos whose pictures are nearly the same (a burst, the same shelf twice): sites reject the extras."""
+        photos = list(self.photos if photos is None else photos)
+        by_path = {p.path: p for p in photos}
+        groups = core.look_alike_groups({p.path: p.image_hash for p in photos})
+        return [[by_path[k] for k in sorted(g, key=lambda k: self.rows.get(k, 0))] for g in groups]
 
     def edited_fields(self, ph: Photo) -> set:
         """Which of title / description / keywords differ from what's in the file."""
@@ -4659,7 +5084,7 @@ class MainWindow(QMainWindow):
         n = sum(1 for p in self.photos if p.changed and not p.busy and p.status != "reading")
         self.setWindowTitle(f"{core.APP_NAME} {core.APP_VERSION}" + (f" — {n} unsaved" if n else ""))
         if n:
-            self.btn_unsaved.setText(f"● {n} not saved yet · Save all")
+            self.btn_unsaved.setText(f"● {n} unsaved · Save all")
             self.btn_unsaved.setToolTip(f"{n} photo{'s have' if n != 1 else ' has'} changes that are only in this "
                                         "list, not in the files.\nClick to save them all now (Ctrl/⌘+S saves the "
                                         "checked or selected ones). Unsaved rows have an orange dot.")
@@ -5533,6 +5958,8 @@ class MainWindow(QMainWindow):
         sites = core.stock_sites(self.settings) if key == "site_problems" else ()
         groups = self.similar_groups() if key == "similar" else []
         similar = {p.path for g in groups for p in g}
+        if key == "lookalike":
+            similar = {p.path for g in self.look_alike_groups() for p in g}
         ss_text = self.settings.get("shutterstock_text", "title")
         hidden = {p.path for p in self.photos if not photo_matches(p, key, text, kmin, sites, similar, ss_text)}
         n_redo = sum(len(g) - 1 for g in groups)
@@ -5643,6 +6070,7 @@ class MainWindow(QMainWindow):
                                          else "The checked photos")
         up_n = len([p for p in self.targets()[0] if not p.busy]) if self.photos else 0
         self.btn_upload.setEnabled(up_n > 0)
+        self.btn_check.setEnabled(up_n > 0)
         self.btn_upload.setText(f"Upload ({up_n})…" if up_n else "Upload…")
         visible = self.visible_photos()
         self.btn_check_all.setEnabled(any(not p.checked for p in visible))
@@ -6153,6 +6581,7 @@ class MainWindow(QMainWindow):
                                                         title=result["title"])
             if s.get("editorial_on") and not self.place_keywords_on():
                 ph.keywords = self.drop_place_date_keywords(ph, ph.keywords)
+            self.polish(ph)
             self._make_plain(ph)
             same = (ph.title, ph.description, ph.keywords) == before
             ph.status = "ready" if same and not ph.changed else "suggested"
@@ -6195,7 +6624,7 @@ class MainWindow(QMainWindow):
     def start_job(self, job, pool, on_done, on_failed):
         run_job(self, job, pool, on_done, on_failed)
 
-    def open_upload(self, photos=None):
+    def open_upload(self, photos=None, check: bool = True):
         """Upload… : the checked photos, else the selected, else all shown, in their own window."""
         from upload_window import UploadWindow
         if photos is None:
@@ -6207,6 +6636,9 @@ class MainWindow(QMainWindow):
             self.status.setText("Add some photos first.")
             return None
         old = getattr(self, "upload_window", None)
+        running = old is not None and old.isVisible() and old.uploader and old.uploader.status()["running"]
+        if not running and check and not self.check_before_upload(photos, for_upload=True):
+            return None
         if old is not None and old.isVisible() and old.uploader and old.uploader.status()["running"]:
             old.raise_()
             old.activateWindow()
@@ -6330,6 +6762,7 @@ class MainWindow(QMainWindow):
                                                         self.editorial_keywords(ph),
                                                         self.settings.get("editorial_pos", "before"), after=len(lead),
                                                         title=result["title"])
+            self.polish(ph)                           # brand spellings, keyword order
             self._make_plain(ph)                      # Stock-site safe: the whole title, your text included
             ph.busy, ph.status = False, "suggested"
             self._remember_suggestion(ph, "Redo" if redo else "Suggestion")

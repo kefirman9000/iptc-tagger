@@ -1,5 +1,21 @@
 # What's new
 
+## 2026.11.10.5
+
+- **Brands spelled your way, everywhere:** a new **Settings → Brands** page lists each brand as *right spelling = wrong spellings | other ways buyers search for it*, e.g. `BJ's = BJs, Bjs | bjs` or `Coca-Cola = Coca Cola | coca cola, coke`.
+  - The wrong spellings are fixed in titles, descriptions and keywords, in any case, with or without the apostrophe, hyphen or accent: *Kelloggs* → *Kellogg's*, *Haagen Dazs* → *Häagen-Dazs*, *Wal-Mart* → *Walmart*.
+  - The search spellings and abbreviations (*bjs*, *heb*, *711*, *coke*) are added to the keywords right after the brand, while there's room.
+  - It starts with about 45 common store and grocery brands. Add your own, and **Add the Built-in Brands** brings back any you removed.
+  - It runs after every Detect, Reword and Fix common problems.
+- **The first ten keywords are the ones that matter:** stock sites (Adobe Stock in particular) weigh them the most. After every Detect, Reword and Fix common problems, the keywords naming the title's subject and brand go first, specific before general. General words (*food*, *shelf*, *retail*, *aisle*…) go after them. Your keywords to put first stay first, the place stays right after the subject, and the month and year stay last. You can turn it off in Settings → Titles & keywords.
+- **Look-alike photos:** the app compares the pictures themselves (not just the titles) and finds the same shot taken twice. *Show → Look-alike photos* lists them, and Check Before Upload warns you, because Shutterstock and Adobe reject near-duplicates.
+- **Check Before Upload:** a new **Check** button at the bottom, which also runs by itself when you click **Upload…**, lists everything a site would reject or that would hurt sales, worst first:
+  - **To fix:** no title or keywords, not saved, title length and keyword counts per site, a picture too small (Shutterstock and Adobe Stock 4 MP, Dreamstime 3 MP, Alamy 17 MB uncompressed, about 6 MP) or too large (Adobe Stock 100 MP, 45 MB; Shutterstock 50 MB), and an editorial caption without Shutterstock's *City, Country - Month Day, Year:* format.
+  - **To check:** model and property releases, look-alikes, brand spelling and keyword order, plus a reminder about Adobe's Illustrative Editorial.
+  - **Buttons:** **Fix Spelling & Keyword Order**, **Save**, **Check Just These** (ticks only the photos listed) and **Upload Anyway**. Double-click a line to go to that photo.
+- **One step for a colour group:** right-click a colour dot above the list, or use the **Green group ▾** button that shows while one colour is shown. It offers *Note, type and Detect…* (one note and photo type for every photo with that label, then Detect them with new titles), Detect, Reword, Check before upload, Save, Upload… and *Check only these*.
+- Pop-up messages no longer vanish right after appearing when one comes soon after another.
+
 ## 2026.11.10.4
 
 - **Colour labels, as in Lightroom:** give photos a red, yellow, green, blue or purple label to sort them into groups (one shoot, one store, the ones to redo…):
