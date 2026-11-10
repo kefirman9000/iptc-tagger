@@ -1,5 +1,11 @@
 # What's new
 
+## 2026.11.09.7
+
+- **The store in your photo note decides the title:** with a note like *BJ's Wholesale* (or the store in your Instructions), titles and descriptions no longer name Costco, Kirkland or any other chain, even when the AI thinks it read *Kirkland* on a sign. If the title names no store at all, *at BJ's Wholesale Club* is added to the end. A store's own brand in your note (*Kirkland almonds at BJ's*) stays, and isn't mistaken for the store. Related stores and brands are still fine as keywords.
+- **The AI is reminded of your note last:** the photo note is now repeated at the very end of what the AI reads, with "the title must agree with it, and never name a different store, brand or species". Small models follow what they read last much better. Text saved on the photo from an earlier Detect is marked as possibly wrong where it differs from your note.
+- **Two stores in one title:** without a note, the store named as the place (*BJS Wholesale Grocery Store Setting*) now wins over one used like a brand (*Costco Baking Nuts*), instead of whichever came first.
+
 ## 2026.11.09.6
 
 - **Editorial titles without the place and date in the keywords:** a new **Add to keywords** box next to *Editorial (include location and date)*. Untick it and the location and date still go in front of the title (and the description), but *cary*, *north carolina*, *november 2026* and *2026* aren't added to the keywords. Ones the AI writes or that are already saved on the photo are taken out too, and the AI is told to leave them out. Your keywords to put first are always kept, even with a place or *{month} {year}* in them. Unticking it offers to take them out of the photos already in the list as well. On to start with, as before.

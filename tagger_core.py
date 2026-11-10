@@ -39,7 +39,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.11.09.6"
+APP_VERSION = "2026.11.09.7"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 # camera RAW files: titles and keywords go into the Lightroom sidecar next to them (photo.xmp), never the RAW.
 # DNG is left out: Lightroom ignores sidecars for DNG and keeps its metadata inside the file itself.
@@ -2601,6 +2601,18 @@ STORE_CHAINS = {
     "true value": ["true value"], "harbor freight": ["harbor freight"], "tractor supply": ["tractor supply"],
     "sheetz": ["sheetz"], "wawa": ["wawa"],
 }
+STORE_DISPLAY = {   # how a store is written in a title
+    "walmart": "Walmart", "costco": "Costco", "bjs": "BJ's Wholesale Club", "sams club": "Sam's Club",
+    "kroger": "Kroger", "target": "Target", "aldi": "Aldi", "lidl": "Lidl", "publix": "Publix",
+    "food lion": "Food Lion", "harris teeter": "Harris Teeter", "whole foods": "Whole Foods Market",
+    "trader joes": "Trader Joe's", "wegmans": "Wegmans", "safeway": "Safeway", "meijer": "Meijer", "heb": "H-E-B",
+    "cvs": "CVS", "walgreens": "Walgreens", "rite aid": "Rite Aid", "home depot": "The Home Depot",
+    "lowes": "Lowe's", "ace hardware": "Ace Hardware", "menards": "Menards", "true value": "True Value",
+    "harbor freight": "Harbor Freight", "tractor supply": "Tractor Supply", "sheetz": "Sheetz", "wawa": "Wawa",
+}
+# A store's own brands: they say whose products these are, not where the photo was taken
+HOUSE_BRANDS = {"great value", "equate", "mainstays", "kirkland", "wellsley farms", "berkley jensen", "members mark",
+                "up and up", "good and gather", "husky tools", "hdx", "kobalt", "clark kensington", "westlake ace"}
 HARDWARE_STORES = {"home depot", "lowes", "ace hardware", "menards", "true value", "harbor freight", "tractor supply"}
 
 # Keywords for things that have to be in the title or description to belong in the keywords (the AI adds them to
@@ -2637,12 +2649,32 @@ def _norm_words(text: str) -> str:
     return " " + " ".join(re.sub(r"[^a-z0-9]+", " ", t).split()) + " "
 
 
-def stores_in(text: str) -> list[str]:
-    """The store chains named in this text, in the order they appear."""
+_PLACE_WORDS = r"(?:store|stores|wholesale|club|market|supermarket|warehouse|interior|exterior|location|aisle|aisles|" \
+               r"setting|hardware|pharmacy|storefront|entrance|parking|checkout|shop)"
+
+
+def store_here(text: str) -> str:
+    """The store a title says the photo was taken in. With two named (Costco Baking Nuts…, BJS Wholesale Store
+    Setting), the one named as a place (followed by store, wholesale, club, interior…) wins over one used like a
+    brand; otherwise the first."""
+    found = stores_in(text, brands=False)
+    if len(found) < 2:
+        return found[0] if found else ""
+    t = _norm_words(text)
+    for chain in found:
+        for n in STORE_CHAINS[chain]:
+            if n not in HOUSE_BRANDS and re.search(r" " + re.escape(n) + r" (?:\w+ ){0,2}?" + _PLACE_WORDS + r" ", t):
+                return chain
+    return found[0]
+
+
+def stores_in(text: str, brands: bool = True) -> list[str]:
+    """The store chains named in this text, in the order they appear. brands=False: only by the store's own name
+    (Kirkland on a bag doesn't mean the photo was taken at Costco)."""
     t = _norm_words(text)
     found = []
     for chain, names in STORE_CHAINS.items():
-        at = [t.find(f" {n} ") for n in names if f" {n} " in t]
+        at = [t.find(f" {n} ") for n in names if f" {n} " in t and (brands or n not in HOUSE_BRANDS)]
         if at:
             found.append((min(at), chain))
     return [c for _, c in sorted(found)]
@@ -2804,10 +2836,15 @@ def fix_common_problems(title: str, description: str, keywords, categories=(), k
         fixes.append("took leftover text or a stray quote out of the title")
     own_n = _norm_words(known)                         # yours: keeps anything
     known_n = _norm_words(" ".join([known or "", label or ""]))
-    here = stores_in(" ".join([known, title]))        # where the photo was taken: your notes first, then the title
-    store = here[0] if here else ""
+    mine = stores_in(known or "", brands=False)        # a store in your notes or Instructions decides it
+    store = mine[0] if mine else store_here(title)    # otherwise the store the title names as the place
+    if not store:                                     # last: a store's own brand (Clark+Kensington is Ace's)
+        store = next(iter(stores_in(title)), "")
     if store:
-        others = [n for c, names in STORE_CHAINS.items() if c != store for n in names if f" {n} " not in known_n]
+        # another chain's name or house brand comes out of the title, even when the label reader thought it saw
+        # it, if your notes say where the photo was taken (Kirkland at BJ's); otherwise the label keeps it
+        proof = own_n if mine else known_n
+        others = [n for c, names in STORE_CHAINS.items() if c != store for n in names if f" {n} " not in proof]
         name_rx = [re.compile(r"(?<![\w])" + r"[\s\-]*".join(r"[’']?".join(map(re.escape, part)) for part in n.split())
                               + r"(?:[’']s)?(?![\w])", re.I) for n in sorted(others, key=len, reverse=True)]
 
@@ -2817,11 +2854,16 @@ def fix_common_problems(title: str, description: str, keywords, categories=(), k
             text = re.sub(r"\s+([,.;:])", r"\1", " ".join(text.split()))
             # a joining word left with nothing after it ("…Featuring" at the end, "with ," in the middle)
             text = re.sub(r"\b(?:Featuring|with|and|from|by|at|in|of)\s*(?=[,.;:]|$)", "", text, flags=re.I)
-            return " ".join(text.split()).strip(" ,;:-")
+            text = re.sub(r"\s+([,.;:])", r"\1", " ".join(text.split()))
+            return re.sub(r",\s*,", ",", text).strip(" ,;:-")
         nt, nd = strip_other(title), strip_other(description)
         if (nt, nd) != (title, description):
             fixes.append(f"took another store's name out (the photo is from {store})")
             title, description = nt, nd
+        if mine and title and not stores_in(title, brands=False) and STORE_DISPLAY.get(store):
+            # your note says where it was taken and the title names no store: say so
+            title = f"{title} at {STORE_DISPLAY[store]}"
+            fixes.append(f"added the store from your notes ({STORE_DISPLAY[store]})")
     if check_parents:
         nt, nd = drop_unproven_parents(title, known_n), drop_unproven_parents(description, known_n)
         if (nt, nd) != (title, description):
@@ -3368,7 +3410,8 @@ def build_prompt(keyword_min: int, keyword_max: int, context: str = "", existing
                   "about the photo (for example place or date), but don't repeat them in your list: "
                   + ", ".join(lead_keywords)]
     if existing_title or existing_keywords:
-        lines += ["", "Metadata already on the file, for reference only. Write a new title that follows the "
+        lines += ["", "Metadata already on the file, for reference only (it may be wrong; where it differs from the "
+                  "photographer's notes, the notes are right). Write a new title that follows the "
                   "instructions here rather than copying it: "
                   + json.dumps({"title": existing_title, "keywords": list(existing_keywords or [])},
                                ensure_ascii=False)]
@@ -3378,6 +3421,11 @@ def build_prompt(keyword_min: int, keyword_max: int, context: str = "", existing
     elif direction:
         lines += ["", "PHOTOGRAPHER'S DIRECTIONS (highest priority: follow every one exactly, even where it "
                   "differs from the rules above):", direction]
+    if photo_note and not copyright_free:
+        lines += ["", f"REMEMBER THE NOTE ABOUT THIS PHOTO: {single_line(photo_note)}. The title must agree with it: "
+                  "use the store, brand, product, place, species or name it gives, and never name a different "
+                  "store, brand or species than it does (not even one you think you can see, or a store's own "
+                  "brand from another chain)."]
     lines += ["", 'Output only JSON in exactly this form: {"title": "...", "keywords": ["...", "..."]}']
     return "\n".join(lines)
 
