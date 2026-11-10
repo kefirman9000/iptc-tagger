@@ -220,3 +220,22 @@ def test_location_and_date_go_to_the_ai_when_given(window, make_photos, monkeypa
     seen = _detect_with_stand_in(win, ph, monkeypatch)
     assert seen["title_location"] == "Cary, North Carolina"
     assert ph.title.startswith("Cary, North Carolina - November 6, 2026: ")
+
+
+def test_editorial_title_without_place_and_date_keywords(window, make_photos, monkeypatch):
+    app, win = window
+    add(win, make_photos(2))
+    a, b = win.photos
+    _set_editorial(win, True, "myshoot")
+    # a photo already in the list with place / date keywords
+    b.title, b.keywords = "Cary, North Carolina - November 6, 2026: Old Title Here", \
+        ["snacks", "cary", "north carolina", "november 2026", "2026", "myshoot"]
+    win.ed_kw.setChecked(False)                                   # Editorial, but not in the keywords
+    assert win.settings["editorial_keywords"] is False
+    assert b.keywords == ["snacks", "myshoot"]                    # offered (yes in tests) for photos in the list
+    a.keywords = ["cary", "snacks"]                               # saved on the file earlier
+    _detect_with_stand_in(win, a, monkeypatch)
+    assert a.title.startswith("Cary, North Carolina - November 6, 2026: ")   # still in the title
+    low = {k.casefold() for k in a.keywords}
+    assert not low & {"cary", "north carolina", "november 2026", "2026"}
+    assert "myshoot" in low                                       # your keywords to put first stay

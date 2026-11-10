@@ -1939,6 +1939,12 @@ class MainWindow(QMainWindow):
                                       "In the keywords, the place goes right after the ones that name what's in the photo,\n"
                                       "and the month and year go at the end.")
         self.editorial_pos.currentIndexChanged.connect(lambda *_: self._date_options_changed())
+        self.ed_kw = QCheckBox("Add to keywords")
+        self.ed_kw.setChecked(bool(self.settings.get("editorial_keywords", True)))
+        self.ed_kw.setToolTip("On: the location's parts and the month and year (cary, north carolina, november 2026,\n"
+                              "2026) are added to the keywords too.\nOff: they only go in the title (and the "
+                              "description). Your keywords to put first are always kept.")
+        self.ed_kw.toggled.connect(lambda on: self._editorial_keywords_toggled(on))
         self.loc_ai = QCheckBox("Give to AI")
         self.loc_ai.setChecked(bool(self.settings.get("location_for_ai", True)))
         self.loc_ai.setToolTip("On: the AI is told where and when the photos were taken and uses the place in the\n"
@@ -2001,6 +2007,7 @@ class MainWindow(QMainWindow):
         loc_row = QHBoxLayout()
         loc_row.addWidget(self.editorial)
         loc_row.addWidget(self.editorial_pos, 1)
+        loc_row.addWidget(self.ed_kw)
         loc_row.addSpacing(12)
         self.loc_label = QLabel("<b>Location</b>")
         loc_row.addWidget(self.loc_label)
@@ -3501,6 +3508,7 @@ class MainWindow(QMainWindow):
                              editorial_on=self.editorial.isChecked(),
                              editorial_pos=self.editorial_pos.currentData() or "before",
                              location_for_ai=self.loc_ai.isChecked(),
+                             editorial_keywords=self.ed_kw.isChecked(),
                              title_date_pos=self.date_pos.currentData() or "off",
                              title_date_format=self.date_fmt.currentData() or "long",
                              title_date_sep=self.date_sep.currentData() or "dash",
@@ -4202,8 +4210,52 @@ class MainWindow(QMainWindow):
             style = ((style or "").rstrip() + "\n- " + core.NO_DATE_RULE).strip()
         return style
 
+    def place_keywords_on(self) -> bool:
+        """Editorial on, and its place / date keywords wanted."""
+        return bool(self.settings.get("editorial_on")) and bool(self.settings.get("editorial_keywords", True))
+
+    def drop_place_date_keywords(self, ph: Photo, keywords) -> list[str]:
+        """These keywords without the location's parts or the month/year (Editorial without Add to keywords).
+        Your keywords to put first, Instructions and photo note keep anything they name."""
+        s = self.settings
+        hist = s.get("location_history") or []
+        locs = [ph.location, s.get("title_location", "")] + [x for x in hist if isinstance(x, str)]
+        lead = core.expand_lead_keywords(s.get("lead_keywords", ""), self.photo_date(ph))
+        keep = "\n".join([s.get("context", "") or "", ph.note or "", ", ".join(lead)])
+        kws = core.scrub_place_date("", "", keywords, locs, [self.photo_date(ph), ph.taken], drop_place=True,
+                                    drop_date_keywords=True, keep_text=keep)[2]
+        mine = {k.casefold() for k in lead}
+        return [k for k in keywords if k in kws or k.casefold() in mine]
+
+    def _editorial_keywords_toggled(self, on: bool):
+        self._remember_options()
+        if on or not self._ready:
+            return
+        idle = [p for p in self.photos if not p.busy]
+        found = [(p, self.drop_place_date_keywords(p, p.keywords)) for p in idle]
+        found = [(p, k) for p, k in found if k != p.keywords]
+        if not found:
+            return
+        n = len(found)
+        if not os.environ.get("IPTC_TAGGER_OFFLINE") and QMessageBox.question(
+                self, "Place and date keywords",
+                f"Take the location and date keywords out of the {n} photo{'s' if n != 1 else ''} already in the list "
+                "too? (Like cary, north carolina, november 2026.) Their titles keep the location and date.\n\n"
+                "Nothing is saved into the files until you save.") != QMessageBox.Yes:
+            return
+        for ph, k in found:
+            self._remember_suggestion(ph, "Before removing place keywords")
+            ph.keywords = k
+            if ph.status == "saved" and ph.changed:
+                ph.status = "ready"
+            ph.message = "Location and date keywords taken out, not saved yet"
+            self._show(ph)
+        if self.review.photo is not None:
+            self.review.show_photo(self.review.photo)
+        self.status.setText(f"Took the location and date keywords out of {n} photo{'s' if n != 1 else ''}.")
+
     def editorial_keywords(self, ph: Photo) -> list[str]:
-        if not self.settings.get("editorial_on"):
+        if not self.place_keywords_on():
             return []
         return core.editorial_keywords(self.location_for(ph), self.photo_date(ph))
 
@@ -4309,7 +4361,7 @@ class MainWindow(QMainWindow):
         # keep the settings in memory in step at once (they're written to disk by _remember_options)
         self.settings.update(editorial_on=ed_on, editorial_pos="before" if before else "after", title_date_pos=pos)
         on, has_loc = pos != "off", bool(self.location.text().strip())
-        for wdg in (self.editorial_pos, self.loc_label, self.location_box, self.loc_ai, self.date_label,
+        for wdg in (self.editorial_pos, self.ed_kw, self.loc_label, self.location_box, self.loc_ai, self.date_label,
                     self.date_fmt, self.custom_date_on, self.btn_set_loc):
             wdg.setEnabled(ed_on)
         self.review.refresh_location()
@@ -5018,6 +5070,7 @@ class MainWindow(QMainWindow):
                                              fix_common=bool(self.settings.get("fix_common", True)),
                                              concept=bool(self.settings.get("concept", True)),
                                              text_model=self.text_model(),
+                                             place_keywords=self.place_keywords_on(),
                                              tidy=bool(self.settings.get("tidy_keywords", True))),
                   ph.path, url, model, kmin, kmax,
                   context, old_title, old_keywords, direction, ph.note,
@@ -5199,6 +5252,8 @@ class MainWindow(QMainWindow):
             ph.keywords = core.place_editorial_keywords(head + list(result["keywords"]), extra,
                                                         s.get("editorial_pos", "before"), after=len(head),
                                                         title=result["title"])
+            if s.get("editorial_on") and not self.place_keywords_on():
+                ph.keywords = self.drop_place_date_keywords(ph, ph.keywords)
             self._make_plain(ph)
             same = (ph.title, ph.description, ph.keywords) == before
             ph.status = "ready" if same and not ph.changed else "suggested"
@@ -5327,6 +5382,10 @@ class MainWindow(QMainWindow):
             if self.effective_type(ph) == core.COPYRIGHT_FREE:
                 existing = core.drop_brand_keywords(existing)    # no brand names, even ones already on the file
                 suggested = core.drop_brand_keywords(suggested)
+            if self.settings.get("editorial_on") and not self.place_keywords_on():
+                # Editorial without "Add to keywords": no place or month/year keywords from the AI or the file
+                existing = self.drop_place_date_keywords(ph, existing)
+                suggested = self.drop_place_date_keywords(ph, suggested)
             ph.keywords = core.place_editorial_keywords(core.combine_keywords(lead, existing, suggested, kmax),
                                                         self.editorial_keywords(ph),
                                                         self.settings.get("editorial_pos", "before"), after=len(lead),
