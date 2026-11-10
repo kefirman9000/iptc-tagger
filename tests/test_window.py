@@ -248,3 +248,35 @@ def test_fits_a_laptop_screen(window, make_photos):
                                                        app_mod.COL_TITLE, app_mod.COL_KEYWORDS]
     win.toggle_instructions()                                   # folded and unfolded both remembered
     assert win.settings["instructions_folded"] == win.instr_summary.isVisibleTo(win)
+
+
+def test_light_and_dark_with_icons(window, make_photos):
+    import theme
+    _mod, win = window
+    app = QApplication.instance()
+    for mode, dark in (("dark", True), ("light", False)):
+        theme.apply(app, mode)
+        win.apply_theme()
+        assert theme.is_dark() is dark
+        assert (app.palette().color(app.palette().ColorRole.Window).lightness() < 128) is dark
+        assert theme.color("primary") in win.styleSheet()
+        assert theme.color("warn_bg") in win.et_banner.styleSheet()
+    # every toolbar button has its icon, and the main ones are the solid blue ones
+    assert all(not b.icon().isNull() for b, _n, _p in win.themed_icons)
+    assert {b.text().split(" (")[0] for b, _n, p in win.themed_icons if p} >= {"Detect", "Save Metadata"}
+    assert win.btn_clear.property("plain") is True and win.btn_identify.property("primary") is True
+    assert not win.review.b_copy.icon().isNull()
+
+
+def test_busy_rows_show_a_bar_and_toasts_pop_up(window, make_photos):
+    app, win = window
+    add(win, make_photos(2))
+    ph = win.photos[0]
+    ph.busy = True
+    win.table.viewport().repaint()                    # the delegate draws the moving bar without trouble
+    win._animate_busy()
+    assert win.photo_at_row(win.rows[ph.path]) is ph
+    ph.busy = False
+    win.batch_total, win.batch_label, win.batch_started, win.batch_quiet = 2, "Detecting", time.monotonic(), False
+    win._batch_finished()
+    assert win.toast_box.isVisible() and "Detect finished: 2 photos" in win.toast_box.text()

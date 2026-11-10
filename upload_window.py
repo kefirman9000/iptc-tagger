@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
 )
 
 import tagger_core as core
+import theme
 import uploader as up
 
 GREY = "#8a8f98"
@@ -145,9 +146,10 @@ class LoginsDialog(QDialog):
                 QTimer.singleShot(200, check)
                 return
             why = answer[0]
-            result.setText("<span style='color:#2e7d32'>Works</span>" if not why else
-                           f"<span style='color:#2e7d32'>Works</span> ({why[6:]})" if why.startswith("works") else
-                           f"<span style='color:#c62828'>{why}</span>")
+            ok, bad = theme.color("ok"), theme.color("bad")
+            result.setText(f"<span style='color:{ok}'>Works</span>" if not why else
+                           f"<span style='color:{ok}'>Works</span> ({why[6:]})" if why.startswith("works") else
+                           f"<span style='color:{bad}'>{why}</span>")
         QTimer.singleShot(200, check)
 
     def _save(self):
@@ -193,7 +195,8 @@ class UploadWindow(QDialog):
         lay.addWidget(head)
         self.unsaved = QLabel()
         self.unsaved.setWordWrap(True)
-        self.unsaved.setStyleSheet("background:#fff4e5; color:#7a4b00; padding:6px; border-radius:4px")
+        self.unsaved.setStyleSheet(f"background:{theme.color('unsaved_bg')}; color:{theme.color('unsaved_fg')}; "
+                                   "padding:6px; border-radius:4px")
         self.btn_save = QPushButton("Save Metadata first")
         self.btn_save.clicked.connect(lambda *_: self.win.save_photos([p for p in self.photos if p.changed]))
         warn = QHBoxLayout()
@@ -430,8 +433,12 @@ class UploadWindow(QDialog):
         self.next_steps.show()
         self.btn_ss_csv.setVisible("shutterstock" in sent)
         self.btn_receipt.show()
-        self.win.status.setText("Upload finished: " + ", ".join(
-            f"{st['sites'][n]['done']} to {up.SITES[n]['label']}" for n in sent) + ".")
+        msg = "Upload finished: " + ", ".join(f"{st['sites'][n]['done']} to {st['sites'][n]['label']}" for n in sent)
+        self.win.status.setText(msg + ".")
+        problems = any(st["sites"][n]["errors"] for n in st["sites"])
+        if hasattr(self.win, "toast"):
+            self.win.toast(msg + (" (some problems: see the Upload window)" if problems else ""),
+                           "warn" if problems else "ok", 7)
 
     def _logins(self):
         if LoginsDialog(self, self.win.settings).exec():

@@ -16,17 +16,19 @@ import functools
 import threading
 import time
 
-from PySide6.QtCore import (QDate, QItemSelectionModel, QObject, QPoint, QRect, QRunnable, QSize, Qt, QThreadPool,
-                            QTimer, QUrl, Signal)
-from PySide6.QtGui import QAction, QColor, QDesktopServices, QIcon, QImage, QKeySequence, QPixmap
+from PySide6.QtCore import (QDate, QEasingCurve, QItemSelectionModel, QObject, QPoint, QPropertyAnimation, QRect,
+                            QRectF, QRunnable, QSize, Qt, QThreadPool, QTimer, QUrl, Signal)
+from PySide6.QtGui import QAction, QColor, QDesktopServices, QIcon, QImage, QKeySequence, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QFrame, QLayout, QScrollArea, QSizePolicy, QComboBox, QDateEdit, QDialog, QDialogButtonBox, QFileDialog,
     QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit, QMainWindow,
     QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QSpinBox, QSplitter, QStackedWidget,
     QStyle, QSystemTrayIcon, QTableWidget, QTableWidgetItem, QTabWidget, QTextBrowser, QVBoxLayout, QWidget,
+    QGraphicsOpacityEffect, QStyledItemDelegate,
 )
 
 import tagger_core as core
+import theme
 
 THUMB = 72
 # column order in the list: status, type and the Detect/Save buttons sit before the text you edit
@@ -171,6 +173,93 @@ class FlowLayout(QLayout):
             x += hint.width() + self._gap
             line = max(line, hint.height())
         return y + line - rect.y()
+
+
+class BusyBarDelegate(QStyledItemDelegate):
+    """The Status cell, with a thin moving bar along its bottom while that photo is being detected, reworded or
+    saved."""
+
+    def __init__(self, win):
+        super().__init__(win.table)
+        self.win = win
+
+    def paint(self, painter, option, index):
+        super().paint(painter, option, index)
+        ph = self.win.photo_at_row(index.row())
+        if ph is None or not ph.busy:
+            return
+        r = option.rect
+        x, y, w, h = r.left() + 6, r.bottom() - 6, max(10, r.width() - 12), 3
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(127, 127, 127, 55))
+        painter.drawRoundedRect(QRectF(x, y, w, h), 1.5, 1.5)
+        seg = w * 0.32
+        t = (time.monotonic() % 1.3) / 1.3
+        start = x - seg + (w + seg) * t
+        left, right = max(x, start), min(x + w, start + seg)
+        if right > left:
+            painter.setBrush(QColor(theme.color("primary")))
+            painter.drawRoundedRect(QRectF(left, y, right - left, h), 1.5, 1.5)
+        painter.restore()
+
+
+class Toast(QLabel):
+    """A short message that pops up at the bottom right of the window and fades away by itself."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setTextFormat(Qt.RichText)
+        self.effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self.effect)
+        self.anim = QPropertyAnimation(self.effect, b"opacity", self)
+        self.anim.setEasingCurve(QEasingCurve.InOutQuad)
+        self.timer = QTimer(self)
+        self.timer.setSingleShot(True)
+        self.timer.timeout.connect(self.fade_out)
+        self.hide()
+
+    def show_message(self, text: str, kind: str = "ok", seconds: float = 5):
+        icon = {"ok": "circle-check", "warn": "circle-alert"}.get(kind, "info")
+        col = {"ok": theme.color("ok"), "warn": theme.color("bad")}.get(kind, theme.color("link"))
+        self.setStyleSheet(f"QLabel{{background:{theme.color('toast_bg')};color:{theme.color('toast_fg')};"
+                           f"border-left:4px solid {col};border-radius:8px;padding:10px 14px;font-size:13px}}")
+        esc = text.replace("&", "&amp;").replace("<", "&lt;")
+        self.setText(esc)
+        self.setWordWrap(False)                       # one line when it fits, wrapped when it's long
+        self.setMinimumWidth(0)
+        self.setMaximumWidth(16777215)
+        self.adjustSize()
+        if self.width() > 440:
+            self.setWordWrap(True)
+            self.setFixedWidth(440)
+            self.adjustSize()
+        p = self.parentWidget()
+        self.move(p.width() - self.width() - 18, p.height() - self.height() - 46)
+        self.raise_()
+        self.show()
+        self.anim.stop()
+        self.anim.setDuration(160)
+        self.anim.setStartValue(0.0)
+        self.anim.setEndValue(1.0)
+        self.anim.start()
+        self.timer.start(int(seconds * 1000))
+
+    def fade_out(self):
+        self.anim.stop()
+        self.anim.setDuration(400)
+        self.anim.setStartValue(1.0)
+        self.anim.setEndValue(0.0)
+        try:
+            self.anim.finished.disconnect()
+        except (RuntimeError, TypeError):
+            pass
+        self.anim.finished.connect(self.hide)
+        self.anim.start()
+
+    def mousePressEvent(self, e):
+        self.fade_out()
 
 
 class NoWheelComboBox(QComboBox):
@@ -396,6 +485,12 @@ class SettingsDialog(QDialog):
         form = QFormLayout()
         self.model = QComboBox()
         form.addRow("Model to use", self.model)
+        self.appearance = QComboBox()
+        for key, label in theme.MODES:
+            self.appearance.addItem(label, key)
+        self.appearance.setCurrentIndex(max(0, self.appearance.findData(settings.get("appearance", "system"))))
+        self.appearance.setToolTip("Light or dark. Follow Windows switches by itself when Windows does.")
+        form.addRow("Appearance", self.appearance)
         self.text_model = QComboBox()
         self.text_model.setToolTip(
             "A second model for the steps that only write text: Reword / Double-check, the automatic checks, and\n"
@@ -986,6 +1081,7 @@ class SettingsDialog(QDialog):
         s.update(ollama_url=self.url.text().strip() or core.DEFAULT_OLLAMA_URL,
                  model=self.model.currentData() or s.get("model") or core.DEFAULT_MODEL,
                  text_model=(self.text_model.currentData() or "") if self.text_model.count() else s.get("text_model", ""),
+                 appearance=self.appearance.currentData() or "system",
                  exiftool_path=self.et.text().strip(),
                  custom_types=self.custom.toPlainText().strip(),
                  xmp2iptc_on_save=self.x2i.isChecked(), xmp2iptc_args=self.x2i_path.text().strip(),
@@ -1035,7 +1131,8 @@ class ReviewPanel(QWidget):
         self.preview = QLabel("Loading preview…")
         self.preview.setAlignment(Qt.AlignCenter)
         self.preview.setMinimumHeight(220)
-        self.preview.setStyleSheet("QLabel{background:#7f7f7f18;border-radius:8px;color:#8a8f98}")
+        self.preview.setStyleSheet(f"QLabel{{background:{theme.color('preview_bg')};border-radius:8px;"
+                                   f"color:{GREY}}}")
         self.name = QLabel()
         self.name.setWordWrap(True)
         self.state = QLabel()
@@ -1087,6 +1184,7 @@ class ReviewPanel(QWidget):
         self.b_save_next.setToolTip("Save this photo (if changed) and move to the next one (Ctrl/⌘+Return)")
         self.b_save_next.setProperty("primary", True)
 
+
         b.addWidget(self.preview, 3)
         b.addWidget(self.name)
         b.addWidget(self.state)
@@ -1137,6 +1235,18 @@ class ReviewPanel(QWidget):
         sp.setHeightForWidth(True)
         r1_box.setSizePolicy(sp)
         b.addWidget(r1_box)
+        # icons from the app's set; the secondary buttons are plain, Save and Save & Next stay blue
+        self.panel_icons = [(self.b_identify, "sparkles"), (self.b_redo, "rotate-ccw"), (self.b_reword, "pen-line"),
+                            (self.b_revert, "undo-2"), (self.b_copy, "copy"), (self.b_paste, "clipboard-paste"),
+                            (self.b_prev, "chevron-left"), (self.b_save, "check")]
+        for w in (self.b_identify, self.b_redo, self.b_reword, self.b_revert, self.b_copy, self.b_paste,
+                  self.b_prev, self.b_next):
+            w.setProperty("plain", True)
+        self.b_prev.setText("Previous")
+        self.b_next.setText("Next")
+        self.b_next.setLayoutDirection(Qt.RightToLeft)          # the arrow after the word
+        self.panel_icons.append((self.b_next, "chevron-right"))
+        self.apply_theme()
         r2 = QHBoxLayout()
         r2.addWidget(self.b_save)
         r2.addWidget(self.b_save_next)
@@ -1174,6 +1284,12 @@ class ReviewPanel(QWidget):
         self.b_paste.clicked.connect(lambda *_: win.paste_metadata("both"))
         self.b_prev.clicked.connect(lambda *_: win.select_offset(-1))
         self.b_next.clicked.connect(lambda *_: win.select_offset(1))
+
+    def apply_theme(self):
+        for w, name in self.panel_icons:
+            w.setIcon(theme.icon(name, on_primary=bool(w.property("primary"))))
+        self.preview.setStyleSheet(f"QLabel{{background:{theme.color('preview_bg')};border-radius:8px;"
+                                   f"color:{GREY}}}")
 
     def _categories_line(self, ph) -> str:
         """Each site's categories for this photo, as the CSVs will have them."""
@@ -1313,7 +1429,11 @@ class DropPage(QLabel):
         self.setText("<div style='font-size:22px;font-weight:600'>Drop JPEG or RAW photos or folders here</div>"
                      f"<div style='margin-top:10px;color:{GREY}'>Folders are searched including subfolders.<br>"
                      "Or use Add Photos / Add Folder above.</div>")
-        self.setStyleSheet("QLabel{border:2px dashed #9aa3ad;border-radius:14px;margin:18px;padding:40px}")
+        self.restyle()
+
+    def restyle(self):
+        self.setStyleSheet(f"QLabel{{border:2px dashed {theme.color('drop_border')};border-radius:14px;margin:18px;"
+                           "padding:40px}")
 
 
 def show_whats_new(parent, since: str = "", full: bool = False) -> bool:
@@ -1733,10 +1853,17 @@ UPDATE_LINK = "#0b3a82"        # links on the light blue update banner
 def banner_label() -> QLabel:
     b = QLabel()
     b.setWordWrap(True)
-    b.setStyleSheet("QLabel{background:#fff4d6;color:#5c4400;border:1px solid #e9cf7a;"
-                    "border-radius:8px;padding:8px 10px}")
+    b.setProperty("banner", "warn")
+    style_banner(b)
     b.hide()
     return b
+
+
+def style_banner(b: QLabel):
+    """A warning (yellow) or information (blue) banner, in the current light / dark colours."""
+    kind = "info" if b.property("banner") == "info" else "warn"
+    b.setStyleSheet(f"QLabel{{background:{theme.color(kind + '_bg')};color:{theme.color(kind + '_fg')};"
+                    f"border:1px solid {theme.color(kind + '_border')};border-radius:8px;padding:8px 10px}}")
 
 
 class MainWindow(QMainWindow):
@@ -1829,44 +1956,45 @@ class MainWindow(QMainWindow):
     # ---------- layout
     def _build_ui(self):
         st = self.style()
+        self.themed_icons = []                          # (button, Lucide icon, on a blue button)
 
         def button(text, slot, icon=None, primary=False):
+            """Detect, Save and Upload are solid blue; the rest are plain until you point at them."""
             b = QPushButton(text)
-            if icon is not None:
-                b.setIcon(st.standardIcon(icon))
-            if primary:
-                b.setProperty("primary", True)
+            b.setProperty("primary" if primary else "plain", True)
+            if icon:
+                self.themed_icons.append((b, icon, primary))
             b.clicked.connect(lambda *_, f=slot: f())
             return b
 
-        self.btn_add = button("Add Photos…", self.add_photos_dialog, QStyle.SP_FileIcon)
-        self.btn_folder = button("Add Folder…", self.add_folder_dialog, QStyle.SP_DirOpenIcon)
-        self.btn_watch = button("Watch Folder…", self.watch_dialog, QStyle.SP_DirLinkIcon)
+        self.btn_add = button("Add Photos…", self.add_photos_dialog, "image-plus")
+        self.btn_folder = button("Add Folder…", self.add_folder_dialog, "folder-plus")
+        self.btn_watch = button("Watch Folder…", self.watch_dialog, "folder-sync")
         self.btn_watch.setToolTip("Add new photos by themselves as they appear in a folder,\n"
                                   "e.g. the folder Lightroom exports to (and optionally Detect them)")
-        self.btn_identify = button("Detect", self.identify, primary=True)
-        self.btn_save = button("Save Metadata", self.save, QStyle.SP_DialogSaveButton, primary=True)
-        self.btn_remove = button("Remove", self.remove_checked, QStyle.SP_TrashIcon)
+        self.btn_identify = button("Detect", self.identify, "sparkles", primary=True)
+        self.btn_save = button("Save Metadata", self.save, "save", primary=True)
+        self.btn_remove = button("Remove", self.remove_checked, "list-x")
         self.btn_remove.setToolTip("Remove the checked photos (or the selected ones) from this list. "
                                    "Files are not touched.")
-        self.btn_clear = button("Clear List", self.clear_list)
-        self.btn_check_all = button("Check All", lambda: self.set_checked(self.visible_photos(), True))
+        self.btn_clear = button("Clear List", self.clear_list, "trash-2")
+        self.btn_check_all = button("Check All", lambda: self.set_checked(self.visible_photos(), True), "square-check")
         self.btn_check_all.setToolTip("Tick every photo shown in the list")
-        self.btn_uncheck_all = button("Uncheck All", lambda: self.set_checked(self.photos, False))
+        self.btn_uncheck_all = button("Uncheck All", lambda: self.set_checked(self.photos, False), "square")
         self.btn_uncheck_all.setToolTip("Clear all ticks; the buttons then work on the selected photos, or all")
         self.btn_redo_checked = button("Redo Checked…", lambda: self.redo_photos(
-            [p for p in self.checked_photos() if not p.busy]))
+            [p for p in self.checked_photos() if not p.busy]), "rotate-ccw")
         self.btn_redo_checked.setToolTip("Redo the checked photos with reasons: tell the AI what's wrong and it tries again")
-        self.btn_reword = button("Reword…", lambda: self.reword_photos(self.targets()[0]))
+        self.btn_reword = button("Reword…", lambda: self.reword_photos(self.targets()[0]), "pen-line")
         self.btn_reword.setToolTip("Double-check or reword the titles, descriptions and keywords already written, text\n"
                                    "only (quick). Uses the checked photos, else the selected, else all shown.")
-        self.btn_export = button("Export CSV…", self.export_csv)
+        self.btn_export = button("Export CSV…", self.export_csv, "file-spreadsheet")
         # when you're done: Upload… is the main button; StockUp is still there, in one button with a menu
-        self.btn_upload = button("Upload…", lambda: self.open_upload(), QStyle.SP_ArrowUp, primary=True)
+        self.btn_upload = button("Upload…", lambda: self.open_upload(), "upload", primary=True)
         self.btn_upload.setToolTip("When you're done: send the photos to your stock sites (Shutterstock, Adobe Stock,\n"
                                    "Dreamstime, Alamy, Depositphotos, 123RF, Pond5), with a progress bar for each site.\n"
                                    "Uses the checked photos, else the selected, else all shown.")
-        self.btn_stockup = button("Open in StockUp", lambda: None, QStyle.SP_ArrowRight)   # (its menu opens)
+        self.btn_stockup = button("Open in StockUp", lambda: None, "external-link")   # (its menu opens)
         self.btn_stockup.setToolTip("Open the photos in the StockUp app instead, to check them for each stock site\n"
                                     "and upload them there. Photos with unsaved changes can be saved first.")
         self.stockup_menu = QMenu(self.btn_stockup)
@@ -1875,14 +2003,14 @@ class MainWindow(QMainWindow):
         self.act_stockup_all = self.stockup_menu.addAction(
             "All photos in the list", lambda: self.open_in_stockup(list(self.photos)))
         self.btn_stockup.setMenu(self.stockup_menu)
-        self.btn_ss_csv = button("Make Shutterstock CSV", lambda: self.make_shutterstock_csv(), QStyle.SP_DialogSaveButton)
+        self.btn_ss_csv = button("Make Shutterstock CSV", lambda: self.make_shutterstock_csv(), "file-check")
         self.btn_ss_csv.setToolTip("One click: the Shutterstock upload CSV for the checked photos (or all of them),\n"
                                    "saved next to the photos as shutterstock_<date>.csv, with the titles exactly as in\n"
                                    "the list. Upload it on Shutterstock's Submit page with the CSV button.")
         self.btn_export.setToolTip("Make a CSV for each stock site you tick (Shutterstock, Adobe Stock, Dreamstime,\n"
                                    "Depositphotos, 123RF, Pond5) with categories picked for every photo, or one with\n"
                                    "every detail. Uses the checked photos, else the selected, else all shown.")
-        self.btn_instr = button("Hide Instructions", self.toggle_instructions)
+        self.btn_instr = button("Hide Instructions", self.toggle_instructions, "panel-top-close")
         self.model_pick, self.text_pick = NoWheelComboBox(), NoWheelComboBox()
         self.model_pick.setToolTip("The model that looks at the photos (Detect, Redo, descriptions). Only models that "
                                    "can see images are listed.\nDownload more in Settings.")
@@ -1896,8 +2024,8 @@ class MainWindow(QMainWindow):
         fill_text_models(self.text_pick, [], self.settings.get("text_model", ""))
         self.model_pick.activated.connect(lambda *_: self._models_picked())
         self.text_pick.activated.connect(lambda *_: self._models_picked())
-        self.btn_settings = button("Settings", self.open_settings, QStyle.SP_FileDialogDetailedView)
-        self.btn_updates = button("Check for Updates", self.check_updates_now, QStyle.SP_BrowserReload)
+        self.btn_settings = button("Settings", self.open_settings, "settings")
+        self.btn_updates = button("Check for Updates", self.check_updates_now, "download")
         self.btn_updates.setToolTip(f"You have {core.APP_NAME} {core.APP_VERSION}. Asks GitHub whether a newer "
                                     "version is out.\nNothing is downloaded unless you say so.")
 
@@ -2199,8 +2327,8 @@ class MainWindow(QMainWindow):
         self.et_banner.setOpenExternalLinks(True)
         self.ai_banner = banner_label()
         self.update_banner = banner_label()           # "a newer version is available"
-        self.update_banner.setStyleSheet("QLabel{background:#e8f1fd;color:#1c3d6e;border:1px solid #b5cff3;"
-                                         "border-radius:8px;padding:8px 10px}")
+        self.update_banner.setProperty("banner", "info")
+        style_banner(self.update_banner)
         self.update_banner.linkActivated.connect(self._update_link)
         self.update_info: dict | None = None
         self.update_ready = None                      # (new program folder, download folder) once downloaded
@@ -2259,7 +2387,8 @@ class MainWindow(QMainWindow):
         self.table.customContextMenuRequested.connect(self._context_menu)
 
         self.stack = QStackedWidget()
-        self.stack.addWidget(DropPage())
+        self.drop_page = DropPage()
+        self.stack.addWidget(self.drop_page)
         self.stack.addWidget(self.table)
 
         # filter bar: Show [what] and a search box over file name, title and keywords
@@ -2322,7 +2451,7 @@ class MainWindow(QMainWindow):
                                   "taken out, and the model is reset in Ollama so it drops what it was working on.")
         self.btn_force.hide()
         self.status = QLabel("")
-        self.status.setStyleSheet("color:#6b7280")
+        self.status.setStyleSheet(f"color:{theme.color('muted')}")
         self.status.setTextFormat(Qt.AutoText)
         self.status.linkActivated.connect(lambda link: self.show_similar() if link == "similar" else None)
         self.model_light = QLabel("<span style='color:#8a8f98'>●</span> Checking the AI model…")
@@ -2398,14 +2527,53 @@ class MainWindow(QMainWindow):
             act.triggered.connect(slot)
             self.addAction(act)
 
-        self.setStyleSheet("""
-            QPushButton{padding:6px 12px}
-            QPushButton[primary="true"]{background:#2f7ddd;color:white;border:1px solid #2569bd;border-radius:6px;font-weight:600}
-            QPushButton[primary="true"]:hover{background:#3d8af0}
-            QPushButton[primary="true"]:disabled{background:#9dbbe2;border-color:#9dbbe2}
-            QTableWidget{font-size:13px;alternate-background-color:rgba(127,127,127,13)}
-            QGroupBox{font-weight:600}
-        """)
+        self.table.setItemDelegateForColumn(COL_STATUS, BusyBarDelegate(self))
+        self.busy_anim = QTimer(self)                     # moves the bars while any photo is busy
+        self.busy_anim.setInterval(60)
+        self.busy_anim.timeout.connect(self._animate_busy)
+        self.busy_anim.start()
+        self.toast_box = Toast(self)
+        self.apply_theme()
+        hints = QApplication.styleHints()
+        if hasattr(hints, "colorSchemeChanged"):         # Windows switched light / dark
+            hints.colorSchemeChanged.connect(lambda *_: self._system_scheme_changed())
+
+    def photo_at_row(self, row: int):
+        for p in self.photos:
+            if self.rows.get(p.path) == row:
+                return p
+        return None
+
+    def _animate_busy(self):
+        if any(p.busy for p in self.photos):
+            top, bottom = self.table.rowAt(0), self.table.rowAt(self.table.viewport().height() - 1)
+            for p in self.photos:
+                r = self.rows.get(p.path)
+                if p.busy and r is not None and (top < 0 or top <= r <= (bottom if bottom >= 0 else r)):
+                    self.table.viewport().update(self.table.visualRect(self.table.model().index(r, COL_STATUS)))
+
+    def toast(self, text: str, kind: str = "ok", seconds: float = 5):
+        """A short message at the bottom right that fades away (a batch finished, an upload is done…)."""
+        self.toast_box.show_message(text, kind, seconds)
+
+    def _system_scheme_changed(self):
+        if self.settings.get("appearance", "system") == "system":
+            theme.apply(QApplication.instance(), "system")
+            self.apply_theme()
+
+    def apply_theme(self):
+        """Light or dark: the styles, icons and the colours that don't come from the palette."""
+        self.setStyleSheet(theme.stylesheet())
+        for b, name, primary in self.themed_icons:
+            b.setIcon(theme.icon(name, on_primary=primary))
+        for b in (self.et_banner, self.ai_banner, self.update_banner):
+            style_banner(b)
+        self.status.setStyleSheet(f"color:{theme.color('muted')}")
+        if hasattr(self, "review"):
+            self.review.apply_theme()
+        if hasattr(self, "drop_page"):
+            self.drop_page.restyle()
+        self.table.viewport().update()
 
     def toggle_instructions(self):
         show = not self.instructions.isVisibleTo(self)
@@ -3321,6 +3489,13 @@ class MainWindow(QMainWindow):
     def _batch_finished(self):
         secs = time.monotonic() - self.batch_started if self.batch_started else 0
         quiet, self.batch_quiet = self.batch_quiet, False
+        if not quiet and (self.batch_total > 1 or secs >= 3):
+            what = {"Detecting": "Detect", "Saving": "Saving", "Undoing": "Undo", "Rewording": "Reword"}.get(
+                self.batch_label, "Done")
+            bad = sum(1 for p in self.photos if p.status == "error")
+            n = self.batch_total
+            self.toast(f"{what} finished: {n} photo{'s' if n != 1 else ''}"
+                       + (f", {bad} with a problem (see the Status column)" if bad else ""), "warn" if bad else "ok")
         mode = self.settings.get("finish_alert", "both")
         if quiet or mode == "off" or secs < self.FINISH_ALERT_AFTER:
             return
@@ -3410,6 +3585,8 @@ class MainWindow(QMainWindow):
             return
         unsaved = sum(1 for p in photos if p.changed)
         names = ", ".join(os.path.basename(f) for f in files)
+        self.toast(f"Saved {len(files)} CSV{'s' if len(files) != 1 else ''}: " + ", ".join(
+            site_files.SITE_LABELS.get(k, k) for k in sites))
         self.status.setText(f"Saved {len(files)} CSV{'s' if len(files) != 1 else ''} for {len(photos)} photo"
                             f"{'s' if len(photos) != 1 else ''} in {folder}: {names}."
                             + (f" {unsaved} of the photos {'has' if unsaved == 1 else 'have'} changes that aren't "
@@ -3628,7 +3805,8 @@ class MainWindow(QMainWindow):
     def _update_text(self, html: str):
         """The update banner's text, with links in a dark, bold blue that stands out on its light blue background
         (Qt ignores the style sheet colour for links, so it's set on each one)."""
-        self.update_banner.setText(html.replace("<a href=", f"<a style='color:{UPDATE_LINK};font-weight:600' href="))
+        self.update_banner.setText(html.replace("<a href=", f"<a style='color:{theme.color('link')};font-weight:600' "
+                                                            "href="))
 
     def _can_install(self, info) -> bool:
         """The packaged program can replace itself (not when running from the source code, or when its
@@ -3759,7 +3937,11 @@ class MainWindow(QMainWindow):
         if dlg.exec():
             style_before = (self.settings.get("title_caps", "title"), bool(self.settings.get("direct_titles", True)))
             symbols_before = self.settings.get("symbols", "convert")
+            appearance_before = self.settings.get("appearance", "system")
             self.settings = dlg.values()
+            if self.settings.get("appearance", "system") != appearance_before:
+                theme.apply(QApplication.instance(), self.settings["appearance"])
+                self.apply_theme()
             style_after = (self.settings.get("title_caps", "title"), bool(self.settings.get("direct_titles", True)))
             if style_after != style_before:
                 QTimer.singleShot(0, self.offer_title_style)   # once Settings has closed
@@ -5970,6 +6152,7 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName(core.APP_NAME)
     app.setStyle("Fusion")
+    theme.apply(app, core.load_settings().get("appearance", "system"))   # light, dark or following Windows
     if os.path.exists(core.APP_ICON):
         app.setWindowIcon(QIcon(core.APP_ICON))
     if os.name == "nt":   # show the app's own icon in the taskbar, not Python's
