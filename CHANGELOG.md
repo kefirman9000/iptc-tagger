@@ -1,5 +1,16 @@
 # What's new
 
+## 2026.11.10.4
+
+- **Colour labels, as in Lightroom:** give photos a red, yellow, green, blue or purple label to sort them into groups (one shoot, one store, the ones to redo…):
+  - Keys **6, 7, 8, 9** label the selected photos red, yellow, green or blue; press the same key again to take it off. Right-click → **Colour label** has all five, and the side panel has a dot for each next to the file name. On a checked photo, the label goes to every checked photo.
+  - The label shows as a coloured frame round the thumbnail.
+  - **The coloured dots above the list** show only that group (click again for all), and *Show* has *With a colour label*, *No colour label* and each colour. Then **Check All** ticks just that group, and Detect, notes, type, Reword, Save, CSVs and Upload all work on it.
+  - Labels you set in Lightroom come in with the photos, and Save writes a label you changed here into the file (XMP Label), so Lightroom and Bridge see it too.
+- **Ticking several photos at once:** with several photos selected, a click on any of their check boxes ticks (or unticks) all of them, and the selection stays. **Space** does the same. A click anywhere in the check cell now counts, not just on the little box.
+- **Check All and Uncheck All moved** next to *Show: All photos*, right above the list.
+- A long message in the bottom bar no longer makes the window wider than a laptop screen.
+
 ## 2026.11.10.3
 
 - **CSV names have the time too:** *shutterstock_2026-11-10_08-18.csv*, so two exports on the same day can't be mixed up. If one with that name is already there (the same minute), the new one is saved as *(2)*, *(3)*…: an earlier CSV is never replaced. This applies to Make Shutterstock CSV, Export CSV for every site, and the single-file export.

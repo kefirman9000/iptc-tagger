@@ -346,3 +346,59 @@ def test_a_new_note_or_detect_again_replaces_a_kept_title(window, make_photos):
     win.review.show_photo(ph)
     win.review.refresh_state()
     assert win.review.note_hint.isVisibleTo(win.review) and "Not used yet" in win.review.note_hint.text()
+
+
+def test_check_box_click_ticks_every_selected_row(window, make_photos):
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    _mod, win = window
+    add(win, make_photos(4))
+    rows = [win.rows[p.path] for p in win.photos[:3]]
+    win._select_rows(rows)
+    QApplication.processEvents()
+
+    def click(row):
+        rect = win.table.visualItemRect(win.table.item(row, 0))
+        QTest.mouseClick(win.table.viewport(), Qt.LeftButton, Qt.NoModifier, rect.center())
+        QApplication.processEvents()
+
+    click(rows[1])
+    assert [p.checked for p in win.photos] == [True, True, True, False]
+    assert len(win._selected_photos()) == 3                     # the selection is kept
+    click(rows[0])                                               # and off again
+    assert [p.checked for p in win.photos] == [False, False, False, False]
+    QTest.keyClick(win.table, Qt.Key_Space)                      # Space does the same
+    assert [p.checked for p in win.photos] == [True, True, True, False]
+    win._select_rows([win.rows[win.photos[3].path]])             # one row: an ordinary click
+    QApplication.processEvents()
+    click(win.rows[win.photos[3].path])
+    assert win.photos[3].checked and win.photos[0].checked
+
+
+def test_colour_labels_like_lightroom(window, make_photos):
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    _mod, win = window
+    files = make_photos(4)
+    win.exiftool._run(["-overwrite_original", "-XMP-xmp:Label=Green", files[3]])   # labelled in Lightroom
+    add(win, files)
+    a, b, c, d = win.photos
+    assert d.label == "green" and not d.changed                  # read from the file
+    win._select_rows([win.rows[a.path], win.rows[b.path]])
+    win.table.setFocus()
+    QApplication.processEvents()
+    QTest.keyClick(win.table, Qt.Key_6)                           # 6 = red, like Lightroom
+    assert a.label == b.label == "red" and c.label == "" and a.changed
+    QTest.keyClick(win.table, Qt.Key_6)                           # again: off
+    assert a.label == b.label == ""
+    win.set_label([a, b], "red")
+    assert win.table.item(win.rows[a.path], 1).background().color().name() == core.LABEL_COLORS["red"]
+    win.label_dots["red"].click()                                 # show only the red ones
+    assert win.visible_photos() == [a, b] and win.label_dots["red"].isChecked()
+    win.btn_check_all.click()                                     # then every button works on that group
+    assert [p.checked for p in win.photos] == [True, True, False, False]
+    win.label_dots["red"].click()                                 # click again: all photos
+    assert len(win.visible_photos()) == 4
+    win.save_photos([a])                                          # Save writes the label into the file
+    wait(lambda: a.status == "saved", what="saving")
+    assert win.exiftool.read([a.path])[a.path]["label"] == "red" and not a.changed
