@@ -1,5 +1,16 @@
 # What's new
 
+## 2026.11.10.3
+
+- **CSV names have the time too:** *shutterstock_2026-11-10_08-18.csv*, so two exports on the same day can't be mixed up. If one with that name is already there (the same minute), the new one is saved as *(2)*, *(3)*…: an earlier CSV is never replaced. This applies to Make Shutterstock CSV, Export CSV for every site, and the single-file export.
+- **Adobe Stock CSV, the way Adobe asks:** titles are plain text, without commas, at most 70 characters (cut at a whole word), and without the editorial location and date in front, because Adobe doesn't want editorial-style captions. Keywords are made plain too.
+- **Country filled in:** the 123RF CSV's country column, and Pond5's city, state and country, now come from the photo's location (*Tokyo, Japan* → Japan). *Austin, TX* or *Austin, Texas* is read as a US state, with United States as the country, for the CSVs and for the State / Country saved in the file.
+- **What's left to do on the sites:** after making CSVs, the message lists what a CSV can't do:
+  - **Model release:** photos not marked editorial that seem to show people. Attach a release on each site, or make them editorial.
+  - **Property release:** pets, artwork or a home interior. Adobe Stock in particular asks for these.
+  - **Adobe Stock editorial:** Adobe only takes editorial as *Illustrative Editorial* (an account with 100+ downloads, no recognisable people), marked on its upload page.
+  - **Country:** photos with no location, so their country column is empty.
+
 ## 2026.11.10.2
 
 - **Photo notes up front:** the **Photo notes** column now comes right after the file name (your own column order is moved once to match), and empty cells say *Add a note for the AI…*. In the side panel the notes sit right under the photo.

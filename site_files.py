@@ -391,11 +391,11 @@ def describe_categories(cats: dict) -> str:
 # ---------- each site's CSV (columns from StockUp, which follows each site's own sample file) ------------------
 SITE_CSVS = [   # (key, label, what it's for)
     ("shutterstock", "Shutterstock", "titles, keywords, categories and the editorial flag"),
-    ("adobe", "Adobe Stock", "titles, keywords and the category"),
+    ("adobe", "Adobe Stock", "titles (70 characters, no location or date), keywords and the category"),
     ("dreamstime", "Dreamstime", "titles, descriptions, keywords, 3 categories and the editorial flag"),
     ("depositphotos", "Depositphotos", "descriptions, keywords and the editorial flag"),
-    ("123rf", "123RF", "descriptions and keywords"),
-    ("pond5", "Pond5", "titles, descriptions, keywords and the editorial location"),
+    ("123rf", "123RF", "descriptions, keywords and the country"),
+    ("pond5", "Pond5", "titles, descriptions, keywords, city, state, country and the editorial flag"),
     ("full", "All details (for Excel)", "everything, with lengths and counts, for your own records"),
 ]
 SITE_LABELS = {k: label for k, label, _ in SITE_CSVS}
@@ -427,7 +427,7 @@ def write_site_csvs(folder: str, rows: list[dict], sites, day: str = "", ss_text
     kw = lambda r: ",".join(k for k in (plain(x) for x in r["keywords"]) if k)
     out = []
     for site in sites:
-        path = os.path.join(folder, csv_name(site, day))
+        path = core.unused_path(os.path.join(folder, csv_name(site, day)))
         if site in ("shutterstock", "adobe", "full"):
             core.export_csv(path, picked, site, ss_text=ss_text)
         elif site == "dreamstime":
@@ -441,14 +441,72 @@ def write_site_csvs(folder: str, rows: list[dict], sites, day: str = "", ss_text
                    [[r["file"], desc(r), kw(r), "yes" if r.get("editorial") else "no", "no", ""] for r in picked])
         elif site == "123rf":
             _write(path, ["oldfilename", "123rf_filename", "description", "keywords", "country"],
-                   [[r["file"], "", desc(r), kw(r), ""] for r in picked])
+                   [[r["file"], "", desc(r), kw(r), r.get("country", "")] for r in picked])
         elif site == "pond5":
             _write(path, ["originalfilename", "title", "description", "keywords", "city", "region", "country",
                           "editorial"],
-                   [[r["file"], plain(r["title"]), desc(r), kw(r), r.get("city", "") if r.get("editorial") else "",
-                     r.get("region", "") if r.get("editorial") else "", "", "yes" if r.get("editorial") else "no"]
-                    for r in picked])
+                   [[r["file"], plain(r["title"]), desc(r), kw(r), r.get("city", ""), r.get("region", ""),
+                     r.get("country", ""), "yes" if r.get("editorial") else "no"] for r in picked])
         else:
             continue
         out.append(path)
+    return out
+
+
+# What the CSVs can't do for you ----------------------------------------------------------------------------------
+PEOPLE_WORDS = {
+    "person", "people", "man", "men", "woman", "women", "boy", "boys", "girl", "girls", "child", "children", "kid",
+    "kids", "baby", "babies", "toddler", "teen", "teenager", "teenagers", "couple", "family", "families", "portrait",
+    "selfie", "crowd", "bride", "groom", "worker", "workers", "employee", "customer", "customers",
+    "shopper", "shoppers", "tourist", "tourists", "student", "students", "senior", "seniors", "athlete",
+    "dancer", "musician", "chef", "doctor", "nurse", "businessman", "businesswoman", "mother", "father", "daughter",
+    "son", "friends", "lady", "gentleman", "adult", "adults", "elderly", "pedestrian", "pedestrians", "spectators",
+}
+PROPERTY_WORDS = {"dog", "puppy", "cat", "kitten", "horse", "pet", "pets", "artwork", "mural", "sculpture",
+                  "painting", "graffiti", "tattoo", "home interior", "house interior", "living room", "bedroom"}
+
+
+def release_reason(r: dict) -> str:
+    """'people' / 'property' when a commercial (not editorial) photo seems to need a release, else ''.
+    Going by the words only: the AI names people and pets it sees in the title and keywords."""
+    if r.get("editorial"):
+        return ""
+    words = set()
+    for text in [r.get("title", ""), r.get("description", "")] + list(r.get("keywords", [])):
+        low = str(text).lower()
+        words.update(re.findall(r"[a-z]+", low))
+        words.update(w for w in PROPERTY_WORDS if " " in w and w in low)
+    if words & PEOPLE_WORDS:
+        return "people"
+    if words & PROPERTY_WORDS:
+        return "property"
+    return ""
+
+
+def csv_warnings(rows: list[dict], sites) -> list[str]:
+    """What still has to be done on the sites' own pages after uploading these CSVs."""
+    out, sites = [], set(sites)
+    people = [r["file"] for r in rows if release_reason(r) == "people"]
+    prop = [r["file"] for r in rows if release_reason(r) == "property"]
+    upload = sites & {"shutterstock", "adobe", "dreamstime", "depositphotos", "123rf", "pond5"}
+    few = lambda names: ", ".join(names[:4]) + (f" and {len(names) - 4} more" if len(names) > 4 else "")
+    if people and upload:
+        out.append(f"Model release: {len(people)} photo{'s' if len(people) != 1 else ''} not marked editorial "
+                   f"seem{'s' if len(people) == 1 else ''} to show people ({few(people)}). Attach a signed model "
+                   "release on each site, or make them editorial if the people can be recognised and you have none.")
+    if prop and upload:
+        out.append(f"Property release: {len(prop)} photo{'s' if len(prop) != 1 else ''} not marked editorial "
+                   f"seem{'s' if len(prop) == 1 else ''} to show pets, artwork or a home ({few(prop)}). Some sites "
+                   "(Adobe Stock in particular) want a property release for these.")
+    ed = [r["file"] for r in rows if r.get("editorial")]
+    if ed and "adobe" in sites:
+        out.append(f"Adobe Stock: {len(ed)} editorial photo{'s' if len(ed) != 1 else ''}. Adobe only takes editorial "
+                   "from contributors as Illustrative Editorial (brands, no recognisable people, and an account "
+                   "with 100+ downloads), marked on its upload page; its CSV has no editorial column. Their Adobe "
+                   "titles are written without the location and date, as Adobe asks.")
+    if "123rf" in sites or "pond5" in sites:
+        nowhere = [r["file"] for r in rows if not r.get("country")]
+        if nowhere and len(nowhere) < len(rows):
+            out.append(f"Country: {len(nowhere)} photo{'s' if len(nowhere) != 1 else ''} have no location, so the "
+                       "123RF / Pond5 country column is empty for them (set one with Set location…).")
     return out
