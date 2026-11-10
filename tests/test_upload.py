@@ -246,7 +246,8 @@ def test_a_csv_for_each_site_with_categories(tmp_path):
     import site_files as sf
     rows = [{"file": "a.jpg", "folder": "", "title": "Protein Shakes on a Store Shelf for Health-Conscious Consumers",
              "description": "", "keywords": ["protein shake", "nutrition", "fitness", "grocery store"],
-             "editorial": True, "categories": [], "adobe_category": None, "city": "Tokyo", "region": "Japan"},
+             "editorial": True, "categories": [], "adobe_category": None, "city": "Tokyo", "region": "",
+             "country": "Japan", "bare_title": "Protein Shakes on a Store Shelf for Health-Conscious Consumers"},
             {"file": "b.jpg", "folder": "", "title": "Paint Cans on a Store Shelf", "description": "",
              "keywords": ["paint", "hardware store", "diy"], "editorial": False, "categories": [],
              "adobe_category": None}]
@@ -260,7 +261,12 @@ def test_a_csv_for_each_site_with_categories(tmp_path):
     assert ss[0]["Categories"] == "Food and drink,Objects" and ss[1]["Categories"] == "Objects,Industrial"
     assert ad[0]["Category"] == "4" and ad[1]["Category"] == "10"            # Drinks, Industry
     assert dt[0]["Category 1"] == "185" and dt[0]["Editorial"] == "1"       # Editorial -> Commercial first
-    assert read("pond5")[0]["city"] == "Tokyo"
+    assert read("pond5")[0]["city"] == "Tokyo" and read("pond5")[0]["country"] == "Japan"
+    assert read("123rf")[0]["country"] == "Japan"
+    assert ad[0]["Title"] == "Protein Shakes on a Store Shelf for Health-Conscious Consumers"
+    # the same minute again: a second set, nothing replaced
+    again = sf.write_site_csvs(str(tmp_path), rows, ["adobe"], day="2026-11-09")
+    assert os.path.basename(again[0]) == "adobe_2026-11-09 (2).csv"
     # the AI's own choice is used first
     c = sf.pick_categories("Protein Shakes on a Shelf", "", ["protein"], False, ["Food and drink"], 7)
     assert c["shutterstock"][0] == "Food and drink" and c["adobe"] == 7
@@ -288,3 +294,29 @@ def test_export_csv_dialog_makes_one_per_ticked_site(window, make_photos, monkey
     assert win.settings["csv_sites"] == ["shutterstock", "dreamstime"]
     line = win.review._categories_line(win.photos[0])
     assert "Shutterstock: Holidays" in line and "Dreamstime: Christmas" in line
+
+
+def test_csv_names_have_the_time_and_what_is_left_to_do():
+    import re
+    import site_files as sf
+    import tagger_core as core
+    assert re.fullmatch(r"shutterstock_\d{4}-\d\d-\d\d_\d\d-\d\d\.csv", core.csv_file_name("shutterstock"))
+    # Adobe: plain, no commas, no dateline, 70 characters at most, cut at a word
+    t = core.adobe_title("Tokyo, Japan - November 9, 2026: Protein Shakes, Bars and Powders on a Supermarket Shelf "
+                         "for Health-Conscious Shoppers", "Protein Shakes, Bars and Powders on a Supermarket Shelf for "
+                         "Health-Conscious Shoppers")
+    assert "," not in t and "Tokyo" not in t and len(t) <= 70 and t.startswith("Protein Shakes Bars")
+    assert not t.endswith(" ")
+    assert core.parse_location("Austin, TX") == {"city": "Austin", "state": "TX", "country": "United States"}
+    assert core.parse_location("Tokyo, Japan")["country"] == "Japan"
+    assert core.parse_location("Tbilisi, Georgia")["country"] == "Georgia"
+    rows = [{"file": "a.jpg", "title": "Woman Shopping for Groceries", "keywords": ["woman", "shopping"]},
+            {"file": "b.jpg", "title": "Dog in a Park", "keywords": ["dog"]},
+            {"file": "c.jpg", "title": "Store Shelf", "keywords": ["shelf"], "editorial": True, "country": "Japan"},
+            {"file": "d.jpg", "title": "Crowd at a Parade", "keywords": ["crowd"], "editorial": True}]
+    assert [sf.release_reason(r) for r in rows] == ["people", "property", "", ""]   # editorial needs none
+    w = " | ".join(sf.csv_warnings(rows, ["adobe", "pond5"]))
+    assert "Model release: 1 photo" in w and "a.jpg" in w and "Property release" in w
+    assert "Adobe Stock: 2 editorial photos" in w and "Illustrative Editorial" in w
+    assert "Country: 3 photos" in w
+    assert "Adobe Stock:" not in " ".join(sf.csv_warnings(rows, ["shutterstock"]))

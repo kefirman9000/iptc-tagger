@@ -494,8 +494,8 @@ class SiteCsvDialog(QDialog):
         pick.clicked.connect(lambda *_: self._choose())
         row.addWidget(pick)
         lay.addLayout(row)
-        tip = QLabel("Named by site and date, like shutterstock_2026-11-09.csv. Upload the photos to a site first, "
-                     "then its CSV there.")
+        tip = QLabel("Named by site, date and time, like shutterstock_2026-11-10_08-18.csv, so a later export never "
+                     "replaces an earlier one. Upload the photos to a site first, then its CSV there.")
         tip.setWordWrap(True)
         tip.setStyleSheet(f"color:{GREY}")
         lay.addWidget(tip)

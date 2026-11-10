@@ -2154,7 +2154,7 @@ class MainWindow(QMainWindow):
         self.btn_stockup.setMenu(self.stockup_menu)
         self.btn_ss_csv = button("Make Shutterstock CSV", lambda: self.make_shutterstock_csv(), "file-check")
         self.btn_ss_csv.setToolTip("One click: the Shutterstock upload CSV for the checked photos (or all of them),\n"
-                                   "saved next to the photos as shutterstock_<date>.csv, with the titles exactly as in\n"
+                                   "saved next to the photos as shutterstock_<date>_<time>.csv, with the titles exactly as in\n"
                                    "the list. Upload it on Shutterstock's Submit page with the CSV button.")
         self.btn_export.setToolTip("Make a CSV for each stock site you tick (Shutterstock, Adobe Stock, Dreamstime,\n"
                                    "Depositphotos, 123RF, Pond5) with categories picked for every photo, or one with\n"
@@ -3814,8 +3814,9 @@ class MainWindow(QMainWindow):
         sites, folder = dlg.chosen(), dlg.folder()
         if "shutterstock" in sites and not self._check_before_csv(photos):
             return
+        rows = self._csv_rows(photos)
         try:
-            files = site_files.write_site_csvs(folder, self._csv_rows(photos), sites,
+            files = site_files.write_site_csvs(folder, rows, sites,
                                                ss_text=self.settings.get("shutterstock_text", "title"))
         except OSError as e:
             QMessageBox.warning(self, "Export CSV", f"The CSVs couldn't be saved:\n{e}")
@@ -3828,11 +3829,14 @@ class MainWindow(QMainWindow):
                             f"{'s' if len(photos) != 1 else ''} in {folder}: {names}."
                             + (f" {unsaved} of the photos {'has' if unsaved == 1 else 'have'} changes that aren't "
                                "saved into the files yet." if unsaved else ""))
+        self.last_csv_warnings = site_files.csv_warnings(rows, sites)
         if not os.environ.get("IPTC_TAGGER_OFFLINE"):
-            box = QMessageBox(QMessageBox.Information, "Export CSV",
+            todo = "".join("\n\n• " + w for w in self.last_csv_warnings)
+            box = QMessageBox(QMessageBox.Warning if todo else QMessageBox.Information, "Export CSV",
                               f"Saved in {folder}:\n\n" + "\n".join("  " + os.path.basename(f) for f in files)
                               + "\n\nEach site's categories are picked for every photo. Upload the photos to a "
-                              "site first, then upload its CSV there.", parent=self)
+                              "site first, then upload its CSV there."
+                              + ("\n\nStill to do on the sites:" + todo if todo else ""), parent=self)
             show = box.addButton("Show in Folder", QMessageBox.ActionRole)
             box.addButton(QMessageBox.Ok)
             box.exec()
@@ -3848,7 +3852,7 @@ class MainWindow(QMainWindow):
             return
         folder = os.path.dirname(photos[0].path)
         filters = [label + " (*.csv)" for _, label in core.CSV_FORMATS]
-        suggested = core.csv_file_name("shutterstock")          # e.g. shutterstock_2026-11-02.csv
+        suggested = core.csv_file_name("shutterstock")          # e.g. shutterstock_2026-11-10_08-18.csv
         path, chosen = QFileDialog.getSaveFileName(self, f"Export {len(photos)} photo{'s' if len(photos) != 1 else ''} "
                                                    "to CSV", os.path.join(folder, suggested), ";;".join(filters))
         if not path:
@@ -3857,7 +3861,7 @@ class MainWindow(QMainWindow):
             path += ".csv"
         fmt = next((k for (k, label), flt in zip(core.CSV_FORMATS, filters) if flt == chosen), "shutterstock")
         if os.path.basename(path) == suggested and fmt != "shutterstock":
-            path = os.path.join(os.path.dirname(path), core.csv_file_name(fmt))   # adobe_2026-11-02.csv
+            path = core.unused_path(os.path.join(os.path.dirname(path), core.csv_file_name(fmt)))
         if fmt == "shutterstock" and not self._check_before_csv(photos):
             return
         categories = []
@@ -3886,11 +3890,15 @@ class MainWindow(QMainWindow):
                  else os.path.basename(p.path), "folder": os.path.dirname(p.path), "title": p.title,
                  "description": p.description, "categories": list(p.categories),
                  "adobe_category": p.adobe_category,
-                 "city": (self.location_for(p).split(",") + [""])[0].strip(),
-                 "region": (self.location_for(p).split(",") + ["", ""])[1].strip(),
+                 "bare_title": self.bare_title(p),        # without the editorial location and date (Adobe)
+                 **self._csv_place(p),
                  "keywords": list(p.keywords), "editorial": self.is_editorial(p),
                  "type": labels.get(self.effective_type(p), ""), "note": p.note, "taken": p.taken,
                  "saved": not p.changed} for p in photos]
+
+    def _csv_place(self, ph) -> dict:
+        loc = core.parse_location(self.location_for(ph))
+        return {"city": loc["city"], "region": loc["state"], "country": loc["country"]}
 
     def _rows_with_categories(self, photos) -> list[dict]:
         """CSV rows with every site's categories picked (the AI's own choice first)."""
@@ -3904,7 +3912,7 @@ class MainWindow(QMainWindow):
 
     def make_shutterstock_csv(self, photos=None, ask_categories=None) -> str:
         """One click: the Shutterstock upload CSV for the checked photos (or all of them), saved next to the
-        photos as shutterstock_<date>.csv. Returns its path ('' if nothing was made)."""
+        photos as shutterstock_<date>_<time>.csv. Returns its path ('' if nothing was made)."""
         if photos is None:
             photos = self.checked_photos() or list(self.photos)
         photos = [p for p in photos if not p.busy and (p.title.strip() or p.keywords)]
@@ -3915,12 +3923,12 @@ class MainWindow(QMainWindow):
             return ""
         categories = []                               # each photo gets its own (site_files.pick_categories)
         folder = os.path.dirname(photos[0].path)
-        base = os.path.splitext(core.csv_file_name("shutterstock"))[0]
-        path, n = os.path.join(folder, base + ".csv"), 2
-        while os.path.exists(path):                      # never replace an earlier one
-            path, n = os.path.join(folder, f"{base} ({n}).csv"), n + 1
+        path = core.unused_path(os.path.join(folder, core.csv_file_name("shutterstock")))   # never replace one
+        rows = self._rows_with_categories(photos)
+        import site_files
+        self.last_csv_warnings = site_files.csv_warnings(rows, ["shutterstock"])
         try:
-            count = core.export_csv(path, self._rows_with_categories(photos), "shutterstock", categories,
+            count = core.export_csv(path, rows, "shutterstock", categories,
                                     self.settings.get("shutterstock_text", "title"))
         except OSError as e:
             QMessageBox.warning(self, "Shutterstock CSV", f"The CSV couldn't be saved:\n{e}")
@@ -3934,8 +3942,8 @@ class MainWindow(QMainWindow):
                               f"Saved {os.path.basename(path)} with {count} photo{'s' if count != 1 else ''}, "
                               f"using their {what} exactly as in the list, in:\n{folder}\n\n"
                               "Upload the photos to Shutterstock first. Then, on the Submit page, click CSV and "
-                              "choose this file: it sets the titles, keywords, categories and editorial.",
-                              parent=self)
+                              "choose this file: it sets the titles, keywords, categories and editorial."
+                              + "".join("\n\n• " + w for w in self.last_csv_warnings), parent=self)
             show = box.addButton("Show in Folder", QMessageBox.ActionRole)
             box.addButton(QMessageBox.Ok)
             box.exec()

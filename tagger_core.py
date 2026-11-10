@@ -39,7 +39,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.11.10.2"
+APP_VERSION = "2026.11.10.3"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 # camera RAW files: titles and keywords go into the Lightroom sidecar next to them (photo.xmp), never the RAW.
 # DNG is left out: Lightroom ignores sidecars for DNG and keeps its metadata inside the file itself.
@@ -539,10 +539,35 @@ SHUTTERSTOCK_CATEGORIES = [
 ]
 
 
+def csv_stamp() -> str:
+    """Today's date and the time, for CSV names: 2026-11-10_08-18 (sorts in order; no colons for Windows)."""
+    return time.strftime("%Y-%m-%d_%H-%M")
+
+
 def csv_file_name(fmt: str, day: str = "") -> str:
-    """The suggested name for an exported CSV, with today's date: shutterstock_2026-11-02.csv"""
-    day = day or time.strftime("%Y-%m-%d")
+    """The suggested name for an exported CSV, with the date and time: shutterstock_2026-11-10_08-18.csv, so two
+    exports on the same day never get mixed up or replace each other."""
+    day = day or csv_stamp()
     return f"{'metadata' if fmt == 'full' else fmt}_{day}.csv"
+
+
+def unused_path(path: str) -> str:
+    """path, or 'name (2).csv', 'name (3).csv'… when it's taken: an earlier export is never replaced."""
+    base, ext = os.path.splitext(path)
+    n = 2
+    while os.path.exists(path):
+        path, n = f"{base} ({n}){ext}", n + 1
+    return path
+
+
+def adobe_title(title: str, bare: str = "") -> str:
+    """Adobe Stock's CSV title: plain text, no commas, at most 70 characters (cut at a word), and without an
+    editorial location and date in front (Adobe asks for no editorial-style captions)."""
+    text = plain_text(single_line(bare or title or ""))
+    text = " ".join(text.replace(",", " ").replace(";", " ").split())
+    if len(text) > 70:
+        text = text[:71].rsplit(" ", 1)[0].rstrip(" -:–") if " " in text[:71] else text[:70]
+    return text
 
 
 def export_csv(path: str, rows: list[dict], fmt: str = "shutterstock", categories=(), ss_text: str = "title") -> int:
@@ -572,7 +597,9 @@ def export_csv(path: str, rows: list[dict], fmt: str = "shutterstock", categorie
         enc = "utf-8"
     elif fmt == "adobe":
         head = ["Filename", "Title", "Keywords", "Category", "Releases"]
-        body = [[r["file"], r["title"], ",".join(r["keywords"]), r.get("adobe_category") or "", ""] for r in rows]
+        body = [[r["file"], adobe_title(r["title"], r.get("bare_title", "")),
+                 ",".join(k for k in (plain_text(x) for x in r["keywords"]) if k), r.get("adobe_category") or "", ""]
+                for r in rows]
         enc = "utf-8"
     else:
         head = ["File", "Folder", "Title", "Title length", "Description", "Description length", "Keywords",
@@ -951,14 +978,39 @@ def _norm(p: str) -> str:
 
 
 # Metadata fields ---------------------------------------------------------------------------------
+US_STATES = {
+    "AL": "Alabama", "AK": "Alaska", "AZ": "Arizona", "AR": "Arkansas", "CA": "California", "CO": "Colorado",
+    "CT": "Connecticut", "DE": "Delaware", "FL": "Florida", "GA": "Georgia", "HI": "Hawaii", "ID": "Idaho",
+    "IL": "Illinois", "IN": "Indiana", "IA": "Iowa", "KS": "Kansas", "KY": "Kentucky", "LA": "Louisiana",
+    "ME": "Maine", "MD": "Maryland", "MA": "Massachusetts", "MI": "Michigan", "MN": "Minnesota",
+    "MS": "Mississippi", "MO": "Missouri", "MT": "Montana", "NE": "Nebraska", "NV": "Nevada",
+    "NH": "New Hampshire", "NJ": "New Jersey", "NM": "New Mexico", "NY": "New York", "NC": "North Carolina",
+    "ND": "North Dakota", "OH": "Ohio", "OK": "Oklahoma", "OR": "Oregon", "PA": "Pennsylvania",
+    "RI": "Rhode Island", "SC": "South Carolina", "SD": "South Dakota", "TN": "Tennessee", "TX": "Texas",
+    "UT": "Utah", "VT": "Vermont", "VA": "Virginia", "WA": "Washington", "WV": "West Virginia",
+    "WI": "Wisconsin", "WY": "Wyoming", "DC": "District of Columbia",
+}
+
+
+def us_state(word: str) -> str:
+    """'TX' or 'Texas' -> 'Texas'; anything else -> ''."""
+    w = (word or "").strip().rstrip(".")
+    if w.upper() in US_STATES and len(w) == 2:
+        return US_STATES[w.upper()]
+    return next((s for s in US_STATES.values() if s.lower() == w.lower()), "")
+
+
 def parse_location(location: str) -> dict:
-    """'City, State, Country' -> parts. 'Tokyo, Japan' -> city + country; one part -> city."""
+    """'City, State, Country' -> parts. 'Tokyo, Japan' -> city + country; one part -> city. A US state as the
+    second part ('Austin, Texas' or 'Austin, TX') is the state, and the country is United States."""
     parts = [p.strip() for p in (location or "").split(",") if p.strip()]
     if not parts:
         return {"city": "", "state": "", "country": ""}
     if len(parts) == 1:
         return {"city": parts[0], "state": "", "country": ""}
     if len(parts) == 2:
+        if us_state(parts[1]) and parts[1].lower() != "georgia":      # (Tbilisi, Georgia is the country)
+            return {"city": parts[0], "state": parts[1], "country": "United States"}
         return {"city": parts[0], "state": "", "country": parts[1]}
     return {"city": parts[0], "state": ", ".join(parts[1:-1]), "country": parts[-1]}
 
