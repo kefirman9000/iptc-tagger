@@ -206,7 +206,8 @@ def test_upload_window_end_to_end(window, make_photos, servers, monkeypatch):
     a.title = "A New Title Not Saved Yet"                       # unsaved: the upload has to wait
     w = win.open_upload([a, b])
     wait_ui(lambda: bool(w.plans), what="plans")
-    assert w.rows["shutterstock"]["cb"].isChecked() and not w.rows["dreamstime"]["cb"].isEnabled()
+    assert w.rows["shutterstock"]["cb"].isChecked() and "dreamstime" not in w.rows   # only agencies with a login
+    assert "more agencies" in w.more.text()
     w._refresh_buttons()
     assert not w.btn_start.isEnabled() and w.warn_box.isVisibleTo(w)
     win.save_photos([a])
@@ -223,3 +224,67 @@ def test_upload_window_end_to_end(window, make_photos, servers, monkeypatch):
     assert w.next_steps.isVisibleTo(w) and "Submit page" in w.next_steps.text()
     assert w.btn_ss_csv.isVisibleTo(w)
     w.close()
+
+
+def test_agencies_that_show_their_server_and_your_own(tmp_path, servers):
+    srv = servers("fp")
+    up.save_login("freepik", "me", "pw", host="127.0.0.1", port=srv.port, protocol="ftp")
+    up.save_login("other1", "u", "pw", host="127.0.0.1", port=srv.port, protocol="ftp", label="Mostphotos")
+    s = {x["name"]: x for x in up.load_sites()}
+    assert (s["freepik"]["host"], s["freepik"]["port"]) == ("127.0.0.1", srv.port)
+    assert s["other1"]["label"] == "Mostphotos"
+    assert s["vecteezy"]["protocol"] == "sftp" and s["vecteezy"]["host"] == ""     # nothing saved yet
+    ps = photos(str(tmp_path), 1)
+    u = run(ps, [dict(s["other1"], username="u", password="pw")])
+    assert u.status()["sites"]["other1"]["label"] == "Mostphotos" and os.listdir(srv.root) == ["p0.jpg"]
+    rows = list(csv.DictReader(open(up.receipt_path(), encoding="utf-8")))
+    assert rows[-1]["site"] == "Mostphotos"
+    assert "no server yet" in up.test_login(dict(s["vecteezy"], username="x", password="y"))
+
+
+def test_a_csv_for_each_site_with_categories(tmp_path):
+    import site_files as sf
+    rows = [{"file": "a.jpg", "folder": "", "title": "Protein Shakes on a Store Shelf for Health-Conscious Consumers",
+             "description": "", "keywords": ["protein shake", "nutrition", "fitness", "grocery store"],
+             "editorial": True, "categories": [], "adobe_category": None, "city": "Tokyo", "region": "Japan"},
+            {"file": "b.jpg", "folder": "", "title": "Paint Cans on a Store Shelf", "description": "",
+             "keywords": ["paint", "hardware store", "diy"], "editorial": False, "categories": [],
+             "adobe_category": None}]
+    files = sf.write_site_csvs(str(tmp_path), rows, [k for k, _, _ in sf.SITE_CSVS], day="2026-11-09")
+    assert sorted(os.path.basename(f) for f in files) == sorted(
+        ["shutterstock_2026-11-09.csv", "adobe_2026-11-09.csv", "dreamstime_2026-11-09.csv",
+         "depositphotos_2026-11-09.csv", "123rf_2026-11-09.csv", "pond5_2026-11-09.csv",
+         "metadata_2026-11-09.csv"])
+    read = lambda n: list(csv.DictReader(open(os.path.join(str(tmp_path), n + "_2026-11-09.csv"), encoding="utf-8-sig")))
+    ss, ad, dt = read("shutterstock"), read("adobe"), read("dreamstime")
+    assert ss[0]["Categories"] == "Food and drink,Objects" and ss[1]["Categories"] == "Objects,Industrial"
+    assert ad[0]["Category"] == "4" and ad[1]["Category"] == "10"            # Drinks, Industry
+    assert dt[0]["Category 1"] == "185" and dt[0]["Editorial"] == "1"       # Editorial -> Commercial first
+    assert read("pond5")[0]["city"] == "Tokyo"
+    # the AI's own choice is used first
+    c = sf.pick_categories("Protein Shakes on a Shelf", "", ["protein"], False, ["Food and drink"], 7)
+    assert c["shutterstock"][0] == "Food and drink" and c["adobe"] == 7
+
+
+def test_export_csv_dialog_makes_one_per_ticked_site(window, make_photos, monkeypatch, tmp_path):
+    import upload_window as uw
+    from test_window import add
+    app, win = window
+    add(win, make_photos(2))
+    for ph in win.photos:
+        ph.title, ph.keywords = "Christmas Lights Display on a Store Shelf", ["christmas", "lights", "holiday"]
+    out = tmp_path / "csvs"
+
+    def fake_exec(self):
+        for k, cb in self.boxes.items():
+            cb.setChecked(k in ("shutterstock", "dreamstime"))
+        self.where.setText(str(out))
+        self._accept()
+        return True
+    monkeypatch.setattr(uw.SiteCsvDialog, "exec", fake_exec)
+    win.export_csv()
+    names = sorted(os.listdir(out))
+    assert len(names) == 2 and names[0].startswith("dreamstime_") and names[1].startswith("shutterstock_")
+    assert win.settings["csv_sites"] == ["shutterstock", "dreamstime"]
+    line = win.review._categories_line(win.photos[0])
+    assert "Shutterstock: Holidays" in line and "Dreamstime: Christmas" in line

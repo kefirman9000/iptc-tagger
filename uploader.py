@@ -78,8 +78,61 @@ SITES = {
                       "login password).",
         "after": "Pond5 reads the title and keywords saved in the photos. Check them in Pond5's Uploads.",
     },
+    # These take FTP uploads too, but show their server on your contributor page instead of publishing it:
+    # copy it into Logins once.
+    "freepik": {
+        "label": "Freepik (Magnific)", "short": "FP", "needs_host": True,
+        "ftp": {"protocol": "ftp", "host": "", "port": 21},
+        "login_hint": "In Freepik's contributor panel › Upload › FTP: the host, port, FTP user and password "
+                      "(Get password). FTP opens after your first 120 approved files.",
+        "after": "Freepik reads the title and keywords saved in the photos. Check them in its Upload section.",
+    },
+    "vecteezy": {
+        "label": "Vecteezy", "short": "VZ", "needs_host": True,
+        "ftp": {"protocol": "sftp", "host": "", "port": 22},
+        "login_hint": "In Vecteezy's contributor dashboard › Upload › sFTP: the host, username and password.",
+        "after": "Vecteezy uses the title and keywords saved in the photos. Finish them on its Add Data page.",
+    },
+    "yay": {
+        "label": "Yay Images", "short": "YY", "needs_host": True,
+        "ftp": {"protocol": "ftp", "host": "", "port": 21},
+        "login_hint": "On Yay Images' contributor upload page: the FTP host, username and password.",
+        "after": "Yay Images reads the title and keywords saved in the photos.",
+    },
+    "colourbox": {
+        "label": "Colourbox", "short": "CB", "needs_host": True,
+        "ftp": {"protocol": "ftp", "host": "", "port": 21},
+        "login_hint": "On Colourbox's contributor page: the FTP host, username and password.",
+        "after": "Colourbox reads the title and keywords saved in the photos.",
+    },
+    # any other agency with FTP: you type its name and details
+    "other1": {
+        "label": "Other agency 1", "short": "O1", "needs_host": True, "custom": True,
+        "ftp": {"protocol": "ftp", "host": "", "port": 21},
+        "login_hint": "Any other agency that takes FTP uploads: its name, host, port, username and password.",
+        "after": "Check the photos on that agency's site.",
+    },
+    "other2": {
+        "label": "Other agency 2", "short": "O2", "needs_host": True, "custom": True,
+        "ftp": {"protocol": "ftp", "host": "", "port": 21},
+        "login_hint": "Any other agency that takes FTP uploads: its name, host, port, username and password.",
+        "after": "Check the photos on that agency's site.",
+    },
 }
 SITE_ORDER = list(SITES)
+SITE_GROUPS = [   # how they're shown in Logins
+    ("Agencies with a known upload server", [k for k, v in SITES.items() if not v.get("needs_host")]),
+    ("Agencies that show their server on your contributor page", [k for k, v in SITES.items()
+                                                                     if v.get("needs_host") and not v.get("custom")]),
+    ("Your own", [k for k, v in SITES.items() if v.get("custom")]),
+]
+
+
+def site_label(name: str, login: dict | None = None) -> str:
+    """A site's name; for Other agency, the name you gave it."""
+    if login and login.get("label") and SITES[name].get("custom"):
+        return login["label"]
+    return SITES[name]["label"]
 
 
 def _conf(name: str) -> str:
@@ -185,7 +238,7 @@ def _read_ini(path: str) -> dict:
         if cp.has_section(site):
             sec = cp[site]
             out[site] = {k: sec.get(k, "") for k in ("protocol", "host", "port", "username", "password",
-                                                       "remote_dir")}
+                                                       "remote_dir", "label")}
     return out
 
 
@@ -202,7 +255,8 @@ def _write_ini(values: dict):
         lines += [f"[{site}]", f"protocol = {v.get('protocol') or ftp['protocol']}",
                   f"host = {v.get('host') or ftp['host']}", f"port = {v.get('port') or ftp['port']}",
                   f"username = {v.get('username', '')}", f"password = {v.get('password', '')}",
-                  f"remote_dir = {v.get('remote_dir') or '/'}", ""]
+                  f"remote_dir = {v.get('remote_dir') or '/'}"] + (
+                     [f"label = {v['label']}"] if v.get("label") else []) + [""]
     tmp = path + ".tmp"
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)      # readable by you only
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -250,7 +304,7 @@ def load_sites() -> list[dict]:
             port = int(v.get("port") or ftp["port"])
         except ValueError:
             port = ftp["port"]
-        sites.append({"name": site, "label": SITES[site]["label"],
+        sites.append({"name": site, "label": site_label(site, v),
                       "protocol": (v.get("protocol") or ftp["protocol"]).lower(),
                       "host": v.get("host") or ftp["host"], "port": port,
                       "username": v.get("username", ""), "password": password,
@@ -258,7 +312,8 @@ def load_sites() -> list[dict]:
     return sites
 
 
-def save_login(site: str, username: str, password: str = "", remote_dir: str = "", clear: bool = False):
+def save_login(site: str, username: str, password: str = "", remote_dir: str = "", clear: bool = False,
+               host: str = "", port=None, protocol: str = "", label: str = ""):
     """Save one site's login (a blank password keeps the saved one). Passwords go in the keychain when there is
     one, otherwise in the logins file, which only you can read."""
     with _ini_lock:
@@ -276,6 +331,17 @@ def save_login(site: str, username: str, password: str = "", remote_dir: str = "
             v["username"] = (username or "").strip()
             if remote_dir.strip():
                 v["remote_dir"] = remote_dir.strip()
+            if host.strip():
+                v["host"] = host.strip()
+            if port:
+                try:
+                    v["port"] = str(int(port))
+                except (TypeError, ValueError):
+                    pass
+            if protocol in ("ftp", "ftps", "sftp"):
+                v["protocol"] = protocol
+            if label.strip() and SITES[site].get("custom"):
+                v["label"] = label.strip()
             if password:
                 if kr:
                     kr.set_password(KEYRING_SERVICE, site, password)
@@ -423,6 +489,8 @@ class SFTPConn:
 def connect(site: dict, timeout: int = 60, encrypted_only: bool = False):
     if not site["username"] or not site["password"]:
         raise RuntimeError("login not set yet: add it under Logins")
+    if not site.get("host"):
+        raise RuntimeError("no server yet: copy it from the agency's upload page into Logins")
     cls = SFTPConn if site["protocol"] == "sftp" else FTPConn
     return cls(site, timeout=timeout, encrypted_only=encrypted_only)
 
@@ -548,7 +616,7 @@ class Uploader:
                 w = csv.writer(fh)
                 if new:
                     w.writerow(["time", "site", "photo", "sent as", "bytes", "encrypted", "sha256"])
-                w.writerow([datetime.now().isoformat(timespec="seconds"), SITES[site]["label"], path, sent_as,
+                w.writerow([datetime.now().isoformat(timespec="seconds"), self.progress[site]["label"], path, sent_as,
                             os.path.getsize(path), "yes" if encrypted else "no", sha])
         self._set_partial(site, sent_as, False)
 
@@ -598,7 +666,7 @@ class Uploader:
                 todo = p["send"] if self.skip_sent else p["send"] + [x for x, _ in p["sent"]]
                 self._todo[s["name"]] = todo
                 self.progress[s["name"]] = {
-                    "label": SITES[s["name"]]["label"], "state": "waiting", "done": 0, "total": len(todo),
+                    "label": s.get("label") or SITES[s["name"]]["label"], "state": "waiting", "done": 0, "total": len(todo),
                     "bytes": 0, "total_bytes": sum(os.path.getsize(x) for x in todo) or 1, "current": "",
                     "errors": [], "notes": [], "skipped": len(p["sent"]) if self.skip_sent else 0,
                     "left_out": len(p["left_out"]), "encrypted": None}
@@ -616,7 +684,7 @@ class Uploader:
 
     def _remove_partial(self, site, name) -> bool:
         """After an interrupted transfer: delete the half-sent file so the site never gets half a photo."""
-        label, last = SITES[site["name"]]["label"], None
+        label, last = site.get("label") or SITES[site["name"]]["label"], None
         for _ in range(2):
             try:
                 c = self.connect(site, encrypted_only=self.encrypted_only)
@@ -643,7 +711,7 @@ class Uploader:
 
     def _run_site(self, site):
         name = site["name"]
-        label = SITES[name]["label"]
+        label = site.get("label") or SITES[name]["label"]
         conn, failures_in_row, last, on_server = None, 0, "", set()
         ours = self._partials().get(name, set())      # half-sent earlier by IPTC Tagger: safe to replace
 

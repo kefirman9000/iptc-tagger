@@ -182,10 +182,10 @@ def _detect_with_stand_in(win, ph, monkeypatch):
 
 
 def _set_editorial(win, location_for_ai, lead=""):
-    """Editorial on, Cary, the date before the title, set the way you would in the window."""
+    """Editorial on, Tokyo, the date before the title, set the way you would in the window."""
     from PySide6.QtCore import QDate
     win.editorial.setChecked(True)
-    win.location.setText("Cary, North Carolina")
+    win.location.setText("Tokyo, Japan")
     win.date_pos.setCurrentIndex(win.date_pos.findData("before_title"))
     win.custom_date_on.setChecked(True)
     win.custom_date.setDate(QDate(2026, 11, 6))
@@ -200,16 +200,16 @@ def test_location_and_date_stay_away_from_the_ai_unless_given(window, make_photo
     ph = win.photos[0]
     _set_editorial(win, False, "myshoot, {month} {year}")
     # saved on the file earlier: a dateline and place / month keywords
-    ph.title = "Cary, North Carolina - November 6, 2026: Welch's Fruit Snacks on Shelf"
-    ph.keywords = ["welchs", "cary", "north carolina", "november 2026", "2026"]
+    ph.title = "Tokyo, Japan - November 6, 2026: Welch's Fruit Snacks on Shelf"
+    ph.keywords = ["welchs", "tokyo", "japan", "november 2026", "2026"]
     seen = _detect_with_stand_in(win, ph, monkeypatch)
     given = repr(seen).casefold()
-    for word in ("cary", "north carolina", "november", "2026"):
+    for word in ("tokyo", "japan", "november", "2026"):
         assert word not in given, (word, seen)
     assert seen["lead_keywords"] == ["myshoot"]                  # your keyword without the date token
     # and the app adds them itself afterwards
-    assert ph.title.startswith("Cary, North Carolina - November 6, 2026: ")
-    assert {"cary", "north carolina", "november 2026", "myshoot"} <= {k.casefold() for k in ph.keywords}
+    assert ph.title.startswith("Tokyo, Japan - November 6, 2026: ")
+    assert {"tokyo", "japan", "november 2026", "myshoot"} <= {k.casefold() for k in ph.keywords}
 
 
 def test_location_and_date_go_to_the_ai_when_given(window, make_photos, monkeypatch):
@@ -218,8 +218,8 @@ def test_location_and_date_go_to_the_ai_when_given(window, make_photos, monkeypa
     ph = win.photos[0]
     _set_editorial(win, True)
     seen = _detect_with_stand_in(win, ph, monkeypatch)
-    assert seen["title_location"] == "Cary, North Carolina"
-    assert ph.title.startswith("Cary, North Carolina - November 6, 2026: ")
+    assert seen["title_location"] == "Tokyo, Japan"
+    assert ph.title.startswith("Tokyo, Japan - November 6, 2026: ")
 
 
 def test_editorial_title_without_place_and_date_keywords(window, make_photos, monkeypatch):
@@ -228,16 +228,16 @@ def test_editorial_title_without_place_and_date_keywords(window, make_photos, mo
     a, b = win.photos
     _set_editorial(win, True, "myshoot")
     # a photo already in the list with place / date keywords
-    b.title, b.keywords = "Cary, North Carolina - November 6, 2026: Old Title Here", \
-        ["snacks", "cary", "north carolina", "november 2026", "2026", "myshoot"]
+    b.title, b.keywords = "Tokyo, Japan - November 6, 2026: Old Title Here", \
+        ["snacks", "tokyo", "japan", "november 2026", "2026", "myshoot"]
     win.ed_kw.setChecked(False)                                   # Editorial, but not in the keywords
     assert win.settings["editorial_keywords"] is False
     assert b.keywords == ["snacks", "myshoot"]                    # offered (yes in tests) for photos in the list
-    a.keywords = ["cary", "snacks"]                               # saved on the file earlier
+    a.keywords = ["tokyo", "snacks"]                               # saved on the file earlier
     _detect_with_stand_in(win, a, monkeypatch)
-    assert a.title.startswith("Cary, North Carolina - November 6, 2026: ")   # still in the title
+    assert a.title.startswith("Tokyo, Japan - November 6, 2026: ")   # still in the title
     low = {k.casefold() for k in a.keywords}
-    assert not low & {"cary", "north carolina", "november 2026", "2026"}
+    assert not low & {"tokyo", "japan", "november 2026", "2026"}
     assert "myshoot" in low                                       # your keywords to put first stay
 
 
