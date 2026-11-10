@@ -239,3 +239,28 @@ def test_editorial_title_without_place_and_date_keywords(window, make_photos, mo
     low = {k.casefold() for k in a.keywords}
     assert not low & {"cary", "north carolina", "november 2026", "2026"}
     assert "myshoot" in low                                       # your keywords to put first stay
+
+
+# ---------- the store in your photo note decides the title
+def test_store_in_your_note_wins_even_over_the_label():
+    r = core.fix_common_problems("Costco Kirkland Baking Needs Nuts and Sweeteners Display on Warehouse Shelves",
+                                 "Shelves of Kirkland baking nuts and sweeteners at Costco.",
+                                 ["nuts", "kirkland", "costco"], (), "BJs WHoleale", label="brand: Kirkland")
+    assert r["title"] == "Baking Needs Nuts and Sweeteners Display on Warehouse Shelves at BJ's Wholesale Club"
+    assert r["description"] == "Shelves of baking nuts and sweeteners."
+    assert r["keywords"] == ["nuts", "kirkland", "costco"]                # related brands stay as keywords
+
+
+def test_a_house_brand_in_your_note_is_not_taken_for_the_store():
+    r = core.fix_common_problems("Kirkland Almonds on Store Shelf", "", [], (), "Kirkland almonds at BJ's")
+    assert r["title"] == "Kirkland Almonds on Store Shelf at BJ's Wholesale Club"
+
+
+def test_without_a_note_the_store_named_as_the_place_wins():
+    r = core.fix_common_problems("Costco Baking Nuts Sweeteners Shelves, BJS Wholesale Grocery Store Setting", "", [])
+    assert r["title"] == "Baking Nuts Sweeteners Shelves, BJS Wholesale Grocery Store Setting"
+
+
+def test_the_note_is_repeated_at_the_end_of_the_prompt():
+    p = core.build_prompt(7, 20, photo_note="BJ's Wholesale Club")
+    assert p.rstrip().splitlines()[-3].startswith("REMEMBER THE NOTE ABOUT THIS PHOTO: BJ's Wholesale Club")
