@@ -140,8 +140,8 @@ def test_keyboard_moves_and_buttons(window, make_photos):
     win.toggle_check_selected()
     assert win.photos[1].checked
     win._refresh_buttons()
-    assert win.btn_stockup_all.text() == "Send All 3 to StockUp"
-    assert win.btn_stockup_checked.text() == "Send 1 Checked to StockUp"
+    assert win.act_stockup_all.text() == "All 3 photos in the list"
+    assert win.act_stockup_checked.text() == "The 1 checked photo"
     assert win.SHORTCUTS
 
 
@@ -230,3 +230,21 @@ def test_model_switch_on_the_main_window(window):
     assert win.text_model() == "llama3.1:8b"
     win.ai["all"] = ["llava:7b", "qwen2.5vl:7b"]                                # not downloaded any more
     assert win.text_model() == ""                                               # the photo model does it
+
+
+def test_fits_a_laptop_screen(window, make_photos):
+    """1366 × 768 (a common laptop): the window, with a photo selected, mustn't need more."""
+    app, win = window
+    add(win, make_photos(3))
+    win.resize(1366, 740)
+    win._select_rows([win.rows[win.photos[0].path]])
+    wait(lambda: win.review.photo is win.photos[0], what="select")
+    QApplication.processEvents()
+    hint = win.minimumSizeHint()
+    assert hint.width() <= 1366 and hint.height() <= 740, hint
+    h = win.table.horizontalHeader()
+    import iptc_tagger as app_mod
+    assert [h.logicalIndex(i) for i in range(5)] == [app_mod.COL_CHECK, app_mod.COL_THUMB, app_mod.COL_FILE,
+                                                       app_mod.COL_TITLE, app_mod.COL_KEYWORDS]
+    win.toggle_instructions()                                   # folded and unfolded both remembered
+    assert win.settings["instructions_folded"] == win.instr_summary.isVisibleTo(win)

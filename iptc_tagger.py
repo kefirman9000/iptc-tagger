@@ -20,7 +20,7 @@ from PySide6.QtCore import (QDate, QItemSelectionModel, QObject, QPoint, QRect, 
                             QTimer, QUrl, Signal)
 from PySide6.QtGui import QAction, QColor, QDesktopServices, QIcon, QImage, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
-    QAbstractItemView, QApplication, QCheckBox, QLayout, QSizePolicy, QComboBox, QDateEdit, QDialog, QDialogButtonBox, QFileDialog,
+    QAbstractItemView, QApplication, QCheckBox, QFrame, QLayout, QScrollArea, QSizePolicy, QComboBox, QDateEdit, QDialog, QDialogButtonBox, QFileDialog,
     QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit, QMainWindow,
     QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QSpinBox, QSplitter, QStackedWidget,
     QStyle, QSystemTrayIcon, QTableWidget, QTableWidgetItem, QTabWidget, QTextBrowser, QVBoxLayout, QWidget,
@@ -32,6 +32,9 @@ THUMB = 72
 # column order in the list: status, type and the Detect/Save buttons sit before the text you edit
 COL_CHECK, COL_THUMB, COL_FILE, COL_STATUS, COL_TYPE, COL_ACTION, COL_NOTE, COL_AVOID, COL_TITLE, COL_KEYWORDS = range(10)
 PREVIEW = 520   # long edge of the large preview in the review panel
+# the order the columns are shown in (their numbers above stay the same)
+COLUMN_ORDER = [COL_CHECK, COL_THUMB, COL_FILE, COL_TITLE, COL_KEYWORDS, COL_STATUS, COL_ACTION, COL_TYPE, COL_NOTE,
+                COL_AVOID]
 GREY = "#8a8f98"
 STATUS_COLORS = {
     "reading": GREY, "ready": GREY, "identifying": "#2f7ddd", "suggested": "#b8860b",
@@ -1124,14 +1127,15 @@ class ReviewPanel(QWidget):
         self.b_redo = QPushButton("Redo with Reasons…")
         self.b_redo.setToolTip("Tell the AI what's wrong with this suggestion (too generic, wrong subject, too long…)\n"
                                "and it tries again with that in mind")
-        r1 = QHBoxLayout()
-        r1.addWidget(self.b_identify)
-        r1.addWidget(self.b_redo)
-        r1.addWidget(self.b_reword)
-        r1.addWidget(self.b_revert)
-        r1.addWidget(self.b_copy)
-        r1.addWidget(self.b_paste)
-        b.addLayout(r1)
+        # these wrap onto a second line in a narrow panel, instead of squashing ("ct A", "h Re"…)
+        r1_box = QWidget()
+        r1 = FlowLayout(r1_box)
+        for w in (self.b_identify, self.b_redo, self.b_reword, self.b_revert, self.b_copy, self.b_paste):
+            r1.addWidget(w)
+        sp = r1_box.sizePolicy()
+        sp.setHeightForWidth(True)
+        r1_box.setSizePolicy(sp)
+        b.addWidget(r1_box)
         r2 = QHBoxLayout()
         r2.addWidget(self.b_save)
         r2.addWidget(self.b_save_next)
@@ -1143,8 +1147,15 @@ class ReviewPanel(QWidget):
 
         lay = QVBoxLayout(self)
         lay.addWidget(self.empty)
-        lay.addWidget(self.body)
-        self.body.hide()
+        # the panel scrolls when the window is shorter than everything in it (a laptop), instead of making the
+        # window taller than the screen
+        self.scroll = QScrollArea()
+        self.scroll.setWidget(self.body)
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.NoFrame)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        lay.addWidget(self.scroll)
+        self.scroll.hide()
 
         self.note.textEdited.connect(self._edited)
         self.avoid.textEdited.connect(self._edited)
@@ -1168,14 +1179,14 @@ class ReviewPanel(QWidget):
         new_photo = ph is not self.photo
         self.photo = ph
         if ph is None:
-            self.body.hide()
+            self.scroll.hide()
             self.empty.setText("Select a photo in the list to review and edit it here." if selected == 0 else
                                f"{selected} photos selected. Detect and Save metadata above work on all of "
                                "them. Select a single photo to review it here.")
             self.empty.show()
             return
         self.empty.hide()
-        self.body.show()
+        self.scroll.show()
         self._loading = True
         self.win.fill_type_combo(self.type, ph.type_key)
         self.name.setText(f"<b>{os.path.basename(ph.path)}</b><br><span style='color:{GREY}'>"
@@ -1771,6 +1782,7 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._show_avoid_column()
         self._ready = True
+        self._update_instr_summary()
         self.ai_timer = QTimer(self)                  # ticks once a second while the AI works
         self.ai_timer.setInterval(1000)
         self.ai_timer.timeout.connect(self._ai_heartbeat)
@@ -1838,22 +1850,24 @@ class MainWindow(QMainWindow):
         self.btn_reword.setToolTip("Double-check or reword the titles, descriptions and keywords already written, text\n"
                                    "only (quick). Uses the checked photos, else the selected, else all shown.")
         self.btn_export = button("Export CSV…", self.export_csv)
-        self.btn_upload = button("Upload…", lambda: self.open_upload())
-        self.btn_upload.setToolTip("Send the photos to your stock sites by FTP (Shutterstock, Adobe Stock, Dreamstime,\n"
-                                   "Alamy, Depositphotos, 123RF, Pond5), with a progress bar for each site.\n"
+        # when you're done: Upload… is the main button; StockUp is still there, in one button with a menu
+        self.btn_upload = button("Upload…", lambda: self.open_upload(), QStyle.SP_ArrowUp, primary=True)
+        self.btn_upload.setToolTip("When you're done: send the photos to your stock sites (Shutterstock, Adobe Stock,\n"
+                                   "Dreamstime, Alamy, Depositphotos, 123RF, Pond5), with a progress bar for each site.\n"
                                    "Uses the checked photos, else the selected, else all shown.")
-        self.btn_stockup_all = button("Send All to StockUp", lambda: self.open_in_stockup(list(self.photos)),
-                                      QStyle.SP_ArrowRight, primary=True)
-        self.btn_stockup_all.setToolTip("When you're done: open every photo in the list in StockUp, to check them for\n"
-                                        "each stock site and upload them. Photos with unsaved changes can be saved first.")
+        self.btn_stockup = button("Open in StockUp", lambda: None, QStyle.SP_ArrowRight)   # (its menu opens)
+        self.btn_stockup.setToolTip("Open the photos in the StockUp app instead, to check them for each stock site\n"
+                                    "and upload them there. Photos with unsaved changes can be saved first.")
+        self.stockup_menu = QMenu(self.btn_stockup)
+        self.act_stockup_checked = self.stockup_menu.addAction(
+            "The checked photos", lambda: self.open_in_stockup(self.checked_photos()))
+        self.act_stockup_all = self.stockup_menu.addAction(
+            "All photos in the list", lambda: self.open_in_stockup(list(self.photos)))
+        self.btn_stockup.setMenu(self.stockup_menu)
         self.btn_ss_csv = button("Make Shutterstock CSV", lambda: self.make_shutterstock_csv(), QStyle.SP_DialogSaveButton)
         self.btn_ss_csv.setToolTip("One click: the Shutterstock upload CSV for the checked photos (or all of them),\n"
                                    "saved next to the photos as shutterstock_<date>.csv, with the titles exactly as in\n"
                                    "the list. Upload it on Shutterstock's Submit page with the CSV button.")
-        self.btn_stockup_checked = button("Send Checked to StockUp", lambda: self.open_in_stockup(self.checked_photos()),
-                                          QStyle.SP_ArrowRight)
-        self.btn_stockup_checked.setToolTip("Open only the photos you ticked in StockUp.\n"
-                                            "Photos with unsaved changes can be saved first.")
         self.btn_export.setToolTip("Save the titles and keywords as a spreadsheet: Shutterstock or Adobe Stock upload\n"
                                    "format, or every detail. Uses the checked photos, else the selected, else all shown.")
         self.btn_instr = button("Hide Instructions", self.toggle_instructions)
@@ -1881,8 +1895,7 @@ class MainWindow(QMainWindow):
         for w in (self.btn_add, self.btn_folder, self.btn_watch):
             flow.addWidget(w)
         flow.addGap()
-        for w in (self.btn_identify, self.btn_redo_checked, self.btn_reword, self.btn_save, self.btn_export,
-                  self.btn_upload):
+        for w in (self.btn_identify, self.btn_redo_checked, self.btn_reword, self.btn_save, self.btn_export):
             flow.addWidget(w)
         flow.addGap()
         for w in (self.btn_check_all, self.btn_uncheck_all):
@@ -2185,7 +2198,7 @@ class MainWindow(QMainWindow):
         self.table = QTableWidget(0, 10)
         headers = {COL_CHECK: "✓", COL_THUMB: "", COL_FILE: "File", COL_STATUS: "Status", COL_TYPE: "Type",
                    COL_ACTION: "", COL_NOTE: "Photo notes (optional)", COL_AVOID: "Avoid (optional)", COL_TITLE: "Title",
-                   COL_KEYWORDS: "Keywords (comma separated)"}
+                   COL_KEYWORDS: "Keywords"}
         self.table.setHorizontalHeaderLabels([headers[c] for c in range(len(headers))])
         self.table.setIconSize(QSize(THUMB, THUMB))
         self.table.verticalHeader().setVisible(False)
@@ -2205,10 +2218,24 @@ class MainWindow(QMainWindow):
                            (COL_STATUS, 160)):
             h.setSectionResizeMode(col, QHeaderView.Interactive)
             self.table.setColumnWidth(col, width)
-        h.setSectionResizeMode(COL_KEYWORDS, QHeaderView.Stretch)
+        h.setSectionResizeMode(COL_KEYWORDS, QHeaderView.Interactive)
+        self.table.setColumnWidth(COL_KEYWORDS, 280)
+        h.setStretchLastSection(True)                   # the last column takes any room left over
         h.setSectionResizeMode(COL_ACTION, QHeaderView.Fixed)
         self.table.setColumnWidth(COL_ACTION, 180)      # Detect + Save
+        # what you check most comes first, so it's in view on a laptop: the title and keywords right after the
+        # file; then status, the Detect / Save buttons, type and notes. Drag a column heading to move it (kept).
+        h.setSectionsMovable(True)
+        for at, col in enumerate(COLUMN_ORDER):
+            h.moveSection(h.visualIndex(col), at)
+        saved = self.settings.get("column_order")
+        if isinstance(saved, list) and sorted(saved) == list(range(self.table.columnCount())) \
+                and saved[:2] == [COL_CHECK, COL_THUMB]:
+            for at, col in enumerate(saved):
+                h.moveSection(h.visualIndex(col), at)
+        h.sectionMoved.connect(lambda *_: self._remember_columns())
         self.table.horizontalHeaderItem(COL_NOTE).setToolTip("What the AI should know or include for this photo")
+        self.table.horizontalHeaderItem(COL_KEYWORDS).setToolTip("Keywords, separated by commas")
         self.table.horizontalHeaderItem(COL_AVOID).setToolTip(
             "What the AI should NOT say for this photo, e.g. crane, sunset, don't mention the weather.\n"
             "Short entries (up to 3 words, separated by commas) are also removed from its title and keywords.")
@@ -2298,13 +2325,36 @@ class MainWindow(QMainWindow):
         bottom.addWidget(self.btn_force)
         bottom.addSpacing(16)
         bottom.addWidget(self.btn_ss_csv)
-        bottom.addWidget(self.btn_stockup_checked)
-        bottom.addWidget(self.btn_stockup_all)
+        bottom.addWidget(self.btn_stockup)
+        bottom.addWidget(self.btn_upload)
 
         central = QWidget()
         lay = QVBoxLayout(central)
         lay.addLayout(top)
         lay.addWidget(self.instructions)
+        # folded: one line saying what's in use, so the photo list gets the screen (a laptop)
+        self.instr_summary = QWidget()
+        self.instr_summary.setObjectName("instrSummary")
+        self.instr_summary.setStyleSheet("#instrSummary{background:palette(alternate-base);border:1px solid "
+                                         "palette(mid);border-radius:6px}")
+        srow = QHBoxLayout(self.instr_summary)
+        srow.setContentsMargins(10, 4, 6, 4)
+        self.instr_summary_text = QLabel()
+        self.instr_summary_text.setTextFormat(Qt.RichText)
+        self.instr_summary_text.setMinimumWidth(200)
+        srow.addWidget(self.instr_summary_text, 1)
+        b_edit = QPushButton("Edit Instructions")
+        b_edit.setToolTip("Show the Instructions for the AI, Editorial, profiles and the Every Detect choices")
+        b_edit.clicked.connect(lambda *_: self.toggle_instructions())
+        srow.addWidget(b_edit)
+        lay.addWidget(self.instr_summary)
+        folded = self.settings.get("instructions_folded")
+        if folded is None:                            # first time: folded on a small screen
+            screen = QApplication.primaryScreen()
+            folded = bool(screen and screen.availableGeometry().height() < 900)
+        self.instructions.setVisible(not folded)
+        self.instr_summary.setVisible(folded)
+        self.btn_instr.setText("Show Instructions" if folded else "Hide Instructions")
         lay.addWidget(self.update_banner)
         lay.addWidget(self.ai_banner)
         lay.addWidget(self.et_banner)
@@ -2346,9 +2396,33 @@ class MainWindow(QMainWindow):
         """)
 
     def toggle_instructions(self):
-        show = not self.instructions.isVisible()
+        show = not self.instructions.isVisibleTo(self)
         self.instructions.setVisible(show)
+        self.instr_summary.setVisible(not show)
         self.btn_instr.setText("Hide Instructions" if show else "Show Instructions")
+        self.settings["instructions_folded"] = not show
+        core.save_settings(self.settings)
+        self._update_instr_summary()
+
+    def _update_instr_summary(self):
+        """The folded Instructions line: what's in use right now."""
+        if not hasattr(self, "instr_summary_text"):
+            return
+        s = self.settings
+        esc = lambda t: (t or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        bits = []
+        prof = s.get("profile", "")
+        bits.append(f"<b>Profile:</b> {esc(prof)}" if prof else f"<span style='color:{GREY}'>No profile</span>")
+        text = " ".join((s.get("context") or "").split())
+        bits.append(f"<b>Instructions:</b> {esc(text[:70])}{'…' if len(text) > 70 else ''}" if text else
+                    f"<span style='color:{GREY}'>No instructions</span>")
+        if s.get("editorial_on"):
+            where = s.get("title_location") or "no location"
+            bits.append(f"<b>Editorial:</b> {esc(where)}"
+                        + ("" if s.get("editorial_keywords", True) else " (not in keywords)"))
+        model = s.get("model", "")
+        bits.append(f"<b>Model:</b> {esc(model)}" + (f" + {esc(s.get('text_model'))}" if s.get("text_model") else ""))
+        self.instr_summary_text.setText(" &nbsp;·&nbsp; ".join(bits))
 
     # ---------- ExifTool
     def _setup_exiftool(self):
@@ -2420,6 +2494,7 @@ class MainWindow(QMainWindow):
         core.save_settings(self.settings)
         self.models_loaded = False                   # the first photo with a new model may take longer (loading)
         self.status.setText(f"Using {model} for the photos" + (f" and {text} for the text steps." if text else "."))
+        self._update_instr_summary()
         self._check_ai()
         if hasattr(self, "model_timer"):
             self._poll_model()
@@ -3615,6 +3690,7 @@ class MainWindow(QMainWindow):
         core.save_settings(self.settings)
         if hasattr(self, "profile_box"):
             self._fill_profiles()                      # "(changed)" next to the profile when it no longer matches
+        self._update_instr_summary()
 
     def open_settings(self):
         dlg = SettingsDialog(self, self.settings, core.find_exiftool(""))
@@ -4833,14 +4909,19 @@ class MainWindow(QMainWindow):
         self.btn_clear.setEnabled(bool(self.photos) and not busy)
         sendable = lambda ps: [p for p in ps if not p.busy and p.status != "reading"]
         n_all, n_checked = len(sendable(self.photos)), len(sendable(self.checked_photos()))
-        self.btn_stockup_all.setEnabled(n_all > 0)
         n_csv = n_checked or n_all
         self.btn_ss_csv.setEnabled(n_csv > 0)
         self.btn_ss_csv.setText(f"Make Shutterstock CSV ({n_csv})" if n_csv else "Make Shutterstock CSV")
-        self.btn_stockup_all.setText(f"Send All {n_all} to StockUp" if n_all else "Send All to StockUp")
-        self.btn_stockup_checked.setEnabled(n_checked > 0)
-        self.btn_stockup_checked.setText(f"Send {n_checked} Checked to StockUp" if n_checked else
-                                         "Send Checked to StockUp")
+        self.btn_stockup.setEnabled(n_all > 0)
+        self.act_stockup_all.setEnabled(n_all > 0)
+        self.act_stockup_all.setText(f"All {n_all} photo{'s' if n_all != 1 else ''} in the list" if n_all
+                                     else "All photos in the list")
+        self.act_stockup_checked.setEnabled(n_checked > 0)
+        self.act_stockup_checked.setText(f"The {n_checked} checked photo{'s' if n_checked != 1 else ''}" if n_checked
+                                         else "The checked photos")
+        up_n = len([p for p in self.targets()[0] if not p.busy]) if self.photos else 0
+        self.btn_upload.setEnabled(up_n > 0)
+        self.btn_upload.setText(f"Upload ({up_n})…" if up_n else "Upload…")
         visible = self.visible_photos()
         self.btn_check_all.setEnabled(any(not p.checked for p in visible))
         self.btn_uncheck_all.setEnabled(any(p.checked for p in self.photos))
@@ -5375,6 +5456,11 @@ class MainWindow(QMainWindow):
                               if timed else f"Not reworded: {msg}")
             self._show(ph)
         self._tick()
+
+    def _remember_columns(self):
+        h = self.table.horizontalHeader()
+        self.settings["column_order"] = [h.logicalIndex(i) for i in range(self.table.columnCount())]
+        core.save_settings(self.settings)
 
     # ---------- uploading to the stock sites (the uploading itself comes from StockUp: uploader.py)
     def make_job(self, key, fn, *args) -> "Job":
