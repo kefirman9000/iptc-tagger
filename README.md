@@ -113,3 +113,5 @@ Copyright © 2026 kefirman9000. All rights reserved. See [LICENSE](LICENSE) for 
 IPTC Tagger is provided **as is**, without warranty of any kind. Use it at your own risk; the author is not liable for any damage, data loss or other loss arising from its use.
 
 IPTC Tagger is an independent project and is not affiliated with, endorsed by or sponsored by any of the companies or products named here. Adobe Stock, Lightroom, Bridge and Photoshop are trademarks of Adobe Inc. Shutterstock is a trademark of Shutterstock, Inc. Photo Mechanic is a trademark of Camera Bits, Inc. Ollama and ExifTool belong to their respective owners.
+
+Button icons: [Lucide](https://lucide.dev) (ISC licence, see `icons/LICENSE-lucide.txt`).

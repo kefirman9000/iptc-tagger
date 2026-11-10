@@ -1,5 +1,13 @@
 # What's new
 
+## 2026.11.10.1
+
+- **Dark mode:** the app now follows Windows' light or dark setting, and switches by itself when Windows does. To choose one, use **Settings → Appearance** (*Follow Windows*, *Light*, *Dark*). The banners, the Upload window and the drop area have dark versions too.
+- **New icons:** every button has an icon from one modern set (Lucide), drawn to suit light and dark, instead of the mix of old built-in icons.
+- **Clearer buttons:** **Detect**, **Save Metadata** and **Upload** are the solid blue buttons; everything else is plain until you point at it, so the main steps stand out.
+- **Progress in each row:** a photo being detected, reworded or saved shows a thin moving bar in its Status cell, so you can see at a glance which ones are being worked on.
+- **Pop-up messages:** when a batch finishes (*Detect finished: 12 photos*), an upload is done or CSVs are saved, a short message pops up at the bottom right and fades away. It turns yellow-edged if something had a problem. A click hides it.
+
 ## 2026.11.09.10
 
 - **Categories for every stock site, picked for you:** each photo now gets its Shutterstock, Adobe Stock and Dreamstime categories, shown in the side panel (*Categories: Shutterstock: Food and drink, Objects · Adobe: Drinks · Dreamstime: Commercial, Food & Beverages*). The AI picks the Adobe Stock category along with the Shutterstock ones; for photos detected earlier they're worked out from the title and keywords (StockUp's category picker), and categories the photo gives no sign of are left out. **Make Shutterstock CSV** no longer asks you for categories.
