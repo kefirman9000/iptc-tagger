@@ -1,5 +1,9 @@
 # What's new
 
+## 2026.11.09.6
+
+- **Editorial titles without the place and date in the keywords:** a new **Add to keywords** box next to *Editorial (include location and date)*. Untick it and the location and date still go in front of the title (and the description), but *cary*, *north carolina*, *november 2026* and *2026* aren't added to the keywords. Ones the AI writes or that are already saved on the photo are taken out too, and the AI is told to leave them out. Your keywords to put first are always kept, even with a place or *{month} {year}* in them. Unticking it offers to take them out of the photos already in the list as well. On to start with, as before.
+
 ## 2026.11.09.5
 
 - **Change models from the main window:** **Photo model** and **Text model** dropdowns now sit on the right of the *Instructions for the AI* box, so you can switch models without opening Settings. The photo model list only shows models that can see images.

@@ -39,7 +39,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.11.09.5"
+APP_VERSION = "2026.11.09.6"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 # camera RAW files: titles and keywords go into the Lightroom sidecar next to them (photo.xmp), never the RAW.
 # DNG is left out: Lightroom ignores sidecars for DNG and keeps its metadata inside the file itself.
@@ -421,6 +421,7 @@ DEFAULT_SETTINGS = {
     "title_loc_sep": "dash",  # what goes between the location and the date
     "custom_date_on": False,  # use custom_date instead of each photo's own date taken
     "custom_date": "",        # YYYY-MM-DD
+    "editorial_keywords": True,  # Editorial also adds the place and the month/year to the keywords
     "location_for_ai": True,  # also tell the AI the location, so it uses it in keywords
     "location_history": [],   # locations used before, most recent first (the dropdown in Location in title)
     "revise": True,           # double-check each draft against your instructions (one extra, text-only pass)
@@ -3283,7 +3284,8 @@ def build_prompt(keyword_min: int, keyword_max: int, context: str = "", existing
                  date_in_title: bool = False, title_location: str = "", copyright_free: bool = False,
                  symbols: str = "keep", feedback: str = "", rejected_title: str = "",
                  title_length: str = "detailed", never_use=None, photo_avoid: str = "",
-                 direct_titles: bool = True, style: str = "", concept: bool = False) -> str:
+                 direct_titles: bool = True, style: str = "", concept: bool = False,
+                 place_keywords: bool = True) -> str:
     """The instructions for one photo. Your notes come first and the title is built around them;
     your directions are repeated at the end. (title_prefix is never shown to the AI.)"""
     context, photo_note, direction = (context or "").strip(), (photo_note or "").strip(), (direction or "").strip()
@@ -3356,7 +3358,8 @@ def build_prompt(keyword_min: int, keyword_max: int, context: str = "", existing
     if (title_location or "").strip():
         lines += ["", f"The photo was taken in {title_location.strip()}. The photographer adds this location to the "
                   "title themselves, so don't put the place name in your title; describe the subject instead. "
-                  "Do use the place in the keywords."]
+                  + ("Do use the place in the keywords." if place_keywords else
+                     "Don't put the place or the date in the keywords either.")]
     if date_in_title:
         lines += ["", "The photographer adds the date the photo was taken to the title themselves, so don't put "
                   "a date in your title."]
@@ -4206,7 +4209,7 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
              read_label: bool = False, tidy: bool = False, never_use=None, never_in_title: bool = True,
              photo_avoid: str = "", description: bool = False, title_caps: str = "title",
              direct_titles: bool = True, style: str = "", checks=(), limits=None, fix_common: bool = True,
-             concept: bool = False, text_model: str = "") -> dict:
+             concept: bool = False, text_model: str = "", place_keywords: bool = True) -> dict:
     """Ask the local vision model for an SEO title and keywords. text_model: another model for the steps that only
     send text (the double-check, rewrites, checks); the photo model still does everything that looks at the photo.
     With revise=True and any notes or directions given, a second (text-only) pass checks the draft
@@ -4234,7 +4237,7 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
                           direction, photo_note, photo_type, lead_keywords, title_prefix, date_in_title,
                           title_location, copyright_free, symbols, feedback, rejected_title, title_length,
                           never_use=never_use, photo_avoid=photo_avoid, direct_titles=direct_titles, style=style,
-                          concept=concept)
+                          concept=concept, place_keywords=place_keywords)
     system = system_prompt(direction)
 
     def body(user_text, schema, with_image=True, temperature=0.2):
