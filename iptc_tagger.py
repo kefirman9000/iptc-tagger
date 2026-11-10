@@ -2641,8 +2641,13 @@ class MainWindow(QMainWindow):
         self.btn_show_all.setToolTip("Clear the filter and the search")
         self.btn_show_all.clicked.connect(lambda *_: self.show_all())
         self.filter_bar = QWidget()
-        fb = QHBoxLayout(self.filter_bar)
+        # wraps onto a second line in a narrow window (Windows' larger fonts), instead of widening it
+        fb = FlowLayout(self.filter_bar)
         fb.setContentsMargins(0, 0, 0, 4)
+        sp = self.filter_bar.sizePolicy()
+        sp.setHeightForWidth(True)
+        sp.setHorizontalPolicy(QSizePolicy.Ignored)
+        self.filter_bar.setSizePolicy(sp)
         fb.addWidget(QLabel("<b>Show</b>"))
         fb.addWidget(self.filter_box)
         # colour labels, as in Lightroom: a dot per colour shows only that group
@@ -2658,11 +2663,12 @@ class MainWindow(QMainWindow):
             d.clicked.connect(lambda *_, k=key: self.show_label(k))
             self.label_dots[key] = d
             fb.addWidget(d)
-        fb.addSpacing(6)
+        fb.addGap(4)
         for w in (self.btn_check_all, self.btn_uncheck_all):   # right by the list and its check column
             fb.addWidget(w)
-        fb.addSpacing(6)
-        fb.addWidget(self.search, 1)
+        fb.addGap(4)
+        self.search.setMinimumWidth(240)
+        fb.addWidget(self.search)
         fb.addWidget(self.filter_count)
         fb.addWidget(self.btn_show_all)
         self.btn_replace = QPushButton("Find && Replace…")
