@@ -53,7 +53,11 @@ def pyinstaller_args(work: str, folder: str = HERE, windows: bool = WINDOWS, mac
             "--add-data", f"{src('icon.png')}{sep}.",               # window icon
             "--add-data", f"{src('CHANGELOG.md')}{sep}.",           # "What's new"
             "--icon", src("icon.ico" if windows else "icon.png"),
-            "--exclude-module", "tkinter"]
+            "--exclude-module", "tkinter",
+            # uploading (uploader.py): passwords in the keychain, and SFTP for Adobe Stock
+            "--copy-metadata", "keyring",
+            "--hidden-import", "keyring.backends.Windows" if windows else "keyring.backends.macOS",
+            "--hidden-import", "paramiko"]
     if mac:
         args += ["--osx-bundle-identifier", "com.iptctagger.app"]
     return args + [src("iptc_tagger.py")]
