@@ -40,7 +40,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.11.11.3"
+APP_VERSION = "2026.11.11.4"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 # camera RAW files: titles and keywords go into the Lightroom sidecar next to them (photo.xmp), never the RAW.
 # DNG is left out: Lightroom ignores sidecars for DNG and keeps its metadata inside the file itself.
@@ -1649,7 +1649,7 @@ STOCK_SITES = {
     "shutterstock": {"label": "Shutterstock", "kw_min": 7, "kw_max": 50, "desc_max": 200, "desc_min_words": 5,
                      "plain": True},   # "Exclude special characters" (its help on rejected titles)
     "adobe": {"label": "Adobe Stock", "kw_min": 5, "kw_max": 49, "title_max": 70},
-    "dreamstime": {"label": "Dreamstime", "own_desc": True},
+    "dreamstime": {"label": "Dreamstime", "own_desc": True, "kw_min": 7, "kw_max": 50, "title_max": 250},
     "alamy": {"label": "Alamy", "own_desc": True},
     "istock": {"label": "iStock"},
     "depositphotos": {"label": "Depositphotos", "kw_min": 8, "kw_max": 50, "desc_max": 250},
@@ -1730,6 +1730,148 @@ def site_problems(title: str, keywords, sites, description: str = "", ss_text: s
         if bits:
             out.append(f"{r['label']}: " + ", ".join(bits))
     return out
+
+
+# --------------------------------------------------------------------------- Dreamstime, strictly
+# Dreamstime refuses more for its text than Shutterstock does: titles stuffed with phrases, CAPS, a description
+# that only repeats the title or stops half-way, the same keyword in several spellings. These are the extra checks
+# (Check Before Upload, when you sell on Dreamstime), each with a fix where one can be made safely.
+DT_TITLE_LONG = 150          # longer titles read as keyword stuffing on Dreamstime (its hard limit is 250)
+_DT_DATELINE = re.compile(r"^[^:]{2,90}?\d{4}:\s+")
+_CAPS_RUN = re.compile(r"\b[A-Z][A-Z'’&]+(?:\s+[A-Z][A-Z'’&]+)*\b")
+_ACRONYMS = {"USA", "BBQ", "NASA", "NYC", "LED", "HDMI", "USB", "ATM", "DIY", "SUV", "NFL", "NBA", "MLB", "NHL",
+             "UPS", "IKEA", "LEGO", "ASUS", "CVS", "KFC", "IHOP", "GNC", "AT&T", "NCAA", "WWII", "YMCA", "COVID"}
+
+
+def _dateline_split(title: str) -> tuple[str, str]:
+    m = _DT_DATELINE.match(title or "")
+    return (title[:m.end()], title[m.end():]) if m else ("", title or "")
+
+
+def shorten_title(title: str, most: int = DT_TITLE_LONG) -> str:
+    """Cut a long title back to its main phrase, at a comma or before 'for …' / 'with …', keeping an editorial
+    place-and-date in front. '…Cake on Grocery Shelf, Lemon Sugar Flavor Variety, with Orange…' -> '…Cake on
+    Grocery Shelf'. Returns the title unchanged when it already fits or can't be cut cleanly."""
+    if len(title) <= most:
+        return title
+    head, body = _dateline_split(title)
+    room = most - len(head)
+    if room < 25:
+        return title
+    cuts = [m for m in re.finditer(r",\s+|\s+(?:for|with|featuring|perfect for|ideal for|great for)\s+", body)
+            if 20 <= m.start() <= room]
+    if not cuts:
+        return title
+    cut = cuts[-1].start()
+    if len(cuts) > 1 and len(body[cuts[-2].end():cut].split()) <= 2:    # "…Vegetables, Gravy": not "Gravy"
+        cut = cuts[-2].start()
+    return head + body[:cut].rstrip(" ,;:-")
+
+
+def _caps_runs(text: str) -> list[str]:
+    """Words written in capitals ('THE EYE OPENER', 'INTERVIEWS'), leaving out acronyms (USA, BBQ, a lone 'TV')."""
+    out = []
+    for m in _CAPS_RUN.finditer(text or ""):
+        run = m.group(0)
+        ws = [w for w in run.split() if w not in _ACRONYMS]
+        if ws and (len(ws) > 1 and sum(len(w) for w in ws) >= 5 or any(len(w) >= 4 for w in ws)):
+            out.append(run)
+    return out
+
+
+def _decap(text: str) -> str:
+    for run in _caps_runs(text):
+        fixed = " ".join(w if w in _ACRONYMS else w[0] + w[1:].lower() for w in run.split())
+        text = text.replace(run, fixed)
+    return text
+
+
+def _kw_key(k: str) -> str:
+    """'Hershey's' / 'hersheys', 'hungry man' / 'hungryman', 'cookie' / 'cookies' -> the same key."""
+    def one(w):
+        return w[:-1] if len(w) > 3 and w.endswith("s") and not w.endswith(("ss", "us", "is")) else w
+    return "".join(one(w) for w in re.findall(r"[a-z0-9]+", k.casefold().replace("'", "").replace("’", "")))
+
+
+def keyword_variants(keywords) -> list[tuple[str, str]]:
+    """Keywords that are the same word written another way ('hungry man' / 'hungryman', 'cookie' / 'cookies'):
+    (the one to keep, the repeat). Dreamstime counts these as keyword spam."""
+    seen, out = {}, []
+    for k in keywords or []:
+        key = _kw_key(k)
+        if not key:
+            continue
+        if key in seen:
+            out.append((seen[key], k))
+        else:
+            seen[key] = k
+    return out
+
+
+def dreamstime_checks(title: str, description: str, keywords) -> list[dict]:
+    """[{'what', 'detail', 'fixable'}] for Dreamstime's stricter text review."""
+    out = []
+    title, description = (title or "").strip(), (description or "").strip()
+
+    def add(what, detail, fixable=False):
+        out.append({"what": what, "detail": detail, "fixable": fixable})
+    words = re.findall(r"[\w'-]+", _dateline_split(title)[1])
+    if title and (len(title) < 5 or len(words) < 2):
+        add("Title too short", "Dreamstime refuses one-word titles: describe the subject in a short phrase.")
+    if len(title) > DT_TITLE_LONG:
+        short = shorten_title(title)
+        add("Long title", f"{len(title)} characters; Dreamstime prefers one clear phrase (at most about "
+            f"{DT_TITLE_LONG})." + (f" Fix cuts it to: \"{short}\"" if short != title else
+                                    " Shorten it by hand or with Reword."), fixable=short != title)
+    caps = _caps_runs(title + " . " + description)
+    if caps:
+        add("Capital letters", "Words in capitals (" + ", ".join(dict.fromkeys(caps[:5])) + "): Dreamstime refuses "
+            "text written in caps. Fix writes them in normal case.", fixable=True)
+    if description and title:
+        a, b = _title_tokens(_dateline_split(title)[1]), _title_tokens(_dateline_split(description)[1])
+        if a and b and len(a & b) >= 0.85 * len(a | b):
+            add("Description repeats title", "Dreamstime refuses a description that only repeats the title: Reword "
+                "it to say what the title leaves out.")
+    if description:
+        ended = _drop_unfinished_tail(description)
+        if len(ended) < len(description.rstrip(" .")):
+            add("Description cut off", "It stops half-way (\"…" + description[-40:].lstrip() + "\"). Fix ends it at "
+                "the last whole phrase.", fixable=True)
+    twins = keyword_variants(keywords)
+    if twins:
+        add("Keyword repeats", "The same keyword twice: " + "; ".join(f"{a} / {b}" for a, b in twins[:4])
+            + (" …" if len(twins) > 4 else "") + ". Dreamstime counts these as spam; Fix keeps the first of each.",
+            fixable=True)
+    return out
+
+
+def dreamstime_fix(title: str, description: str, keywords) -> dict:
+    """Make the fixes dreamstime_checks offers. {'title', 'description', 'keywords', 'fixes': [what was done]}."""
+    fixes = []
+    t, d, kws = title or "", description or "", list(keywords or [])
+    new = shorten_title(t)
+    if new != t:
+        t = new
+        fixes.append("title shortened")
+    new_t, new_d = _decap(t), _decap(d)
+    if (new_t, new_d) != (t, d):
+        t, d = new_t, new_d
+        fixes.append("capitals")
+    if d:
+        ended = _drop_unfinished_tail(d)
+        if len(ended) < len(d.rstrip(" .")):
+            d = ended + "."
+            fixes.append("description ending")
+    if keyword_variants(kws):
+        seen, kept = set(), []
+        for k in kws:
+            key = _kw_key(k) or k
+            if key not in seen:
+                seen.add(key)
+                kept.append(k)
+        kws = kept
+        fixes.append("keyword repeats")
+    return {"title": t, "description": d, "keywords": kws, "fixes": fixes}
 
 
 SUGGESTIONS_PER_PHOTO = 5   # earlier AI suggestions remembered per photo
@@ -3125,9 +3267,44 @@ def clean_description(text: str, symbols: str = "keep", never_use=None, max_len:
         comma = cut.rfind(", ")
         t = (cut[:end + 1] if end >= 40 else cut[:comma] if comma >= 40      # a sentence, else a whole clause
              else cut[:cut.rfind(" ")].rstrip(",;:- "))
+        if end < 40:                                   # not at a sentence: no list or phrase left half-way
+            t = _drop_unfinished_tail(t)
+            m = re.search(r"(?:,\s*|\s+)(?:including|such as|like|featuring)\s+[^,.]*$", t, re.I)
+            if m and m.start() >= 0.5 * len(t):        # "…options, including prints" (the rest of the list cut)
+                t = t[:m.start()].rstrip(" ,;:-")
     if t and t[-1] not in ".!?":
         t += "."
     return t[:1].upper() + t[1:]
+
+
+# A description cut short to fit the length limit can stop half-way: on a word like "and", or in a list
+# ("…gift options, including prints, calendars"). These say where the unfinished part starts.
+_DANGLING = {"and", "or", "with", "of", "the", "a", "an", "to", "for", "in", "on", "at", "by", "from", "stocked",
+             "including", "featuring", "alongside", "such", "as", "like", "showcasing", "displaying", "its", "their"}
+_PHRASE_START = re.compile(r"(?:,\s*|\s+)(?:including|such as|like|featuring|alongside|surrounded by|stocked with|"
+                           r"stocked|showcasing|displaying|with)\b", re.I)
+_LIST_START = re.compile(r"(?:,\s*|\s+)(?:including|such as|like|featuring|showcasing|displaying)(?=\s+[^,.]+,)", re.I)
+
+
+def _drop_unfinished_tail(text: str) -> str:
+    """'…gift options, including prints, calendars' -> '…gift options'; '…shelf alongside Coast and' -> '…shelf'.
+    Returns the text without a final full stop; unchanged (bar that) when it doesn't stop half-way. Keeps at least
+    half of the text."""
+    t = text.rstrip(" .,;:-")
+    words = t.split()
+    if words and words[-1].lower().strip(",;:") in _DANGLING:
+        starts = [m.start() for m in _PHRASE_START.finditer(t) if m.start() >= 0.5 * len(t)]
+        if starts:
+            return t[:starts[-1]].rstrip(" ,;:-")
+        while words and words[-1].lower().strip(",;:") in _DANGLING:
+            words.pop()
+        return " ".join(words).rstrip(" ,;:-")
+    last_sentence = max(t.rfind(". "), t.rfind("! "), t.rfind("? ")) + 1
+    lists = [m.start() for m in _LIST_START.finditer(t, last_sentence) if m.start() >= 0.5 * len(t)
+             and not re.search(r"\b(?:and|or|etc)\b", t[m.end():])]      # a finished list ends "…, and posters"
+    if lists:
+        return t[:lists[-1]].rstrip(" ,;:-")
+    return t
 
 
 MORE_KEYWORDS_SCHEMA = {

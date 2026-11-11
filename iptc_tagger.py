@@ -2209,9 +2209,11 @@ class CheckDialog(QDialog):
         btns = QHBoxLayout()
         fixable = [ph for ph, issues in results.items() if any(i["fixable"] and i["what"] != "Not saved"
                                                                   for i in issues)]
-        self.b_fix = QPushButton(f"Fix Spelling && Keyword Order ({len(fixable)})")
-        self.b_fix.setToolTip("Spell the brands your way and put the title's subject and brand in the first ten "
-                              "keywords,\nin these photos (not saved yet: save them after)")
+        self.b_fix = QPushButton(f"Fix These ({len(fixable)})")
+        self.b_fix.setToolTip("Make the fixes listed in these photos: brands spelled your way, the title's subject "
+                              "and brand in the first ten keywords,\nand for Dreamstime: long titles cut back to "
+                              "their main phrase, capitals, descriptions that stop half-way,\nkeyword repeats. "
+                              "Not saved yet: save them after (the earlier text is kept under Earlier suggestions)")
         self.b_fix.setVisible(bool(fixable))
         self.b_fix.clicked.connect(lambda *_: self._done("fix"))
         unsaved = [ph for ph in results if ph.changed]
@@ -5145,11 +5147,15 @@ class MainWindow(QMainWindow):
                 if any(i["fixable"] and i["what"] != "Not saved" for i in issues) and not ph.busy:
                     self._remember_suggestion(ph, "Before fixes")
                     self.polish(ph)
+                    if "dreamstime" in sites:
+                        r = core.dreamstime_fix(ph.title, ph.description, ph.keywords)
+                        ph.title, ph.description, ph.keywords = core.clean_title(r["title"]), r["description"], \
+                            r["keywords"]
                     if ph.status == "saved" and ph.changed:
                         ph.status = "ready"
                     self._show(ph)
                     fixed += 1
-            self.toast(f"Fixed spelling and keyword order in {fixed} photo{'s' if fixed != 1 else ''}. "
+            self.toast(f"Fixed {fixed} photo{'s' if fixed != 1 else ''}. "
                        "Save them, then upload.", "ok", 6)
         elif dlg.choice == "save":
             self.save_photos([ph for ph in results if ph.changed])

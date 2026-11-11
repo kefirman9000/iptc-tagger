@@ -1,5 +1,17 @@
 # What's new
 
+## 2026.11.11.4
+
+- **Stricter checks for Dreamstime, with fixes:** when you sell on Dreamstime, **Check Before Upload** (and opening the Upload window) now also checks what Dreamstime refuses more readily than Shutterstock:
+  - **Long titles** (over about 150 characters) read as keyword stuffing. **Fix** cuts the title back to its main phrase at a comma or before "for…" / "with…", keeping the editorial place and date in front.
+  - **Words in capitals** ("THE EYE OPENER"): Fix writes them in normal case (acronyms such as USA and BBQ stay).
+  - **Descriptions that stop half-way** ("…gift options, including prints, calendars."): Fix ends them at the last whole phrase.
+  - **The same keyword twice** in another spelling ("hungry man" / "hungryman", "hershey's" / "hersheys"): Fix keeps the first.
+  - Must fix: a one-word title, a description that only repeats the title, fewer than 7 or more than 50 keywords, a title over 250 characters.
+  
+  The button is now **Fix These**. Fixes aren't saved until you save, and the text before them is kept under Earlier suggestions.
+- **Descriptions are no longer cut in the middle of a list** when they're shortened to fit 200 characters.
+
 ## 2026.11.11.3
 
 - **AI markers are spotted:** when photos come in, the app looks for anything in the metadata that tells a stock site AI made or edited the photo: Lightroom AI masks (Select Subject, Sky or People), Lightroom AI Denoise / Super Resolution, an AI *Digital Source Type*, Content Credentials (C2PA), and software such as Firefly or Generative Fill. A photo with one says so in its status, **Show → AI markers in the file** lists them, **Check Before Upload** warns, and **Start upload** names them before sending.
