@@ -1,5 +1,9 @@
 # What's new
 
+## 2026.11.11.5
+
+- **Dreamstime's fixes go into its CSV only:** the Dreamstime CSV now gets the tidied text (long titles cut back to their main phrase, capitals in normal case, descriptions that stop half-way ended cleanly, keyword repeats left out), while your photos keep the full text that Shutterstock and the other sites read. Check Before Upload no longer lists those for Dreamstime, since the CSV takes care of them; the must-fix ones (one-word title, a description that only repeats the title, keyword count) are still listed. To fix the photos' own text instead, untick **Settings → Stock sites → Tidy the text for Dreamstime in its CSV only**.
+
 ## 2026.11.11.4
 
 - **Stricter checks for Dreamstime, with fixes:** when you sell on Dreamstime, **Check Before Upload** (and opening the Upload window) now also checks what Dreamstime refuses more readily than Shutterstock:

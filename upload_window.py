@@ -469,7 +469,8 @@ class UploadWindow(QDialog):
             return
         folder = os.path.dirname(self.photos[0].path)
         try:
-            path = site_files.write_site_csvs(folder, self.win._csv_rows(self.photos), ["dreamstime"])[0]
+            path = site_files.write_site_csvs(folder, self.win._csv_rows(self.photos), ["dreamstime"],
+                                              dt_tidy=bool(self.win.settings.get("dreamstime_tidy_csv", True)))[0]
         except OSError as e:
             QMessageBox.warning(self, "Send Dreamstime CSV", f"The CSV couldn't be made: {e}")
             return

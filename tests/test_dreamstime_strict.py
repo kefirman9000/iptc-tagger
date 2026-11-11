@@ -63,3 +63,33 @@ def test_good_text_passes_and_only_dreamstime_gets_these():
                for i in precheck.check_photo(bad, ["dreamstime"]))
     assert not any(i["what"] == "Title too short" for i in precheck.check_photo(bad, ["shutterstock"]))
     assert core.site_problems("Soap on a shelf", ["soap"] * 5, ["dreamstime"])          # under 7 keywords
+
+
+def test_only_the_dreamstime_csv_gets_the_fixes(tmp_path):
+    import csv
+    import site_files
+    title = PLACE + ("Werther's Original Candy Display on Grocery Store Shelf, Halloween Seasonal Promotion for Sweet "
+                     "Treat Consumers and FAMILIES")
+    rows = [{"file": "a.jpg", "folder": str(tmp_path), "title": title,
+             "description": PLACE + "A skeleton on a shelf with Werther's Original candy, including caramels, toffees.",
+             "keywords": ["werthers", "werther's", "candy", "halloween", "skeleton", "shelf", "store", "caramel"],
+             "editorial": True}]
+    dt, ss = site_files.write_site_csvs(str(tmp_path), rows, ["dreamstime", "shutterstock"])
+    d = next(csv.DictReader(open(dt, encoding="utf-8")))
+    assert d["Image Name"] == PLACE + "Werther's Original Candy Display on Grocery Store Shelf, Halloween Seasonal Promotion"
+    assert d["Description"].endswith("Werther's Original candy.")
+    assert d["keywords"].split(",")[:2] == ["werthers", "candy"]
+    s = next(csv.DictReader(open(ss, encoding="utf-8")))
+    assert title in s.values()                                    # Shutterstock keeps the full title
+    assert "werther's" in next(v for v in s.values() if "candy" in v)
+    full = site_files.write_site_csvs(str(tmp_path), rows, ["dreamstime"], dt_tidy=False)[0]
+    assert next(csv.DictReader(open(full, encoding="utf-8")))["Image Name"] == title
+
+
+def test_check_before_upload_leaves_csv_fixes_out():
+    p = {"file": "a.jpg", "title": PLACE + "Coast THE EYE OPENER Soap on a Shelf", "description": "Soap on a shelf.",
+         "keywords": ["soap", "soaps", "shelf", "bar", "store", "hygiene", "bath", "clean"], "editorial": True,
+         "unsaved": False, "width": 6000, "height": 4000, "bytes": 5_000_000, "raw": False, "site_problems": []}
+    assert not any(i["what"] in ("Capital letters", "Keyword repeats") for i in precheck.check_photo(p, ["dreamstime"]))
+    shown = {i["what"] for i in precheck.check_photo(dict(p, dt_tidy=False), ["dreamstime"])}
+    assert {"Capital letters", "Keyword repeats"} <= shown

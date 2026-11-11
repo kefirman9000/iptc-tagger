@@ -412,10 +412,13 @@ def _write(path: str, header, rows):
         w.writerows(rows)
 
 
-def write_site_csvs(folder: str, rows: list[dict], sites, day: str = "", ss_text: str = "title") -> list[str]:
+def write_site_csvs(folder: str, rows: list[dict], sites, day: str = "", ss_text: str = "title",
+                    dt_tidy: bool = True) -> list[str]:
     """Write one CSV per site into folder. rows: dicts with file, folder, title, description, keywords, editorial,
     and optionally categories (the AI's Shutterstock choice), adobe_category, city, region, plus the 'full' extras.
-    Every photo gets each site's categories. Returns the files written."""
+    Every photo gets each site's categories. Returns the files written.
+    dt_tidy: the Dreamstime CSV gets Dreamstime's fixes (shorter title, no capitals, no half-finished description,
+    no keyword repeats, see core.dreamstime_fix); the photos and the other sites keep the full text."""
     os.makedirs(folder, exist_ok=True)
     picked = []
     for r in rows:
@@ -431,11 +434,14 @@ def write_site_csvs(folder: str, rows: list[dict], sites, day: str = "", ss_text
         if site in ("shutterstock", "adobe", "full"):
             core.export_csv(path, picked, site, ss_text=ss_text)
         elif site == "dreamstime":
+            dt_rows = [dict(r, **{k: v for k, v in core.dreamstime_fix(r["title"], r.get("description", ""),
+                                                                       r["keywords"]).items() if k != "fixes"})
+                       if dt_tidy else r for r in picked]
             _write(path, ["Filename", "Image Name", "Description", "Category 1", "Category 2", "Category 3",
                           "keywords", "Free", "W-EL", "P-EL", "SR-EL", "SR-Price", "Editorial", "MR doc Ids",
                           "Pr Docs"],
                    [[r["file"], plain(r["title"]), desc(r), *(list(r["dt"]) + [0, 0, 0])[:3], kw(r),
-                     0, 0, 0, 0, 0, 1 if r.get("editorial") else 0, "", ""] for r in picked])
+                     0, 0, 0, 0, 0, 1 if r.get("editorial") else 0, "", ""] for r in dt_rows])
         elif site == "depositphotos":
             _write(path, ["Filename", "Description", "Keywords", "Editorial", "Nudity", "Releases"],
                    [[r["file"], desc(r), kw(r), "yes" if r.get("editorial") else "no", "no", ""] for r in picked])

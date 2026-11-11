@@ -64,6 +64,8 @@ def check_photo(p: dict, sites) -> list[dict]:
                 add(SEVERE, "File too big", f"The file is {size / MB:.0f} MB; at most {max_mb} MB.", [site])
     if "dreamstime" in sites and ((p.get("title") or "").strip() or p.get("keywords")):
         for i in core.dreamstime_checks(p.get("title", ""), p.get("description", ""), p.get("keywords") or []):
+            if i["fixable"] and p.get("dt_tidy", True):
+                continue                          # done in the Dreamstime CSV; the photo keeps its full text
             add(SEVERE if i["what"] in ("Title too short", "Description repeats title") else WARN,
                 i["what"], i["detail"], ["dreamstime"], fixable=i["fixable"])
     if p.get("ai_markers"):

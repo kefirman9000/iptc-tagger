@@ -1021,6 +1021,14 @@ class SettingsDialog(QDialog):
                                 "Dreamstime has taken the photos in (checked every 2 minutes, at most an hour).\n"
                                 "Keep IPTC Tagger open until it's sent.")
         f_sites.addRow("", self.dt_auto)
+        self.dt_tidy = QCheckBox("Tidy the text for Dreamstime in its CSV only (the photos keep the full text)")
+        self.dt_tidy.setChecked(bool(settings.get("dreamstime_tidy_csv", True)))
+        self.dt_tidy.setToolTip("Dreamstime is stricter than Shutterstock. Ticked, the Dreamstime CSV gets long titles cut "
+                                "back to their main phrase,\nwords in capitals in normal case, descriptions that stop "
+                                "half-way ended cleanly and keyword repeats left out,\nwhile the photos (what "
+                                "Shutterstock and the others read) keep the full text.\nUnticked, Check Before Upload "
+                                "lists these and Fix These changes the photos' own text.")
+        f_sites.addRow("", self.dt_tidy)
         sync = lambda *_: self.sites_grid.setEnabled(not (self.sites_from_su.isChecked() and bool(from_su)))
         self.sites_from_su.toggled.connect(sync)
         sync()
@@ -1258,7 +1266,7 @@ class SettingsDialog(QDialog):
                  stock_sites=[k for k, cb in self.site_boxes.items() if cb.isChecked()],
                  stock_sites_from_stockup=self.sites_from_su.isChecked(),
                  shutterstock_text=self.ss_text.currentData() or "title",
-                 dreamstime_csv_auto=self.dt_auto.isChecked(),
+                 dreamstime_csv_auto=self.dt_auto.isChecked(), dreamstime_tidy_csv=self.dt_tidy.isChecked(),
                  keyword_order=self.kw_order.isChecked(), brand_alternates=self.brand_alts.isChecked(),
                  # unchanged built-in list: stays None, so later versions' additions still arrive
                  brand_spellings=(None if self.brands.toPlainText().strip() == core.DEFAULT_BRAND_SPELLINGS.strip()
@@ -4126,7 +4134,8 @@ class MainWindow(QMainWindow):
         rows = self._csv_rows(photos)
         try:
             files = site_files.write_site_csvs(folder, rows, sites,
-                                               ss_text=self.settings.get("shutterstock_text", "title"))
+                                               ss_text=self.settings.get("shutterstock_text", "title"),
+                                               dt_tidy=bool(self.settings.get("dreamstime_tidy_csv", True)))
         except OSError as e:
             QMessageBox.warning(self, "Export CSV", f"The CSVs couldn't be saved:\n{e}")
             return
@@ -4193,7 +4202,8 @@ class MainWindow(QMainWindow):
         if not photos or not self.settings.get("dreamstime_csv_auto", True) or up.login_for("dreamstime") is None:
             return False
         try:
-            path = site_files.write_site_csvs(os.path.dirname(photos[0].path), self._csv_rows(photos), ["dreamstime"])[0]
+            path = site_files.write_site_csvs(os.path.dirname(photos[0].path), self._csv_rows(photos), ["dreamstime"],
+                                              dt_tidy=bool(self.settings.get("dreamstime_tidy_csv", True)))[0]
         except OSError as e:
             core.debug(f"Dreamstime CSV: couldn't make it: {e}", always=True)
             return False
@@ -5114,7 +5124,8 @@ class MainWindow(QMainWindow):
                     "brand_fixes": spelled, "look_alikes": twins.get(ph.path, []),
                     # Lightroom's own markers go at the next save (Settings → Saving), so they're not listed
                     "ai_markers": [m for m in ph.ai_markers if not (ph.develop_to_strip and "Lightroom" in m)],
-                    "ss_text": self.settings.get("shutterstock_text", "title")}
+                    "ss_text": self.settings.get("shutterstock_text", "title"),
+                    "dt_tidy": bool(self.settings.get("dreamstime_tidy_csv", True))}
             out[ph] = precheck.check_photo(info, sites)
             self._check_infos.append(info)
         return out
@@ -5147,7 +5158,7 @@ class MainWindow(QMainWindow):
                 if any(i["fixable"] and i["what"] != "Not saved" for i in issues) and not ph.busy:
                     self._remember_suggestion(ph, "Before fixes")
                     self.polish(ph)
-                    if "dreamstime" in sites:
+                    if "dreamstime" in sites and not self.settings.get("dreamstime_tidy_csv", True):
                         r = core.dreamstime_fix(ph.title, ph.description, ph.keywords)
                         ph.title, ph.description, ph.keywords = core.clean_title(r["title"]), r["description"], \
                             r["keywords"]
