@@ -40,7 +40,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.11.11.1"
+APP_VERSION = "2026.11.11.2"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 # camera RAW files: titles and keywords go into the Lightroom sidecar next to them (photo.xmp), never the RAW.
 # DNG is left out: Lightroom ignores sidecars for DNG and keeps its metadata inside the file itself.
@@ -439,6 +439,7 @@ DEFAULT_SETTINGS = {
     "debug_log": False,       # write a detailed log of every AI request to debug_log.txt
     "check_updates": True,    # look for a newer release on GitHub when the app starts
     "avoid_on": False,        # show the per-photo Avoid column and use it
+    "dreamstime_csv_auto": True,   # after uploading to Dreamstime, send its CSV by itself once the photos are in
     "shutterstock_text": "title",  # Shutterstock's one text column gets: title / description
     "stockup_path": "",       # StockUp.app / StockUp.exe / stockup.py ("" = look in the usual places)
     "stockup_after_save": False,  # after Save Metadata, open the saved photos in StockUp

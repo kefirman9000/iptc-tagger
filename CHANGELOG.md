@@ -1,5 +1,10 @@
 # What's new
 
+## 2026.11.11.2
+
+- **The Dreamstime CSV is sent by itself:** after an upload to Dreamstime, the app makes the Dreamstime CSV straight away and sends it to your Dreamstime FTP folder as soon as Dreamstime has taken the photos in. It knows because Dreamstime moves each photo out of the FTP folder once it's in the Unfinished section, and the app looks every 2 minutes. If they're still waiting after an hour, it's sent anyway. It carries on with the Upload window closed; keep IPTC Tagger open until it's sent (closing asks first). **Send Dreamstime CSV Now** still sends it straight away. Turn it off in **Settings → Stock sites**.
+- **Fix:** sending the Dreamstime CSV now follows the *Only encrypted connections* choice of the Upload window.
+
 ## 2026.11.11.1
 
 - **Fix: the Dreamstime CSV gets to Dreamstime:** Dreamstime only reads its CSV from your Dreamstime **FTP folder**, never from its website, and only fills in photos that are already in its *Unfinished* section. The app made the CSV but had no way to put it there and didn't say so. Now:

@@ -518,6 +518,65 @@ def send_csv(site_name: str, local: str, encrypted_only: bool = False, connect_f
             f"{' over an encrypted connection' if enc else ''}.")
 
 
+class CsvAfterUpload(threading.Thread):
+    """Send a site's CSV by itself once the site has taken the photos in. Dreamstime only fills in photos that are
+    already in its Unfinished section, and it moves each photo out of the FTP folder once it has taken it in. So:
+    look at the FTP folder now and then, and when none of the uploaded photos are left there, send the CSV.
+    If they're still there after `longest` seconds, it's sent anyway. state is read by the window."""
+
+    def __init__(self, site_name, csv_path, names, every=120, first_wait=60, longest=3600,
+                 encrypted_only=False, connect_fn=None):
+        super().__init__(daemon=True, name=f"csv-after-upload-{site_name}")
+        self.site_name, self.csv_path, self.names = site_name, csv_path, set(names)
+        self.every, self.first_wait, self.longest = every, first_wait, longest
+        self.encrypted_only, self.connect_fn = encrypted_only, connect_fn
+        self._stop = threading.Event()
+        self.state = {"stage": "waiting", "left": len(self.names), "message": "", "checks": 0}
+
+    def stop(self):
+        self._stop.set()
+
+    def _still_there(self) -> int | None:
+        site = login_for(self.site_name)
+        if site is None:
+            return None
+        c = (self.connect_fn or connect)(site, timeout=60, encrypted_only=self.encrypted_only)
+        try:
+            listing = set(c.listdir())
+        finally:
+            c.close()
+        return len(self.names & listing)
+
+    def run(self):
+        start = time.monotonic()
+        if self._stop.wait(self.first_wait):
+            self.state.update(stage="stopped")
+            return
+        while True:
+            try:
+                left = self._still_there()
+            except Exception as e:                   # a dropped connection: just look again next time
+                left = self.state["left"]
+                self.state["message"] = f"couldn't look at the FTP folder ({e}); trying again"
+            self.state["checks"] += 1
+            if left is None:
+                self.state.update(stage="failed", message=f"No {SITES[self.site_name]['label']} login.")
+                return
+            self.state["left"] = left
+            if left == 0 or time.monotonic() - start >= self.longest:
+                break
+            if self._stop.wait(self.every):
+                self.state.update(stage="stopped")
+                return
+        try:
+            msg = send_csv(self.site_name, self.csv_path, self.encrypted_only, self.connect_fn)
+            self.state.update(stage="sent", message=msg + ("" if left == 0 else
+                              f" ({left} photo{'s were' if left != 1 else ' was'} still waiting in the FTP folder "
+                              "after an hour, so it was sent anyway.)"))
+        except Exception as e:
+            self.state.update(stage="failed", message=f"The {SITES[self.site_name]['label']} CSV couldn't be sent: {e}")
+
+
 def test_login(site: dict, encrypted_only: bool = False) -> str:
     """'' when the login works, otherwise why not."""
     try:

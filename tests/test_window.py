@@ -467,3 +467,35 @@ def test_one_step_for_a_colour_group(window, make_photos, monkeypatch):
     assert started == [([a, b], True)]
     win.show_label("green")
     assert win.btn_group.isVisibleTo(win) and "Green group" in win.btn_group.text()
+
+
+def test_dreamstime_csv_is_sent_by_itself_after_uploading(window, make_photos, monkeypatch):
+    import uploader as up
+    app, win = window
+    add(win, make_photos(2))
+    for ph in win.photos:
+        ph.title, ph.keywords = "Pepperidge Farm Cookies on a Grocery Store Shelf", ["cookies", "grocery"]
+    started = []
+
+    class Watcher:
+        def __init__(self, site, path, names, **kw):
+            started.append((site, path, sorted(names)))
+            self.state = {"stage": "waiting", "left": 2, "message": "", "checks": 0}
+
+        def start(self):
+            pass
+
+        def is_alive(self):
+            return self.state["stage"] == "waiting"
+
+    monkeypatch.setattr(up, "login_for", lambda site: {"name": site})
+    monkeypatch.setattr(up, "CsvAfterUpload", Watcher)
+    assert win.auto_send_dreamstime_csv(win.photos)
+    site, path, names = started[0]
+    assert site == "dreamstime" and os.path.exists(path) and names == sorted(os.path.basename(p.path) for p in win.photos)
+    w = win.csv_watchers[0]
+    w.state.update(stage="sent", message="Sent dreamstime.csv to Dreamstime.")
+    win._poll_csv_watchers()
+    assert "Sent dreamstime.csv" in win.status.text() and not win.csv_watchers
+    win.settings["dreamstime_csv_auto"] = False
+    assert not win.auto_send_dreamstime_csv(win.photos)                     # off in Settings: nothing waits

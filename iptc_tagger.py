@@ -994,6 +994,13 @@ class SettingsDialog(QDialog):
                                 "what the site shows as the photo's title (up to 200 characters). This is what the\n"
                                 "Shutterstock CSV puts there, and what the Shutterstock checks look at.")
         f_sites.addRow("Shutterstock gets", self.ss_text)
+        self.dt_auto = QCheckBox("After uploading to Dreamstime, send its CSV by itself")
+        self.dt_auto.setChecked(bool(settings.get("dreamstime_csv_auto", True)))
+        self.dt_auto.setToolTip("Dreamstime only reads its CSV from your FTP folder, for photos already in its Unfinished\n"
+                                "section. With this on, the CSV is made when the upload finishes and sent as soon as\n"
+                                "Dreamstime has taken the photos in (checked every 2 minutes, at most an hour).\n"
+                                "Keep IPTC Tagger open until it's sent.")
+        f_sites.addRow("", self.dt_auto)
         sync = lambda *_: self.sites_grid.setEnabled(not (self.sites_from_su.isChecked() and bool(from_su)))
         self.sites_from_su.toggled.connect(sync)
         sync()
@@ -1231,6 +1238,7 @@ class SettingsDialog(QDialog):
                  stock_sites=[k for k, cb in self.site_boxes.items() if cb.isChecked()],
                  stock_sites_from_stockup=self.sites_from_su.isChecked(),
                  shutterstock_text=self.ss_text.currentData() or "title",
+                 dreamstime_csv_auto=self.dt_auto.isChecked(),
                  keyword_order=self.kw_order.isChecked(), brand_alternates=self.brand_alts.isChecked(),
                  # unchanged built-in list: stays None, so later versions' additions still arrive
                  brand_spellings=(None if self.brands.toPlainText().strip() == core.DEFAULT_BRAND_SPELLINGS.strip()
@@ -4142,7 +4150,7 @@ class MainWindow(QMainWindow):
         self.status.setText(f"Sending {os.path.basename(path)} to Dreamstime…")
         QApplication.processEvents()
         try:
-            msg = up.send_csv("dreamstime", path, bool(self.settings.get("encrypted_only", False)))
+            msg = up.send_csv("dreamstime", path, bool(self.settings.get("upload_encrypted_only", False)))
         except Exception as e:
             core.debug(f"Dreamstime CSV: couldn't send {path}: {e}", always=True)
             QMessageBox.warning(self, "Send to Dreamstime", f"The CSV couldn't be sent: {e}")
@@ -4153,6 +4161,49 @@ class MainWindow(QMainWindow):
         if hasattr(self, "toast"):
             self.toast(msg, "ok", 6)
         return True
+
+    def auto_send_dreamstime_csv(self, photos) -> bool:
+        """After an upload to Dreamstime: make its CSV now, and send it by itself once Dreamstime has taken the photos
+        in (they leave the FTP folder then). Keeps going in the background, even with the Upload window closed."""
+        import site_files
+        import uploader as up
+        if not photos or not self.settings.get("dreamstime_csv_auto", True) or up.login_for("dreamstime") is None:
+            return False
+        try:
+            path = site_files.write_site_csvs(os.path.dirname(photos[0].path), self._csv_rows(photos), ["dreamstime"])[0]
+        except OSError as e:
+            core.debug(f"Dreamstime CSV: couldn't make it: {e}", always=True)
+            return False
+        w = up.CsvAfterUpload("dreamstime", path, [up.remote_name("dreamstime", p.path) for p in photos],
+                              encrypted_only=bool(self.settings.get("upload_encrypted_only", False)))
+        w.start()
+        self.csv_watchers = [x for x in getattr(self, "csv_watchers", []) if x.is_alive()] + [w]
+        if not getattr(self, "csv_timer", None):
+            self.csv_timer = QTimer(self)
+            self.csv_timer.setInterval(5000)
+            self.csv_timer.timeout.connect(self._poll_csv_watchers)
+        self.csv_timer.start()
+        core.debug(f"Dreamstime CSV: {os.path.basename(path)} will be sent once the {len(photos)} photo(s) are in")
+        return True
+
+    def _poll_csv_watchers(self):
+        for w in list(getattr(self, "csv_watchers", [])):
+            st = w.state
+            if st["stage"] == "waiting":
+                if st["checks"] and st["left"]:
+                    self.status.setText(f"Dreamstime CSV: waiting for Dreamstime to take in {st['left']} more "
+                                        "photo(s); it's sent by itself then (checked every 2 minutes).")
+                continue
+            self.csv_watchers.remove(w)
+            core.debug(f"Dreamstime CSV: {st['stage']}: {st['message']}", always=st["stage"] == "failed")
+            if st["stage"] == "sent":
+                self.status.setText(st["message"] + " Dreamstime fills in the photos in its Unfinished section.")
+                self.toast(st["message"], "ok", 8)
+            elif st["stage"] == "failed":
+                self.status.setText(st["message"] + " Use Export CSV… › Send to Dreamstime to try again.")
+                self.toast(st["message"], "warn", 10)
+        if not getattr(self, "csv_watchers", []):
+            self.csv_timer.stop()
 
     def export_one_csv(self):
         """The older Export CSV: one file, in the format you pick (kept for the tests and the 'All details' file)."""
@@ -7047,6 +7098,16 @@ class MainWindow(QMainWindow):
 
     # ---------- closing
     def closeEvent(self, e):
+        waiting = [w for w in getattr(self, "csv_watchers", []) if w.is_alive()]
+        if waiting and QMessageBox.question(
+                self, "Dreamstime CSV not sent yet",
+                "The Dreamstime CSV is waiting for Dreamstime to take in the photos, and is sent by itself then. "
+                "If you quit now it won't be sent: you can send it later with Export CSV… › Send to Dreamstime.\n\n"
+                "Quit anyway?") != QMessageBox.Yes:
+            e.ignore()
+            return
+        for w in waiting:
+            w.stop()
         busy = any(p.busy for p in self.photos)
         unsaved = sum(1 for p in self.photos if p.changed and not p.busy)
         if busy:

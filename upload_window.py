@@ -433,11 +433,18 @@ class UploadWindow(QDialog):
         sent = [n for n, p in st["sites"].items() if p["done"]]
         if not sent:
             return
-        steps = "".join(f"<li><b>{up.SITES[n]['label']}:</b> {up.SITES[n]['after']}</li>" for n in sent)
+        auto_dt = "dreamstime" in sent and self.win.auto_send_dreamstime_csv(self.photos)
+        after = lambda n: ("The Dreamstime CSV is sent by itself as soon as Dreamstime has taken the photos into its "
+                           "Unfinished section (checked every 2 minutes). Keep IPTC Tagger open until then."
+                           if n == "dreamstime" and auto_dt else up.SITES[n]["after"])
+        steps = "".join(f"<li><b>{up.SITES[n]['label']}:</b> {after(n)}</li>" for n in sent)
         self.next_steps.setText("<b>What's left on the sites</b><ul style='margin-top:2px'>" + steps + "</ul>")
         self.next_steps.show()
         self.btn_ss_csv.setVisible("shutterstock" in sent)
         self.btn_dt_csv.setVisible("dreamstime" in sent)
+        if auto_dt:
+            self.btn_dt_csv.setText("Send Dreamstime CSV Now")
+            self.log.appendPlainText("The Dreamstime CSV will be sent by itself once Dreamstime has taken the photos in.")
         self.btn_receipt.show()
         msg = "Upload finished: " + ", ".join(f"{st['sites'][n]['done']} to {st['sites'][n]['label']}" for n in sent)
         self.win.status.setText(msg + ".")
