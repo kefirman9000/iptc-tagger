@@ -239,10 +239,15 @@ class UploadWindow(QDialog):
         row = QHBoxLayout()
         self.btn_ss_csv = QPushButton("Make Shutterstock CSV")
         self.btn_ss_csv.clicked.connect(lambda *_: self.win.make_shutterstock_csv(self.photos))
+        self.btn_dt_csv = QPushButton("Send Dreamstime CSV")
+        self.btn_dt_csv.setToolTip("Makes the Dreamstime CSV for these photos and puts it in your Dreamstime FTP folder,\n"
+                                   "the only place Dreamstime reads it from. Click it once the photos show up in\n"
+                                   "Dreamstime's Unfinished section: it only fills in photos that are already there.")
+        self.btn_dt_csv.clicked.connect(lambda *_: self._send_dreamstime_csv())
         self.btn_receipt = QPushButton("Open Receipt")
         self.btn_receipt.setToolTip("upload_receipt.csv: every photo sent, where, when, encrypted or not")
         self.btn_receipt.clicked.connect(lambda *_: QDesktopServices.openUrl(QUrl.fromLocalFile(up.receipt_path())))
-        for b in (self.btn_ss_csv, self.btn_receipt):
+        for b in (self.btn_ss_csv, self.btn_dt_csv, self.btn_receipt):
             b.hide()
             row.addWidget(b)
         row.addStretch(1)
@@ -432,6 +437,7 @@ class UploadWindow(QDialog):
         self.next_steps.setText("<b>What's left on the sites</b><ul style='margin-top:2px'>" + steps + "</ul>")
         self.next_steps.show()
         self.btn_ss_csv.setVisible("shutterstock" in sent)
+        self.btn_dt_csv.setVisible("dreamstime" in sent)
         self.btn_receipt.show()
         msg = "Upload finished: " + ", ".join(f"{st['sites'][n]['done']} to {st['sites'][n]['label']}" for n in sent)
         self.win.status.setText(msg + ".")
@@ -439,6 +445,23 @@ class UploadWindow(QDialog):
         if hasattr(self.win, "toast"):
             self.win.toast(msg + (" (some problems: see the Upload window)" if problems else ""),
                            "warn" if problems else "ok", 7)
+
+    def _send_dreamstime_csv(self):
+        import site_files
+        if not os.environ.get("IPTC_TAGGER_OFFLINE") and QMessageBox.question(
+                self, "Send Dreamstime CSV",
+                "Dreamstime only fills in photos that are already in its Unfinished section. Are these photos "
+                "showing there yet? (If not, wait a little and click this again: sending too early does nothing.)"
+        ) != QMessageBox.Yes:
+            return
+        folder = os.path.dirname(self.photos[0].path)
+        try:
+            path = site_files.write_site_csvs(folder, self.win._csv_rows(self.photos), ["dreamstime"])[0]
+        except OSError as e:
+            QMessageBox.warning(self, "Send Dreamstime CSV", f"The CSV couldn't be made: {e}")
+            return
+        if self.win.send_dreamstime_csv(path):
+            self.log.appendPlainText(f"Sent {os.path.basename(path)} to your Dreamstime FTP folder.")
 
     def _logins(self):
         if LoginsDialog(self, self.win.settings).exec():

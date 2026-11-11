@@ -40,7 +40,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.11.10.5"
+APP_VERSION = "2026.11.11.1"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 # camera RAW files: titles and keywords go into the Lightroom sidecar next to them (photo.xmp), never the RAW.
 # DNG is left out: Lightroom ignores sidecars for DNG and keeps its metadata inside the file itself.

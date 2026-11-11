@@ -4110,16 +4110,49 @@ class MainWindow(QMainWindow):
         self.last_csv_warnings = site_files.csv_warnings(rows, sites)
         if not os.environ.get("IPTC_TAGGER_OFFLINE"):
             todo = "".join("\n\n• " + w for w in self.last_csv_warnings)
+            dt_csv = next((f for s, f in zip([s for s in sites if s in site_files.SITE_LABELS], files)
+                           if s == "dreamstime"), "")
+            dt = ("\n\nDreamstime only reads its CSV from your Dreamstime FTP folder, not from the website, and only "
+                  "for photos already in its Unfinished section. Once they show up there, click Send to Dreamstime "
+                  "(or put the file in your FTP folder yourself)." if dt_csv else "")
             box = QMessageBox(QMessageBox.Warning if todo else QMessageBox.Information, "Export CSV",
                               f"Saved in {folder}:\n\n" + "\n".join("  " + os.path.basename(f) for f in files)
                               + "\n\nEach site's categories are picked for every photo. Upload the photos to a "
-                              "site first, then upload its CSV there."
+                              "site first, then upload its CSV there." + dt
                               + ("\n\nStill to do on the sites:" + todo if todo else ""), parent=self)
             show = box.addButton("Show in Folder", QMessageBox.ActionRole)
+            send = box.addButton("Send to Dreamstime", QMessageBox.ActionRole) if dt_csv else None
             box.addButton(QMessageBox.Ok)
             box.exec()
             if box.clickedButton() is show:
                 QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
+            elif send is not None and box.clickedButton() is send:
+                self.send_dreamstime_csv(dt_csv)
+
+    def send_dreamstime_csv(self, path: str) -> bool:
+        """Put a Dreamstime CSV in your Dreamstime FTP folder (the only place Dreamstime reads it from)."""
+        import uploader as up
+        if up.login_for("dreamstime") is None:
+            QMessageBox.information(self, "Send to Dreamstime",
+                                    "There's no Dreamstime login yet. Add it in the Upload window under Logins… "
+                                    "(your Dreamstime user ID, the number on Dreamstime's FTP page, and your "
+                                    "password), then try again. Or put the CSV in your Dreamstime FTP folder with "
+                                    "an FTP app.")
+            return False
+        self.status.setText(f"Sending {os.path.basename(path)} to Dreamstime…")
+        QApplication.processEvents()
+        try:
+            msg = up.send_csv("dreamstime", path, bool(self.settings.get("encrypted_only", False)))
+        except Exception as e:
+            core.debug(f"Dreamstime CSV: couldn't send {path}: {e}", always=True)
+            QMessageBox.warning(self, "Send to Dreamstime", f"The CSV couldn't be sent: {e}")
+            self.status.setText("The Dreamstime CSV wasn't sent.")
+            return False
+        core.debug(f"Dreamstime CSV: {msg}")
+        self.status.setText(msg + " Dreamstime fills in the photos in its Unfinished section shortly.")
+        if hasattr(self, "toast"):
+            self.toast(msg, "ok", 6)
+        return True
 
     def export_one_csv(self):
         """The older Export CSV: one file, in the format you pick (kept for the tests and the 'All details' file)."""

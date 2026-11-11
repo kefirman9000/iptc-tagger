@@ -1,5 +1,12 @@
 # What's new
 
+## 2026.11.11.1
+
+- **Fix: the Dreamstime CSV gets to Dreamstime:** Dreamstime only reads its CSV from your Dreamstime **FTP folder**, never from its website, and only fills in photos that are already in its *Unfinished* section. The app made the CSV but had no way to put it there and didn't say so. Now:
+  - After **Export CSV…** makes a Dreamstime CSV, click **Send to Dreamstime** to put it in your Dreamstime FTP folder, using the Dreamstime login you upload with.
+  - After uploading photos to Dreamstime, the Upload window has a **Send Dreamstime CSV** button that makes the CSV for those photos and sends it.
+  - Send it once the photos show up in Dreamstime's *Unfinished* section (it can take a while): sending too early does nothing. It fills in the titles, descriptions, keywords, three categories and editorial.
+
 ## 2026.11.10.5
 
 - **Brands spelled your way, everywhere:** a new **Settings → Brands** page lists each brand as *right spelling = wrong spellings | other ways buyers search for it*, e.g. `BJ's = BJs, Bjs | bjs` or `Coca-Cola = Coca Cola | coca cola, coke`.

@@ -47,8 +47,10 @@ SITES = {
         "label": "Dreamstime", "short": "DT",
         "ftp": {"protocol": "ftp", "host": "upload.dreamstime.com", "port": 21},
         "login_hint": "Your Dreamstime user ID (the number on Dreamstime's FTP page) and your account password.",
-        "after": "Dreamstime reads the title, description and keywords saved in the photos. Finish them in "
-                 "Dreamstime's Unfinished section (categories, editorial).",
+        "after": "When the photos show up in Dreamstime's Unfinished section (it can take a while), click Send "
+                 "Dreamstime CSV: Dreamstime only reads its CSV from your FTP folder, and only for photos already "
+                 "there. It fills in titles, descriptions, keywords, categories and editorial.",
+        "csv_by_ftp": True,     # its CSV goes in the FTP folder, not through the website
     },
     "alamy": {
         "label": "Alamy", "short": "AL",
@@ -493,6 +495,27 @@ def connect(site: dict, timeout: int = 60, encrypted_only: bool = False):
         raise RuntimeError("no server yet: copy it from the agency's upload page into Logins")
     cls = SFTPConn if site["protocol"] == "sftp" else FTPConn
     return cls(site, timeout=timeout, encrypted_only=encrypted_only)
+
+
+def login_for(site_name: str) -> dict | None:
+    """The saved login for one site (IPTC Tagger's, else StockUp's), or None."""
+    return next((s for s in load_sites() if s["name"] == site_name and s["username"] and s["password"]), None)
+
+
+def send_csv(site_name: str, local: str, encrypted_only: bool = False, connect_fn=None) -> str:
+    """Put a site's CSV in its FTP folder (Dreamstime reads its CSV from there, not from the website), under its
+    own name, which already has the date and time in it so it never replaces an earlier one. Returns a message."""
+    site = login_for(site_name)
+    if site is None:
+        raise RuntimeError(f"No {SITES[site_name]['label']} login yet: add it under Upload › Logins…")
+    c = (connect_fn or connect)(site, timeout=60, encrypted_only=encrypted_only)
+    try:
+        c.put(local, os.path.basename(local), lambda n: None)
+        enc = c.encrypted
+    finally:
+        c.close()
+    return (f"Sent {os.path.basename(local)} to {SITES[site_name]['label']}"
+            f"{' over an encrypted connection' if enc else ''}.")
 
 
 def test_login(site: dict, encrypted_only: bool = False) -> str:
