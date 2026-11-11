@@ -530,11 +530,11 @@ class CsvAfterUpload(threading.Thread):
         self.site_name, self.csv_path, self.names = site_name, csv_path, set(names)
         self.every, self.first_wait, self.longest = every, first_wait, longest
         self.encrypted_only, self.connect_fn = encrypted_only, connect_fn
-        self._stop = threading.Event()
+        self._halt = threading.Event()
         self.state = {"stage": "waiting", "left": len(self.names), "message": "", "checks": 0}
 
     def stop(self):
-        self._stop.set()
+        self._halt.set()
 
     def _still_there(self) -> int | None:
         site = login_for(self.site_name)
@@ -549,7 +549,7 @@ class CsvAfterUpload(threading.Thread):
 
     def run(self):
         start = time.monotonic()
-        if self._stop.wait(self.first_wait):
+        if self._halt.wait(self.first_wait):
             self.state.update(stage="stopped")
             return
         while True:
@@ -565,7 +565,7 @@ class CsvAfterUpload(threading.Thread):
             self.state["left"] = left
             if left == 0 or time.monotonic() - start >= self.longest:
                 break
-            if self._stop.wait(self.every):
+            if self._halt.wait(self.every):
                 self.state.update(stage="stopped")
                 return
         try:
