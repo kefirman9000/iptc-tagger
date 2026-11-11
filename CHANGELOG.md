@@ -1,5 +1,10 @@
 # What's new
 
+## 2026.11.11.3
+
+- **AI markers are spotted:** when photos come in, the app looks for anything in the metadata that tells a stock site AI made or edited the photo: Lightroom AI masks (Select Subject, Sky or People), Lightroom AI Denoise / Super Resolution, an AI *Digital Source Type*, Content Credentials (C2PA), and software such as Firefly or Generative Fill. A photo with one says so in its status, **Show → AI markers in the file** lists them, **Check Before Upload** warns, and **Start upload** names them before sending.
+- **Lightroom's develop settings come out of JPEGs at save:** Lightroom exports its whole edit into the JPEG, AI masks included, and stock sites can read that as "made with AI". Saving a JPEG now takes those develop settings out; the picture, title, keywords and camera details stay, and the picture is still checked unchanged. A JPEG carrying a Lightroom AI mask shows as unsaved until you save it. RAW files and their .xmp sidecars are never touched, so your Lightroom edit is safe. Undo can't put the develop settings back. Turn it off in **Settings → Saving**.
+
 ## 2026.11.11.2
 
 - **The Dreamstime CSV is sent by itself:** after an upload to Dreamstime, the app makes the Dreamstime CSV straight away and sends it to your Dreamstime FTP folder as soon as Dreamstime has taken the photos in. It knows because Dreamstime moves each photo out of the FTP folder once it's in the Unfinished section, and the app looks every 2 minutes. If they're still waiting after an hour, it's sent anyway. It carries on with the Upload window closed; keep IPTC Tagger open until it's sent (closing asks first). **Send Dreamstime CSV Now** still sends it straight away. Turn it off in **Settings → Stock sites**.

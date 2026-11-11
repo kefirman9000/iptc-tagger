@@ -438,6 +438,7 @@ FILTERS = [
     ("site_problems", "Breaks a stock site's rules"),
     ("similar", "Near-identical titles"),
     ("lookalike", "Look-alike photos (the same shot twice)"),
+    ("ai_markers", "AI markers in the file (stock sites may say AI made it)"),
     ("label_any", "With a colour label"),
     ("label_none", "No colour label"),
 ] + [("label_" + k, f"{name} label") for k, name, _c, _key in core.LABELS]
@@ -463,6 +464,7 @@ def photo_matches(ph, key: str, search: str = "", keyword_min: int = 0, sites=()
         "site_problems": bool(core.site_problems(ph.title, ph.keywords, sites, ph.description, ss_text)) if key == "site_problems" else True,
         "similar": ph.path in (similar or ()),
         "lookalike": ph.path in (similar or ()),
+        "ai_markers": bool(ph.ai_markers),
         "label_any": bool(ph.label),
         "label_none": not ph.label,
     }.get(key, ph.label == key[6:] if key.startswith("label_") else True)
@@ -516,14 +518,22 @@ class Photo:
         self.image_hash = None                        # fingerprint of the picture (look-alike photos)
         self.label = ""                               # colour label (red, yellow, green, blue, purple), as in Lightroom
         self.file_label = ""                          # the colour label saved in the file
+        self.ai_markers: list[str] = []               # what in the file's metadata says AI (stock sites read it)
 
     track_description = True     # False while the Description field isn't saved (Settings → Saving)
+    strip_develop = True         # Settings → Saving: take Lightroom's develop settings out of JPEGs
+
+    @property
+    def develop_to_strip(self) -> bool:
+        """A JPEG whose Lightroom develop settings record AI masks or AI Enhance, and Save will take them out."""
+        return Photo.strip_develop and not core.is_raw(self.path) and \
+            any("Lightroom" in m for m in self.ai_markers)
 
     @property
     def changed(self) -> bool:
         desc = Photo.track_description and \
             core.norm_description(self.description) != core.norm_description(self.file_description)
-        return desc or self.label != self.file_label or (core.clean_title(self.title), core.clean_keywords(self.keywords)) != \
+        return desc or self.develop_to_strip or self.label != self.file_label or (core.clean_title(self.title), core.clean_keywords(self.keywords)) != \
                (core.clean_title(self.file_title), core.clean_keywords(self.file_keywords))
 
     def load_file(self, meta: dict):
@@ -531,6 +541,7 @@ class Photo:
         a save without a description of its own writes) counts as no description."""
         self.file_title, self.file_keywords = meta["title"], list(meta["keywords"])
         self.file_label = meta.get("label", "") or ""
+        self.ai_markers = list(meta.get("ai_markers", []))
         d = core.norm_description(meta.get("description", ""))
         self.file_description = "" if core.clean_title(d) == core.clean_title(self.file_title) else d
 
@@ -844,6 +855,15 @@ class SettingsDialog(QDialog):
         self.confirm_save.setToolTip("Untick to save straight away when you click Save metadata. Each file is still\n"
                                      "checked afterwards to confirm the picture itself is unchanged.")
         f_save.addRow("", self.confirm_save)
+        self.strip_dev = QCheckBox("Remove Lightroom's develop settings (and AI masks) from JPEGs when saving")
+        self.strip_dev.setChecked(bool(settings.get("strip_develop", True)))
+        self.strip_dev.setToolTip("Lightroom exports its edit into the JPEG (XMP-crs). Buyers don't need it, but it\n"
+                                  "records AI tools: Select Subject / Sky / People masks and AI Denoise, which stock\n"
+                                  "sites can read as \"made with AI\". Ticked, a save takes it out of JPEGs; the\n"
+                                  "picture, title, keywords and camera details stay. RAW files and their .xmp\n"
+                                  "sidecars are never touched. Undo can't put the develop settings back.\n"
+                                  "In Lightroom, exporting with \"All Metadata, except Camera Raw info\" does the same.")
+        f_save.addRow("", self.strip_dev)
         self.x2i_path = QLineEdit(settings.get("xmp2iptc_args", ""))
         found = core.find_xmp2iptc_args(detected_exiftool or core.find_exiftool(settings.get("exiftool_path", "")))
         self.x2i_path.setPlaceholderText(found or "not found")
@@ -1226,7 +1246,7 @@ class SettingsDialog(QDialog):
                  title_length=self.title_len.currentData() or "detailed",
                  title_caps=self.title_caps.currentData() or "title", direct_titles=self.direct_titles.isChecked(),
                  text_checks=[k for k, cb in self.check_boxes.items() if cb.isChecked()],
-                 confirm_save=self.confirm_save.isChecked(),
+                 confirm_save=self.confirm_save.isChecked(), strip_develop=self.strip_dev.isChecked(),
                  read_label=self.read_label.isChecked(), tidy_keywords=self.tidy_kw.isChecked(),
                  ai_description=self.ai_desc.isChecked(), fix_common=self.fix_common.isChecked(),
                  concept=self.concept.isChecked(),
@@ -2254,6 +2274,7 @@ class MainWindow(QMainWindow):
         self.settings = core.load_settings()
         self._sites = None                 # stock sites whose rules are checked (worked out when first needed)
         Photo.track_description = "description" in core.meta_fields(self.settings)
+        Photo.strip_develop = bool(self.settings.get("strip_develop", True))
         core.set_debug(self.settings.get("debug_log", False))
         self.photos: list[Photo] = []
         self.rows: dict[str, int] = {}
@@ -4556,6 +4577,7 @@ class MainWindow(QMainWindow):
                 QTimer.singleShot(0, lambda: self.clean_special_characters(ask=True))
             self._sites = None
             Photo.track_description = "description" in core.meta_fields(self.settings)
+            Photo.strip_develop = bool(self.settings.get("strip_develop", True))
             for ph in self.photos:
                 self._show(ph)
             core.set_debug(self.settings.get("debug_log", False))
@@ -4697,6 +4719,9 @@ class MainWindow(QMainWindow):
             ph.label = ph.file_label                  # a colour label set in Lightroom comes in with the file
             ph.taken = meta.get("taken", "")
             ph.status, ph.message = "ready", ("Has metadata" if (ph.title or ph.keywords) else "No title or keywords yet")
+            if ph.ai_markers:
+                ph.message += " · ⚠ " + ph.ai_markers[0] + (
+                    " (Save takes it out)" if ph.develop_to_strip else "")
             self._apply_restore(ph)
             self._show(ph)
         self._refresh_buttons()
@@ -5085,6 +5110,8 @@ class MainWindow(QMainWindow):
                                                         self.settings.get("shutterstock_text", "title")),
                     "order_note": self.keyword_order_note(ph) if self.settings.get("keyword_order", True) else "",
                     "brand_fixes": spelled, "look_alikes": twins.get(ph.path, []),
+                    # Lightroom's own markers go at the next save (Settings → Saving), so they're not listed
+                    "ai_markers": [m for m in ph.ai_markers if not (ph.develop_to_strip and "Lightroom" in m)],
                     "ss_text": self.settings.get("shutterstock_text", "title")}
             out[ph] = precheck.check_photo(info, sites)
             self._check_infos.append(info)
@@ -7000,7 +7027,8 @@ class MainWindow(QMainWindow):
         return {"fields": core.meta_fields(s), "xmp2iptc_args": args,
                 "location": self.location_for(ph) if ph is not None else self.editorial_location(),
                 # the colour label is written only when you changed it here (so Lightroom / Bridge see it)
-                "label": ph.label if ph is not None and ph.label != ph.file_label else None}
+                "label": ph.label if ph is not None and ph.label != ph.file_label else None,
+                "strip_develop": bool(s.get("strip_develop", True))}
 
     def _write_one(self, path, title, keywords, opts, description=""):
         try:
@@ -7009,7 +7037,8 @@ class MainWindow(QMainWindow):
             before = None
             core.debug(f"{os.path.basename(path)}: couldn't keep a copy for Undo: {e!r}", always=True)
         core.safe_write(self.exiftool, path, title, keywords, description or None, xmp2iptc_args=opts["xmp2iptc_args"],
-                        fields=opts["fields"], location=opts["location"], label=opts.get("label"))
+                        fields=opts["fields"], location=opts["location"], label=opts.get("label"),
+                        **({"strip_develop": True} if opts.get("strip_develop") else {}))
         if before is not None:
             try:
                 core.remember_for_undo(path, before)

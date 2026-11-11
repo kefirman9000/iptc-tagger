@@ -380,6 +380,12 @@ class UploadWindow(QDialog):
         total = {n: len(self.plans[n]["send"]) + (len(self.plans[n]["sent"]) if self.again.isChecked() else 0)
                  for n in (s["name"] for s in sites) if n in self.plans}
         lines = "\n".join(f"  {up.SITES[n]['label']}: {c} photo{'s' if c != 1 else ''}" for n, c in total.items())
+        marked = [p for p in self.photos if getattr(p, "ai_markers", None)]
+        if marked:
+            names = ", ".join(os.path.basename(p.path) for p in marked[:5]) + (" …" if len(marked) > 5 else "")
+            lines += (f"\n\n⚠ {len(marked)} photo{'s carry' if len(marked) != 1 else ' carries'} AI markers in "
+                      f"the file ({names}): {marked[0].ai_markers[0]}. Stock sites may refuse "
+                      f"{'them' if len(marked) != 1 else 'it'} as AI generated.")
         if not os.environ.get("IPTC_TAGGER_OFFLINE") and QMessageBox.question(
                 self, "Start upload", f"Send these now?\n\n{lines}") != QMessageBox.Yes:
             return

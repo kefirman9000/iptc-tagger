@@ -62,6 +62,9 @@ def check_photo(p: dict, sites) -> list[dict]:
                 add(SEVERE, "Too large", f"{w} × {h} px is {mp:.0f} MP; at most {hi:g} MP.", [site])
             if max_mb and size > max_mb * MB:
                 add(SEVERE, "File too big", f"The file is {size / MB:.0f} MB; at most {max_mb} MB.", [site])
+    if p.get("ai_markers"):
+        add(WARN, "AI markers", "; ".join(p["ai_markers"][:3]) + ". Stock sites read these and may refuse the photo "
+            "as AI generated. Lightroom's can be taken out at save (Settings → Saving); others need a fresh export.")
     # editorial
     if p.get("editorial") and "shutterstock" in sites:
         text = p.get("title") if p.get("ss_text", "title") != "description" else (p.get("description") or p.get("title"))

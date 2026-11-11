@@ -40,7 +40,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.11.11.2"
+APP_VERSION = "2026.11.11.3"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 # camera RAW files: titles and keywords go into the Lightroom sidecar next to them (photo.xmp), never the RAW.
 # DNG is left out: Lightroom ignores sidecars for DNG and keeps its metadata inside the file itself.
@@ -439,6 +439,7 @@ DEFAULT_SETTINGS = {
     "debug_log": False,       # write a detailed log of every AI request to debug_log.txt
     "check_updates": True,    # look for a newer release on GitHub when the app starts
     "avoid_on": False,        # show the per-photo Avoid column and use it
+    "strip_develop": True,    # saving a JPEG takes out Lightroom's develop settings (XMP-crs), AI masks included
     "dreamstime_csv_auto": True,   # after uploading to Dreamstime, send its CSV by itself once the photos are in
     "shutterstock_text": "title",  # Shutterstock's one text column gets: title / description
     "stockup_path": "",       # StockUp.app / StockUp.exe / stockup.py ("" = look in the usual places)
@@ -919,6 +920,52 @@ def save_settings(s: dict) -> None:
 
 # --------------------------------------------------------------------------- ExifTool
 
+# --------------------------------------------------------------------------- AI markers
+# Lightroom / Camera Raw develop settings live in XMP-crs (and XMP-crss for snapshots). In a JPEG they say
+# nothing to a buyer, but they do record AI tools: "Mask/Image" corrections are Select Subject / Sky /
+# People masks, and Enhance* settings are AI Denoise, Super Resolution and Raw Details.
+STRIP_DEVELOP_ARGS = ["-XMP-crs:all=", "-XMP-crss:all="]
+
+AI_MARKER_TAGS = ["-XMP-iptcExt:DigitalSourceType", "-JUMBF:all", "-XMP-crs:all",
+                  "-EXIF:Software", "-XMP-xmp:CreatorTool", "-XMP-xmpMM:HistorySoftwareAgent"]
+
+AI_SOFTWARE = re.compile(r"firefly|generative|midjourney|dall[\s·-]?e|stable diffusion|topaz photo ai|gigapixel|"
+                         r"luminar|imagen|chatgpt|openai", re.I)
+
+
+def ai_markers(row: dict) -> list[str]:
+    """What in a file's metadata (an ExifTool -j -G1 row) says AI made or edited it. Stock sites read
+    these, so a photo carrying one can be refused as AI generated."""
+    found = []
+
+    def add(text):
+        if text not in found:
+            found.append(text)
+
+    def values(v):
+        return [str(x) for x in v] if isinstance(v, list) else ([] if v is None else [str(v)])
+
+    for key, v in row.items():
+        g, _, tag = key.partition(":")
+        low = " ".join(values(v)).lower()
+        if tag == "DigitalSourceType":
+            flat = low.replace(" ", "")
+            if "algorithmicmedia" in flat or "trained" in flat:
+                add("Marked as made or edited with AI (Digital Source Type: " + values(v)[0].rsplit("/", 1)[-1] + ")")
+        elif g == "JUMBF" or "c2pa" in key.lower():
+            add("Has Content Credentials (C2PA), which can record AI tools")
+        elif g in ("XMP-crs", "XMP-crss"):
+            if "What" in tag and "mask/image" in low:
+                add("Lightroom AI mask (Select Subject, Sky or People) in its develop settings")
+            elif tag.startswith("Enhance") and low not in ("", "0", "false", "none"):
+                add("Lightroom AI Enhance (Denoise, Super Resolution or Raw Details) in its develop settings")
+        elif tag in ("Software", "CreatorTool", "HistorySoftwareAgent"):
+            m = AI_SOFTWARE.search(low)
+            if m:
+                add("Made or edited with " + m.group(0).title())
+    return found
+
+
 class ExifToolError(Exception):
     pass
 
@@ -1313,7 +1360,8 @@ class ExifTool:
                              "-XMP-dc:Title", "-IPTC:ObjectName",
                              "-XMP-dc:Description", "-IPTC:Caption-Abstract",
                              "-XMP-dc:Subject", "-IPTC:Keywords", "-XMP-xmp:Label",
-                             "-EXIF:DateTimeOriginal", "-XMP-exif:DateTimeOriginal", "-EXIF:CreateDate"] + chunk)
+                             "-EXIF:DateTimeOriginal", "-XMP-exif:DateTimeOriginal", "-EXIF:CreateDate"]
+                            + AI_MARKER_TAGS + chunk)
             by_norm = {_norm(p): p for p in chunk}
             try:
                 rows = json.loads(out) if out.strip() else []
@@ -1349,7 +1397,7 @@ class ExifTool:
                         taken = "-".join(m.groups())
                         break
                 result[src] = {"title": str(title), "description": str(desc), "keywords": kws, "taken": taken,
-                               "label": color_label(row.get("XMP-xmp:Label"))}
+                               "label": color_label(row.get("XMP-xmp:Label")), "ai_markers": ai_markers(row)}
             for p in chunk:
                 result.setdefault(p, {"title": "", "description": "", "keywords": [], "taken": ""})
         return result
@@ -1363,7 +1411,7 @@ class ExifTool:
             raise ExifToolError("the XMP to IPTC conversion didn't update the file: " + (out.strip() or "no output"))
 
     def write(self, path: str, title: str, keywords: list[str], description: str | None = None,
-              fields=None, location: str = "", label: str | None = None) -> None:
+              fields=None, location: str = "", label: str | None = None, strip_develop: bool = False) -> None:
         """Replace title and keywords (and the other chosen fields, see METADATA_FIELDS). Only metadata
         segments are rewritten; the image data is copied unchanged. -P keeps the file's modified date, and
         -overwrite_original stops ExifTool leaving a '_original' copy behind.
@@ -1387,6 +1435,8 @@ class ExifTool:
             args += [f"-XMP-xmp:Label={LABEL_NAMES.get(label, '')}"]
         if path.lower().endswith(".xmp"):
             args = xmp_only(args)
+        elif strip_develop:                          # Lightroom/Camera Raw develop settings, AI masks included
+            args += STRIP_DEVELOP_ARGS
         out = self._run(args + [path])
         if not wrote_one(out):
             raise ExifToolError(out.strip() or "ExifTool did not update the file")
@@ -1834,7 +1884,8 @@ def _guarded(path: str, action) -> None:
 
 
 def safe_write(et: "ExifTool", path: str, title: str, keywords: list[str], description: str | None = None,
-               xmp2iptc_args: str | None = None, fields=None, location: str = "", label: str | None = None) -> None:
+               xmp2iptc_args: str | None = None, fields=None, location: str = "", label: str | None = None,
+               strip_develop: bool = False) -> None:
     """Write metadata, then prove the picture itself is untouched. If the image
     data ever differs, the original file is restored exactly and an error raised.
     RAW files: the title and keywords go into the .xmp sidecar only; the RAW is verified unchanged."""
@@ -1860,6 +1911,8 @@ def safe_write(et: "ExifTool", path: str, title: str, keywords: list[str], descr
 
     try:
         extra = {} if label is None else {"label": label}
+        if strip_develop:                       # JPEGs only: a RAW's sidecar is where Lightroom keeps its edit
+            extra["strip_develop"] = True
         if fields is None:
             et.write(path, title, keywords, description, **extra)
         else:
