@@ -40,7 +40,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.11.11.5"
+APP_VERSION = "2026.11.11.6"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 # camera RAW files: titles and keywords go into the Lightroom sidecar next to them (photo.xmp), never the RAW.
 # DNG is left out: Lightroom ignores sidecars for DNG and keeps its metadata inside the file itself.
@@ -1650,7 +1650,7 @@ STOCK_SITES = {
     "shutterstock": {"label": "Shutterstock", "kw_min": 7, "kw_max": 50, "desc_max": 200, "desc_min_words": 5,
                      "plain": True},   # "Exclude special characters" (its help on rejected titles)
     "adobe": {"label": "Adobe Stock", "kw_min": 5, "kw_max": 49, "title_max": 70},
-    "dreamstime": {"label": "Dreamstime", "own_desc": True, "kw_min": 7, "kw_max": 50, "title_max": 250},
+    "dreamstime": {"label": "Dreamstime", "own_desc": True, "kw_min": 7, "kw_max": 50},   # title: dreamstime_checks
     "alamy": {"label": "Alamy", "own_desc": True},
     "istock": {"label": "iStock"},
     "depositphotos": {"label": "Depositphotos", "kw_min": 8, "kw_max": 50, "desc_max": 250},
@@ -1737,7 +1737,7 @@ def site_problems(title: str, keywords, sites, description: str = "", ss_text: s
 # Dreamstime refuses more for its text than Shutterstock does: titles stuffed with phrases, CAPS, a description
 # that only repeats the title or stops half-way, the same keyword in several spellings. These are the extra checks
 # (Check Before Upload, when you sell on Dreamstime), each with a fix where one can be made safely.
-DT_TITLE_LONG = 150          # longer titles read as keyword stuffing on Dreamstime (its hard limit is 250)
+DT_TITLE_LONG = 130          # Dreamstime refuses longer titles: "The maximum number of characters in the title is 130"
 _DT_DATELINE = re.compile(r"^[^:]{2,90}?\d{4}:\s+")
 _CAPS_RUN = re.compile(r"\b[A-Z][A-Z'’&]+(?:\s+[A-Z][A-Z'’&]+)*\b")
 _ACRONYMS = {"USA", "BBQ", "NASA", "NYC", "LED", "HDMI", "USB", "ATM", "DIY", "SUV", "NFL", "NBA", "MLB", "NHL",
@@ -1750,23 +1750,31 @@ def _dateline_split(title: str) -> tuple[str, str]:
 
 
 def shorten_title(title: str, most: int = DT_TITLE_LONG) -> str:
-    """Cut a long title back to its main phrase, at a comma or before 'for …' / 'with …', keeping an editorial
-    place-and-date in front. '…Cake on Grocery Shelf, Lemon Sugar Flavor Variety, with Orange…' -> '…Cake on
-    Grocery Shelf'. Returns the title unchanged when it already fits or can't be cut cleanly."""
+    """Cut a long title back to its main phrase so it fits `most` characters, keeping an editorial place-and-date
+    in front: at a comma or before 'for …' / 'with …' when it can ('…Cake on Grocery Shelf, Lemon Sugar Flavor
+    Variety, with Orange…' -> '…Cake on Grocery Shelf'), else before 'on …' / 'in …', else after a whole word
+    (never ending on 'and', 'of', 'the'…). Always fits."""
+    title = title or ""
     if len(title) <= most:
         return title
     head, body = _dateline_split(title)
+    if most - len(head) < 25:                       # (a very long place line: cut the whole title by words)
+        head, body = "", title
     room = most - len(head)
-    if room < 25:
-        return title
-    cuts = [m for m in re.finditer(r",\s+|\s+(?:for|with|featuring|perfect for|ideal for|great for)\s+", body)
-            if 20 <= m.start() <= room]
-    if not cuts:
-        return title
-    cut = cuts[-1].start()
-    if len(cuts) > 1 and len(body[cuts[-2].end():cut].split()) <= 2:    # "…Vegetables, Gravy": not "Gravy"
-        cut = cuts[-2].start()
-    return head + body[:cut].rstrip(" ,;:-")
+    for pattern in (r",\s+|\s+(?:for|with|featuring|perfect for|ideal for|great for)\s+",
+                    r"\s+(?:on|in|at|from|near|inside|by)\s+"):
+        cuts = [m for m in re.finditer(pattern, body) if 20 <= m.start() <= room]
+        if cuts:
+            cut = cuts[-1].start()
+            if len(cuts) > 1 and len(body[cuts[-2].end():cut].split()) <= 2:   # "…Vegetables, Gravy": not "Gravy"
+                cut = cuts[-2].start()
+            return head + body[:cut].rstrip(" ,;:-")
+    words = body[:room + 1].split()
+    if len(body) > room and len(words) > 1:
+        words.pop()                                  # the last word may be cut in half
+    while len(words) > 1 and words[-1].lower().strip(",;:-") in SMALL_WORDS | _DANGLING:
+        words.pop()
+    return (head + " ".join(words).rstrip(" ,;:-"))[:most].rstrip(" ,;:-")
 
 
 def _caps_runs(text: str) -> list[str]:
@@ -1820,10 +1828,8 @@ def dreamstime_checks(title: str, description: str, keywords) -> list[dict]:
     if title and (len(title) < 5 or len(words) < 2):
         add("Title too short", "Dreamstime refuses one-word titles: describe the subject in a short phrase.")
     if len(title) > DT_TITLE_LONG:
-        short = shorten_title(title)
-        add("Long title", f"{len(title)} characters; Dreamstime prefers one clear phrase (at most about "
-            f"{DT_TITLE_LONG})." + (f" Fix cuts it to: \"{short}\"" if short != title else
-                                    " Shorten it by hand or with Reword."), fixable=short != title)
+        add("Long title", f"{len(title)} characters; Dreamstime refuses titles over {DT_TITLE_LONG}. Fix cuts it to: "
+            f"\"{shorten_title(title)}\"", fixable=True)
     caps = _caps_runs(title + " . " + description)
     if caps:
         add("Capital letters", "Words in capitals (" + ", ".join(dict.fromkeys(caps[:5])) + "): Dreamstime refuses "
@@ -1844,6 +1850,13 @@ def dreamstime_checks(title: str, description: str, keywords) -> list[dict]:
             + (" …" if len(twins) > 4 else "") + ". Dreamstime counts these as spam; Fix keeps the first of each.",
             fixable=True)
     return out
+
+
+def dreamstime_title(title: str, bare: str | None = None) -> str:
+    """The title the Dreamstime CSV gets: without the editorial place and date (the description and the
+    Editorial column keep it editorial), cut to Dreamstime's 130 characters."""
+    t = (bare if (bare or "").strip() else _dateline_split(title or "")[1]).strip() or (title or "")
+    return shorten_title(t)
 
 
 def dreamstime_fix(title: str, description: str, keywords) -> dict:

@@ -1,5 +1,10 @@
 # What's new
 
+## 2026.11.11.6
+
+- **Fix: Dreamstime refused long titles** ("The maximum number of characters in the title is 130"). The Dreamstime CSV's titles now never go over 130 characters.
+- **Dreamstime titles without the place and date:** the Dreamstime CSV's title is now just the subject ("Pepperidge Farm Sausalito Cookies on Grocery Shelf"), so most fit Dreamstime's 130 characters without being cut. The photos stay editorial on Dreamstime: the CSV still marks them Editorial and their description keeps the place and date. Your photos, and Shutterstock, keep the full title. A title still over 130 is cut back to its main phrase.
+
 ## 2026.11.11.5
 
 - **Dreamstime's fixes go into its CSV only:** the Dreamstime CSV now gets the tidied text (long titles cut back to their main phrase, capitals in normal case, descriptions that stop half-way ended cleanly, keyword repeats left out), while your photos keep the full text that Shutterstock and the other sites read. Check Before Upload no longer lists those for Dreamstime, since the CSV takes care of them; the must-fix ones (one-word title, a description that only repeats the title, keyword count) are still listed. To fix the photos' own text instead, untick **Settings → Stock sites → Tidy the text for Dreamstime in its CSV only**.

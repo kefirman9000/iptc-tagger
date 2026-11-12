@@ -24,7 +24,8 @@ def test_dreamstime_csv_has_dreamstimes_columns(tmp_path):
     assert rows[0] == HEADER
     r = dict(zip(HEADER, rows[1]))
     assert r["Filename"] == "20261111-_DSC8043.jpg" and r["Editorial"] == "1"
-    assert r["Image Name"].startswith("Apex, North Carolina") and r["keywords"] == "pepperidge farm,cookies,grocery"
+    assert r["Image Name"] == "Pepperidge Farm Sausalito Cookies on Grocery Shelf"     # place and date left out
+    assert r["keywords"] == "pepperidge farm,cookies,grocery"
     assert all(r[f"Category {i}"] not in ("", "0") for i in (1, 2, 3))
 
 

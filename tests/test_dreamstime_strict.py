@@ -76,14 +76,18 @@ def test_only_the_dreamstime_csv_gets_the_fixes(tmp_path):
              "editorial": True}]
     dt, ss = site_files.write_site_csvs(str(tmp_path), rows, ["dreamstime", "shutterstock"])
     d = next(csv.DictReader(open(dt, encoding="utf-8")))
-    assert d["Image Name"] == PLACE + "Werther's Original Candy Display on Grocery Store Shelf, Halloween Seasonal Promotion"
+    # no place and date in Dreamstime's title, still editorial, and the description keeps them
+    assert d["Image Name"] == ("Werther's Original Candy Display on Grocery Store Shelf, Halloween Seasonal Promotion "
+                               "for Sweet Treat Consumers and Families")
+    assert d["Editorial"] == "1" and d["Description"].startswith(PLACE)
     assert d["Description"].endswith("Werther's Original candy.")
     assert d["keywords"].split(",")[:2] == ["werthers", "candy"]
     s = next(csv.DictReader(open(ss, encoding="utf-8")))
     assert title in s.values()                                    # Shutterstock keeps the full title
     assert "werther's" in next(v for v in s.values() if "candy" in v)
     full = site_files.write_site_csvs(str(tmp_path), rows, ["dreamstime"], dt_tidy=False)[0]
-    assert next(csv.DictReader(open(full, encoding="utf-8")))["Image Name"] == title
+    kept = next(csv.DictReader(open(full, encoding="utf-8")))["Image Name"]     # untidied: place kept, cut to 130
+    assert kept.startswith(PLACE) and len(kept) <= 130
 
 
 def test_check_before_upload_leaves_csv_fixes_out():
@@ -93,3 +97,14 @@ def test_check_before_upload_leaves_csv_fixes_out():
     assert not any(i["what"] in ("Capital letters", "Keyword repeats") for i in precheck.check_photo(p, ["dreamstime"]))
     shown = {i["what"] for i in precheck.check_photo(dict(p, dt_tidy=False), ["dreamstime"])}
     assert {"Capital letters", "Keyword repeats"} <= shown
+
+
+def test_dreamstime_titles_never_go_over_130():
+    for t in ["Red " * 60, PLACE + "Amazingly Detailed Close Up View of a Bright Red Vintage Sports Car Parked Along "
+              "the Seaside Promenade During a Warm Summer Evening Sunset Glow and the Crowd",
+              "A" * 300]:
+        out = core.dreamstime_title(t)
+        assert 0 < len(out) <= 130 and not out.endswith((" and", " the", ","))
+    assert core.dreamstime_title(PLACE + "Lever 2000 Soap on a Shelf") == "Lever 2000 Soap on a Shelf"
+    long = PLACE + "Big Red Barn " * 12
+    assert any(i["what"] == "Long title" for i in core.dreamstime_checks(long, "A barn.", ["barn"] * 8))
