@@ -2,7 +2,8 @@
 
 ## 2026.11.12.3
 
-- **Fix: Pond5 refused long titles** ("The max length of title is 80 characters"). The Pond5 CSV's title is now just the subject, without the place and date, cut back to its main phrase so it never goes over 80 characters. The photos stay editorial on Pond5: the CSV still marks them editorial, and the description and the city, state and country columns keep the place and date. Your photos and the other sites keep the full title.
+- **Fix: Pond5 refused long titles** ("The max length of title is 80 characters"). The Pond5 CSV's titles now never go over 80 characters. A title that fits is kept as it is. A longer one keeps the editorial place and date in front only when the subject, cut back to its main phrase, still fits after them; otherwise the title is just the subject. The photos stay editorial on Pond5: the CSV still marks them editorial, and the description and the city, region and country columns keep the place and date. Your photos and the other sites keep the full title.
+- **The Pond5 CSV has the columns of Pond5's own template**, in its order: source, model and property release, release, copyright and prices are left empty for you to set on Pond5.
 
 ## 2026.11.12.2
 

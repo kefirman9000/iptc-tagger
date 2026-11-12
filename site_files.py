@@ -455,11 +455,14 @@ def write_site_csvs(folder: str, rows: list[dict], sites, day: str = "", ss_text
             _write(path, ["oldfilename", "123rf_filename", "description", "keywords", "country"],
                    [[r["file"], "", desc(r), kw(r), r.get("country", "")] for r in picked])
         elif site == "pond5":
+            # the columns of Pond5's own metadata template, in its order (releases, copyright and prices are left
+            # for you to set on Pond5)
             _write(path, ["originalfilename", "title", "description", "keywords", "city", "region", "country",
-                          "editorial"],
+                          "specifysource", "modelreleased", "propertyreleased", "release", "copyright", "price",
+                          "pricelarge", "editorial"],
                    [[r["file"], plain(core.pond5_title(r["title"], r.get("bare_title"))), desc(r), kw(r),
-                     r.get("city", ""), r.get("region", ""),
-                     r.get("country", ""), "yes" if r.get("editorial") else "no"] for r in picked])
+                     r.get("city", ""), r.get("region", ""), r.get("country", ""), "", "", "", "", "", "", "",
+                     "yes" if r.get("editorial") else "no"] for r in picked])
         else:
             continue
         out.append(path)

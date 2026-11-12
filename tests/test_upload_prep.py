@@ -143,4 +143,7 @@ def test_pond5_csv_titles_fit_80_characters(tmp_path):
     path = site_files.write_site_csvs(str(tmp_path), rows, ["pond5"])[0]
     got = list(csv.reader(open(path, encoding="utf-8")))[1]
     assert got[1] == "Highlights Hidden Pictures Happy Holidays Special Edition Magazines"
-    assert got[2].startswith("Apex, North Carolina - November 11, 2026") and got[7] == "yes"
+    assert got[2].startswith("Apex, North Carolina - November 11, 2026") and got[-1] == "yes" and len(got) == 15
+    short = "Apex, NC - Nov 1, 2026: Box of Cereal on a Grocery Store Shelf, Honey Oat Flavor for Breakfast"
+    import tagger_core as core
+    assert core.pond5_title(short) == "Apex, NC - Nov 1, 2026: Box of Cereal on a Grocery Store Shelf, Honey Oat Flavor"

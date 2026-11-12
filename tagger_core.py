@@ -1869,9 +1869,21 @@ POND5_TITLE_MAX = 80
 
 
 def pond5_title(title: str, bare: str | None = None) -> str:
-    """The title the Pond5 CSV gets: Pond5 refuses titles over 80 characters, so it goes without the editorial
-    place and date (the description, the city / state / country columns and the editorial column keep those),
-    cut back to its main phrase."""
+    """The title the Pond5 CSV gets. Pond5 refuses titles over 80 characters: a title that fits is kept as it
+    is; a longer one keeps the editorial place and date in front only when the subject, cut back to its main
+    phrase, still fits after them. Otherwise it's the subject alone (the description, the city / region /
+    country columns and the editorial column keep the place and date)."""
+    title = title or ""
+    if len(title) <= POND5_TITLE_MAX:
+        return title
+    head, body = _dateline_split(title)
+    if head:
+        cut = shorten_title(title, POND5_TITLE_MAX)
+        rest = body[len(cut) - len(head):] if cut.startswith(head) and body.startswith(cut[len(head):]) else ""
+        # kept only when the subject ends at a whole phrase, never half-way through one ("…Happy")
+        if rest and re.match(r",\s|\s+(?:for|with|featuring|perfect for|ideal for|great for|on|in|at|from|near|"
+                             r"inside|by)\s", rest):
+            return cut
     return dreamstime_title(title, bare, POND5_TITLE_MAX)
 
 
