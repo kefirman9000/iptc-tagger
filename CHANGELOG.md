@@ -1,5 +1,18 @@
 # What's new
 
+## 2026.11.12.1
+
+The Upload window now does everything StockUp did, for all eight sites: Shutterstock, Adobe Stock, Dreamstime, Alamy, iStock, Depositphotos, 123RF and Pond5.
+
+- **Each site's photo rules:** a photo under a site's minimum size (or too big for it) is left out for that site, so it doesn't fail review. The window says how many for each site; point at the line to see which and why. Tick **Send photos a site would refuse anyway** to send them anyway.
+- **Adjusted copies, off by default:** tick **Make adjusted copies where a site needs them** for sRGB copies for Shutterstock and Adobe Stock, smaller files where a site's limit needs it, and standard (baseline) JPEGs for Alamy. **Copies' size** can also make them a set size for upload (never below a site's minimum). Copies keep all your metadata and go up under your file's own name; your originals are never changed.
+- **Shuffled upload order:** each site gets its own order, with look-alike photos (and frames shot one after another) kept apart, so reviewers don't see a run of near-identical shots. Untick **Shuffle the order** to send them in list order.
+- **iStock:** iStock has no FTP, so **Prepare iStock Folder** copies the photos it takes into Creative and Editorial folders next to them and opens the folder. Drag each folder into iStock's upload page.
+- **Make CSVs after the upload:** for Adobe Stock, Depositphotos, 123RF and Pond5, one button makes their CSVs next to the photos. The steps for each site now say where its CSV goes.
+- **Results…:** import the reports you download from the sites (accepted, rejected, sales, earnings) to see each site's acceptance rate, why photos were rejected, which keywords get rejected, accepted and earn most, and your best sellers.
+- 123RF: a note when one upload is over the 4 GB it takes per session.
+- **Fix:** the sites ticked in the Upload window and **Encrypted connections only** are now remembered after you close IPTC Tagger.
+
 ## 2026.11.11.6
 
 - **Fix: Dreamstime refused long titles** ("The maximum number of characters in the title is 130"). The Dreamstime CSV's titles now never go over 130 characters.

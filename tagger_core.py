@@ -40,7 +40,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.11.11.6"
+APP_VERSION = "2026.11.12.1"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 # camera RAW files: titles and keywords go into the Lightroom sidecar next to them (photo.xmp), never the RAW.
 # DNG is left out: Lightroom ignores sidecars for DNG and keeps its metadata inside the file itself.
@@ -445,6 +445,12 @@ DEFAULT_SETTINGS = {
     "shutterstock_text": "title",  # Shutterstock's one text column gets: title / description
     "stockup_path": "",       # StockUp.app / StockUp.exe / stockup.py ("" = look in the usual places)
     "stockup_after_save": False,  # after Save Metadata, open the saved photos in StockUp
+    "upload_sites": [],           # the sites ticked in the Upload window ([] = every site with a login)
+    "upload_encrypted_only": False,   # skip an agency that only offers plain FTP
+    "upload_shuffle": True,       # each site gets its own order, look-alike photos kept apart
+    "upload_copies": False,       # make adjusted copies (sRGB, smaller, baseline, resize) where a site needs them
+    "upload_resize_mode": "off",  # adjusted copies' size: off / long_side / megapixels
+    "upload_resize_value": 6000,  # px for long_side, MP for megapixels
     "detect_style": [],       # "Every Detect" checklist: keys from STYLE_CHOICES
     "text_checks": ["numbers", "repeats", "list", "desc_copy"],   # automatic checks (DEFAULT_TEXT_CHECKS) on the AI's titles and descriptions
     "profiles": {},           # saved profiles: name -> {context, detect_style, default_type, lead_keywords, …}

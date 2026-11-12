@@ -212,6 +212,10 @@ def test_upload_window_end_to_end(window, make_photos, servers, monkeypatch):
     assert not w.btn_start.isEnabled() and w.warn_box.isVisibleTo(w)
     win.save_photos([a])
     wait_ui(lambda: not a.changed and not a.busy, what="save")
+    # these test photos are tiny: each site's size rule leaves them out, unless Send anyway
+    assert len(w.plans["alamy"]["refused"]) == 2 and not w.plans["alamy"]["send"]
+    w.anyway.setChecked(True)
+    wait_ui(lambda: len(w.plans["alamy"]["send"]) == 2, what="plans with Send anyway")
     w._refresh_buttons()
     assert w.btn_start.isEnabled()
     w.start()
@@ -320,3 +324,27 @@ def test_csv_names_have_the_time_and_what_is_left_to_do():
     assert "Adobe Stock: 2 editorial photos" in w and "Illustrative Editorial" in w
     assert "Country: 3 photos" in w
     assert "Adobe Stock:" not in " ".join(sf.csv_warnings(rows, ["shutterstock"]))
+
+
+def test_istock_folder_and_results(window, make_photos, monkeypatch, tmp_path):
+    from test_window import add, wait as wait_ui
+    app, win = window
+    paths = make_photos(2, size=(2400, 1600))                     # 3.8 MP: big enough for iStock
+    add(win, paths)
+    monkeypatch.setattr(up, "load_sites", lambda: [])
+    w = win.open_upload(list(win.photos), check=False)
+    wait_ui(lambda: bool(w.plans) or not w.rows, what="plans")
+    w.prepare_istock()
+    wait_ui(lambda: getattr(w, "istock_folder", ""), what="iStock folder")
+    made = sorted(os.listdir(os.path.join(w.istock_folder, "Creative")))
+    assert made == sorted(os.path.basename(p) for p in paths)
+    assert all(sha(os.path.join(w.istock_folder, "Creative", os.path.basename(p))) == sha(p) for p in paths)
+    from upload_window import ResultsDialog
+    rep = tmp_path / "shutterstock_report.csv"
+    rep.write_text("Filename,Status,Reason\na.jpg,Approved,\nb.jpg,Rejected,Focus\n", encoding="utf-8")
+    d = ResultsDialog(w)
+    r = d.import_file(str(rep))
+    assert r and r["site"] == "shutterstock" and r["photos"] == 2
+    assert "Focus" in d.view.toPlainText()
+    d.close()
+    w.close()

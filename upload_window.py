@@ -6,19 +6,22 @@ import threading
 from PySide6.QtCore import Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
-    QCheckBox, QDialog, QDialogButtonBox, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
-    QPlainTextEdit, QProgressBar, QPushButton, QVBoxLayout, QWidget,
+    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
+    QPlainTextEdit, QProgressBar, QPushButton, QSpinBox, QTextBrowser, QVBoxLayout, QWidget,
 )
 
 import tagger_core as core
 import theme
+import upload_prep as prep
 import uploader as up
 
 GREY = "#8a8f98"
 STATE_WORDS = {"waiting": "Waiting", "connecting": "Connecting…", "uploading": "Uploading", "finishing":
                "Finishing a photo…", "tidying up": "Removing a half-sent photo…", "paused": "Paused",
                "stopped": "Stopped", "error": "Couldn't upload", "finished": "Done",
-               "finished with errors": "Done, with problems"}
+               "finished with errors": "Done, with problems", "ordering": "Shuffling the order…",
+               "making a copy": "Making an adjusted copy…"}
+CSV_AFTER = ("adobe", "depositphotos", "123rf", "pond5")   # sites whose CSV you upload on their website
 
 
 class LoginsDialog(QDialog):
@@ -214,16 +217,78 @@ class UploadWindow(QDialog):
         lay.addLayout(self.grid)
         self._fill_sites()
 
-        opts = QHBoxLayout()
+        st = self.win.settings
+        istock = QHBoxLayout()
+        self.istock_note = QLabel("<b>iStock</b> has no FTP: its upload page takes the files you drag in, "
+                                  "Creative and Editorial in separate batches.")
+        self.istock_note.setWordWrap(True)
+        self.btn_istock = QPushButton("Prepare iStock Folder")
+        self.btn_istock.setToolTip("Copies the photos iStock takes into a new folder next to them, in Creative and\n"
+                                   "Editorial folders (adjusted copies where needed), and opens it. Drag each\n"
+                                   "folder into iStock's upload page. Your originals stay where they are.")
+        self.btn_istock.clicked.connect(lambda *_: self.prepare_istock())
+        istock.addWidget(self.istock_note, 1)
+        istock.addWidget(self.btn_istock)
+        lay.addLayout(istock)
+
+        opts = QGridLayout()
         self.again = QCheckBox("Also send photos sent before")
         self.again.setToolTip("Normally a photo already sent to a site (by IPTC Tagger or StockUp) is skipped.")
         self.again.toggled.connect(lambda *_: self._show_plans())
-        opts.addWidget(self.again)
-        opts.addStretch(1)
+        self.shuffle = QCheckBox("Shuffle the order, look-alikes apart")
+        self.shuffle.setToolTip("Each site gets the photos in its own order, with photos that look alike (or were\n"
+                                "shot one after another) kept apart, so reviewers don't see a run of near-identical\n"
+                                "frames. Off: they go in the order of the list.")
+        self.shuffle.setChecked(bool(st.get("upload_shuffle", True)))
+        self.copies = QCheckBox("Make adjusted copies where a site needs them")
+        self.copies.setToolTip("sRGB for Shutterstock and Adobe Stock, a smaller file where a site's size limit needs\n"
+                               "it, standard (baseline) JPEGs for Alamy, and your resize setting. Copies are made\n"
+                               "only for the sites that need them, as faithfully as possible (quality 95 or your\n"
+                               "photo's own, all the metadata kept). Your originals are never changed.\n"
+                               "Off: every photo goes exactly as it is saved.")
+        self.copies.setChecked(bool(st.get("upload_copies", False)))
+        self.anyway = QCheckBox("Send photos a site would refuse anyway")
+        self.anyway.setToolTip("Photos under a site's minimum size (or too big without a copy) are normally left out\n"
+                               "for that site, so they don't fail review. Tick to send them anyway.")
+        self.resize_mode = QComboBox()
+        for key, text in (("off", "Full size"), ("long_side", "Longest side (px)"), ("megapixels", "Megapixels")):
+            self.resize_mode.addItem(text, key)
+        self.resize_mode.setCurrentIndex(max(0, self.resize_mode.findData(st.get("upload_resize_mode", "off"))))
+        self.resize_value = QSpinBox()
+        self.resize_value.setRange(1, 100000)
+        self.resize_value.setValue(int(st.get("upload_resize_value") or 6000))
+        self.resize_mode.setToolTip("Adjusted copies only: make them this size for upload (never bigger, and never\n"
+                                    "below a site's minimum). Your originals stay full size.")
+        self.resize_value.setToolTip(self.resize_mode.toolTip())
+        size_row = QHBoxLayout()
+        self.resize_label = QLabel("Copies' size:")
+        size_row.addWidget(self.resize_label)
+        size_row.addWidget(self.resize_mode)
+        size_row.addWidget(self.resize_value)
+        size_row.addStretch(1)
+        opts.addWidget(self.again, 0, 0)
+        opts.addWidget(self.shuffle, 0, 1)
+        opts.addWidget(self.anyway, 1, 0)
+        opts.addWidget(self.copies, 1, 1)
+        opts.addLayout(size_row, 2, 1)
+        for w in (self.shuffle, self.copies, self.anyway):
+            w.toggled.connect(lambda *_: self._options_changed())
+        self.resize_mode.currentIndexChanged.connect(lambda *_: self._options_changed())
+        self.resize_value.editingFinished.connect(lambda: self._options_changed())
+        right = QHBoxLayout()
+        right.addStretch(1)
+        b_results = QPushButton("Results…")
+        b_results.setToolTip("Import the reports you download from the sites (accepted, rejected, sales) and see\n"
+                             "the acceptance rate, why photos were rejected, which keywords work and your best sellers.")
+        b_results.clicked.connect(lambda *_: ResultsDialog(self).exec())
         b_logins = QPushButton("Logins…")
         b_logins.clicked.connect(lambda *_: self._logins())
-        opts.addWidget(b_logins)
+        right.addWidget(b_results)
+        right.addWidget(b_logins)
+        opts.addLayout(right, 0, 2)
+        opts.setColumnStretch(2, 1)
         lay.addLayout(opts)
+        self._show_resize()
 
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
@@ -244,10 +309,15 @@ class UploadWindow(QDialog):
                                    "the only place Dreamstime reads it from. Click it once the photos show up in\n"
                                    "Dreamstime's Unfinished section: it only fills in photos that are already there.")
         self.btn_dt_csv.clicked.connect(lambda *_: self._send_dreamstime_csv())
+        self.btn_csvs = QPushButton("Make Site CSVs")
+        self.btn_csvs.setToolTip("The CSVs for the other sites you sent to (Adobe Stock, Depositphotos, 123RF, Pond5),\n"
+                                 "with categories, editorial and releases, saved next to the photos. Upload each on\n"
+                                 "its site once the photos show up there.")
+        self.btn_csvs.clicked.connect(lambda *_: self._make_site_csvs())
         self.btn_receipt = QPushButton("Open Receipt")
         self.btn_receipt.setToolTip("upload_receipt.csv: every photo sent, where, when, encrypted or not")
         self.btn_receipt.clicked.connect(lambda *_: QDesktopServices.openUrl(QUrl.fromLocalFile(up.receipt_path())))
-        for b in (self.btn_ss_csv, self.btn_dt_csv, self.btn_receipt):
+        for b in (self.btn_ss_csv, self.btn_csvs, self.btn_dt_csv, self.btn_receipt):
             b.hide()
             row.addWidget(b)
         row.addStretch(1)
@@ -327,11 +397,15 @@ class UploadWindow(QDialog):
         from_win = self.win
         names = list(self.rows)
 
+        opts = self.opts()
+
         def work(paths=tuple(self.paths)):
             history, theirs = up.load_history(), up.stockup_sent()
-            return {n: up.plan(paths, n, history, theirs) for n in names}
+            return {n: up.plan(paths, n, history, theirs, opts) for n in names}
+        self._plan_gen = getattr(self, "_plan_gen", 0) + 1
+        gen = self._plan_gen
         job = from_win.make_job("upload-plan", work)
-        from_win.start_job(job, from_win.io_pool, lambda _k, res: self._plans_ready(res),
+        from_win.start_job(job, from_win.io_pool, lambda _k, res: gen == self._plan_gen and self._plans_ready(res),
                            lambda _k, msg: self.log.appendPlainText(f"Couldn't check the photos: {msg}"))
 
     def _plans_ready(self, plans):
@@ -349,8 +423,19 @@ class UploadWindow(QDialog):
                 bits.append(f"{len(p['sent'])} sent before")
             if p["left_out"]:
                 bits.append(f"{len(p['left_out'])} not a JPEG")
+            if p.get("refused"):
+                bits.append(f"<span style='color:{theme.color('bad')}'>{len(p['refused'])} left out</span>")
+            if p.get("fixes"):
+                bits.append(f"{len(p['fixes'])} as adjusted cop{'ies' if len(p['fixes']) != 1 else 'y'}")
+            if p.get("warn"):
+                bits.append(f"<span style='color:{GREY}'>{len(p['warn'])} note{'s' if len(p['warn']) != 1 else ''}"
+                            "</span>")
+            tip = [f"Left out: {os.path.basename(x)}: {why}" for x, why in p.get("refused", [])[:12]]
+            tip += [f"Copy: {os.path.basename(x)}: {' '.join(m)}" for x, (_o, _s, m) in list(p.get("fixes", {}).items())[:12]]
+            tip += [f"Note: {os.path.basename(x)}: {m}" for x, m in p.get("warn", [])[:12]]
             if self.uploader is None:
                 r["what"].setText(", ".join(bits))
+                r["what"].setToolTip("\n".join(tip))
         self._refresh_buttons()
 
     def _unsaved(self):
@@ -391,7 +476,7 @@ class UploadWindow(QDialog):
             return
         self.uploader = up.Uploader(self.paths, sites,
                                     encrypted_only=bool(self.win.settings.get("upload_encrypted_only", False)),
-                                    skip_sent=not self.again.isChecked())
+                                    skip_sent=not self.again.isChecked(), opts=self.opts())
         self.uploader.start()
         self._seen_log = 0
         self.log.clear()
@@ -423,7 +508,9 @@ class UploadWindow(QDialog):
             extra = []
             if p["skipped"]:
                 extra.append(f"{p['skipped']} skipped (sent before)")
-            if p["current"] and p["state"] in ("uploading", "finishing", "tidying up"):
+            if p.get("refused"):
+                extra.append(f"{p['refused']} left out (site rules)")
+            if p["current"] and p["state"] in ("uploading", "finishing", "tidying up", "making a copy"):
                 extra.append(p["current"])
             r["what"].setText(f"<b>{word}</b>" + (": " + ", ".join(extra) if extra else ""))
             lines += [f"{p['label']}: {m}" for m in p["notes"] + p["errors"]]
@@ -447,6 +534,10 @@ class UploadWindow(QDialog):
         self.next_steps.setText("<b>What's left on the sites</b><ul style='margin-top:2px'>" + steps + "</ul>")
         self.next_steps.show()
         self.btn_ss_csv.setVisible("shutterstock" in sent)
+        self.csv_sites = [n for n in sent if n in CSV_AFTER]
+        if self.csv_sites:
+            self.btn_csvs.setText("Make CSVs: " + ", ".join(up.SITES[n]["label"] for n in self.csv_sites))
+        self.btn_csvs.setVisible(bool(self.csv_sites))
         self.btn_dt_csv.setVisible("dreamstime" in sent)
         if auto_dt:
             self.btn_dt_csv.setText("Send Dreamstime CSV Now")
@@ -458,6 +549,86 @@ class UploadWindow(QDialog):
         if hasattr(self.win, "toast"):
             self.win.toast(msg + (" (some problems: see the Upload window)" if problems else ""),
                            "warn" if problems else "ok", 7)
+
+    # ---- options
+    def opts(self) -> dict:
+        return {"copies": self.copies.isChecked(), "shuffle": self.shuffle.isChecked(),
+                "send_anyway": self.anyway.isChecked(), "resize_mode": self.resize_mode.currentData(),
+                "resize_value": self.resize_value.value()}
+
+    def _show_resize(self):
+        on = self.copies.isChecked()
+        for w in (self.resize_label, self.resize_mode):
+            w.setEnabled(on)
+        self.resize_value.setEnabled(on and self.resize_mode.currentData() != "off")
+        self.resize_value.setSuffix(" MP" if self.resize_mode.currentData() == "megapixels" else " px")
+
+    def _options_changed(self):
+        o = self.opts()
+        st = self.win.settings
+        st["upload_shuffle"], st["upload_copies"] = o["shuffle"], o["copies"]
+        st["upload_resize_mode"], st["upload_resize_value"] = o["resize_mode"], o["resize_value"]
+        core.save_settings(st)
+        self._show_resize()
+        if self.uploader is None or not self.uploader.status()["running"]:
+            self._work_out_plans()
+
+    # ---- iStock (no FTP) and the sites' CSVs
+    def prepare_istock(self):
+        from datetime import datetime
+        base = os.path.dirname(self.paths[0]) if self.paths else os.path.expanduser("~")
+        dest = core.unused_path(os.path.join(base, f"iStock upload {datetime.now():%Y-%m-%d %H-%M}"))
+        opts, ed = self.opts(), {p.path: bool(self.win.is_editorial(p)) for p in self.photos}
+
+        def work(paths=tuple(self.paths)):
+            p = up.plan(paths, "istock", {}, {}, opts)
+            items = [(x, ed.get(x, False), *(p["fixes"].get(x, (set(), 1.0, []))[:2])) for x in p["send"]]
+            if not items:
+                return {"creative": 0, "editorial": 0, "folder": "", "plan": p}
+            return dict(prep.prepare_istock(items, dest), plan=p)
+        self.btn_istock.setEnabled(False)
+        self.btn_istock.setText("Preparing…")
+        job = self.win.make_job("istock-folder", work)
+        self.win.start_job(job, self.win.io_pool, lambda _k, res: self._istock_ready(res),
+                           lambda _k, msg: self._istock_ready({"error": msg}))
+
+    def _istock_ready(self, res):
+        self.btn_istock.setEnabled(True)
+        self.btn_istock.setText("Prepare iStock Folder")
+        if res.get("error"):
+            self.log.appendPlainText(f"iStock: the folder couldn't be made: {res['error']}")
+            return
+        p = res["plan"]
+        for x, why in p["refused"]:
+            self.log.appendPlainText(f"iStock: {os.path.basename(x)} left out: {why}")
+        for x in p["left_out"]:
+            self.log.appendPlainText(f"iStock: {os.path.basename(x[0])} left out: {x[1]}")
+        n = res["creative"] + res["editorial"]
+        if not n:
+            self.log.appendPlainText("iStock: no photos to put in the folder.")
+            return
+        self.log.appendPlainText(f"iStock: {res['creative']} creative and {res['editorial']} editorial photos are in "
+                                 f"{res['folder']}. In iStock's upload page, start a Creative batch and drag the "
+                                 "Creative folder in, then an Editorial batch for the Editorial folder. iStock reads "
+                                 "the title and keywords saved in the photos.")
+        self.istock_folder = res["folder"]
+        if not os.environ.get("IPTC_TAGGER_OFFLINE"):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(res["folder"]))
+
+    def _make_site_csvs(self):
+        import site_files
+        folder = os.path.dirname(self.photos[0].path)
+        try:
+            files = site_files.write_site_csvs(folder, self.win._csv_rows(self.photos), self.csv_sites,
+                                               ss_text=self.win.settings.get("shutterstock_text", "title"),
+                                               dt_tidy=bool(self.win.settings.get("dreamstime_tidy_csv", True)))
+        except OSError as e:
+            QMessageBox.warning(self, "Make site CSVs", f"The CSVs couldn't be made: {e}")
+            return
+        self.log.appendPlainText("Saved " + ", ".join(os.path.basename(f) for f in files) + f" in {folder}. Upload "
+                                 "each on its site once the photos show up there.")
+        if not os.environ.get("IPTC_TAGGER_OFFLINE"):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
 
     def _send_dreamstime_csv(self):
         import site_files
@@ -564,3 +735,64 @@ class SiteCsvDialog(QDialog):
         self.settings["csv_sites"] = self.chosen()
         core.save_settings(self.settings)
         self.accept()
+
+
+class ResultsDialog(QDialog):
+    """Results: import the sites' reports and see what's accepted, rejected and sells, site by site."""
+
+    def __init__(self, parent):
+        import site_results as sr
+        super().__init__(parent)
+        self.sr = sr
+        self.setWindowTitle("Results from the stock sites")
+        self.resize(820, 640)
+        lay = QVBoxLayout(self)
+        head = QLabel("Download a report from a site (accepted and rejected files, or sales and earnings) as CSV and "
+                      "import it here. Photos are matched to the ones you sent by file name, so their keywords "
+                      "count too. Importing the same report again changes nothing.")
+        head.setWordWrap(True)
+        lay.addWidget(head)
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Site:"))
+        self.site = QComboBox()
+        self.site.addItem("Work it out from the file", "")
+        for k, label in sr.SITES.items():
+            self.site.addItem(label, k)
+        row.addWidget(self.site)
+        b = QPushButton("Import report…")
+        b.clicked.connect(lambda *_: self._import())
+        row.addWidget(b)
+        row.addStretch(1)
+        lay.addLayout(row)
+        self.view = QTextBrowser()
+        self.view.setOpenExternalLinks(False)
+        lay.addWidget(self.view, 1)
+        self.note = QLabel()
+        self.note.setWordWrap(True)
+        lay.addWidget(self.note)
+        buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        buttons.rejected.connect(self.reject)
+        lay.addWidget(buttons)
+        self._show()
+
+    def _show(self):
+        self.view.setHtml(self.sr.summary_html())
+
+    def _import(self):
+        from PySide6.QtWidgets import QFileDialog
+        path, _ = QFileDialog.getOpenFileName(self, "Choose a site report", os.path.expanduser("~"),
+                                              "Reports (*.csv *.tsv *.txt);;All files (*)")
+        if path:
+            self.import_file(path)
+
+    def import_file(self, path: str):
+        try:
+            r = self.sr.import_report(path, self.site.currentData() or None)
+        except (OSError, ValueError) as e:
+            self.note.setText(f"<span style='color:{theme.color('bad')}'>{e}</span>")
+            return None
+        self.note.setText(f"{r['file']} was imported already ({r['label']})." if r["already"] else
+                          f"Imported {r['file']} for {r['label']}: {r['photos']} photos, {r['matched']} matched to "
+                          "photos you sent.")
+        self._show()
+        return r

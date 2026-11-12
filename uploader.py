@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import ssl
 import sys
 import threading
@@ -20,6 +21,7 @@ import unicodedata
 from datetime import datetime
 
 import tagger_core as core
+import upload_prep as prep
 
 KEYRING_SERVICE = "IPTC Tagger"
 STOCKUP_SERVICE = "StockUp"
@@ -41,7 +43,7 @@ SITES = {
         "ftp": {"protocol": "sftp", "host": "sftp.contributor.adobestock.com", "port": 22},
         "login_hint": "Only if Adobe's Upload page shows SFTP details: copy the username and password from there.",
         "after": "In Adobe Stock's Uploaded Files › New, click Upload CSV and choose the Adobe Stock CSV "
-                 "(Export CSV… › Adobe Stock). Tick editorial there for your editorial photos.",
+                 "(Make CSVs below). Tick editorial there for your editorial photos.",
     },
     "dreamstime": {
         "label": "Dreamstime", "short": "DT",
@@ -64,21 +66,25 @@ SITES = {
         "ftp": {"protocol": "ftp", "host": "ftp.depositphotos.com", "port": 21},
         "login_hint": "Your Depositphotos username and password (the same as the website).",
         "safe_names": True,
-        "after": "Depositphotos reads the title and keywords saved in the photos. Check them in its upload tool.",
+        "after": "Depositphotos reads the title and keywords saved in the photos. For the editorial flag and releases, "
+                 "click Make CSVs below and upload the Depositphotos CSV in its upload tool.",
     },
     "123rf": {
         "label": "123RF", "short": "RF",
         "ftp": {"protocol": "ftp", "host": "ftp.123rf.com", "port": 21},
         "login_hint": "Your 123RF username and password.",
-        "after": "123RF reads the title and keywords saved in the photos. Tick editorial there for your "
-                 "editorial photos.",
+        "after": "123RF reads the title and keywords saved in the photos. Click Make CSVs below and upload the 123RF "
+                 "CSV in its contributor area for the descriptions and country; tick editorial there for your "
+                 "editorial photos. 123RF takes at most 4 GB per upload session.",
     },
     "pond5": {
         "label": "Pond5", "short": "P5",
         "ftp": {"protocol": "ftp", "host": "ftp.pond5.com", "port": 21},
         "login_hint": "Your Pond5 FTP username and FTP password (Pond5 Dashboard › Account › FTP; it's not your "
                       "login password).",
-        "after": "Pond5 reads the title and keywords saved in the photos. Check them in Pond5's Uploads.",
+        "after": "Pond5 reads the title and keywords saved in the photos. For the location and editorial flag, click "
+                 "Make CSVs below, then in Pond5's Uploads choose Apply CSV with the Pond5 CSV. Check the first "
+                 "batch carefully: Pond5 only documents its video CSV.",
     },
     # These take FTP uploads too, but show their server on your contributor page instead of publishing it:
     # copy it into Logins once.
@@ -639,21 +645,77 @@ def _record(site: str, sha: str, path: str):
 
 
 # ---------- uploading ----------------------------------------------------------------------------------------
+_looks, _looks_lock = {}, threading.Lock()
+
+
+def _look(path: str) -> str:
+    """What the photo looks like (a small hash), shared by the sites' threads."""
+    try:
+        key = (path, os.stat(path).st_mtime_ns)
+    except OSError:
+        return ""
+    with _looks_lock:
+        if key in _looks:
+            return _looks[key]
+    h = prep.picture_hash(path)
+    with _looks_lock:
+        _looks[key] = h
+    return h
+
+
 class Interrupted(Exception):
     """Raised inside a transfer when you press Pause or Stop."""
 
 
-def plan(paths, site: str, history=None, stockup=None) -> dict:
-    """What an upload to this site would do: {"send": [paths], "sent": [(path, when)], "left_out": [(path, why)]}."""
-    out = {"send": [], "sent": [], "left_out": []}
+_info_cache = {}
+_info_lock = threading.Lock()
+
+
+def photo_info(path: str) -> dict | None:
+    """The photo's size, file size, colour profile and JPEG kind (remembered while the file is unchanged)."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    key = (path, st.st_size, st.st_mtime_ns)
+    with _info_lock:
+        if key in _info_cache:
+            return _info_cache[key]
+    try:
+        info = prep.photo_info(path)
+    except Exception:
+        info = None
+    with _info_lock:
+        _info_cache[key] = info
+    return info
+
+
+def plan(paths, site: str, history=None, stockup=None, opts: dict | None = None) -> dict:
+    """What an upload to this site would do: {"send": [paths], "sent": [(path, when)], "left_out": [(path, why)],
+    "refused": [(path, why)], "warn": [(path, msg)], "fixes": {path: (ops, scale, [msgs])}}.
+    With opts (the Upload window's choices), each site's photo rules are checked too: refused photos are the
+    ones the site won't take (too small, too big…), and are only sent with opts["send_anyway"]; fixes are the
+    adjusted copies that will be made when opts["copies"] allows them."""
+    out = {"send": [], "sent": [], "left_out": [], "refused": [], "warn": [], "fixes": {}}
     for p in paths:
         if os.path.splitext(p)[1].lower() not in UPLOAD_EXT:
             out["left_out"].append((p, "not a JPEG (export a JPEG to upload it)"))
-        elif not os.path.isfile(p):
+            continue
+        if not os.path.isfile(p):
             out["left_out"].append((p, "the file isn't there any more"))
-        else:
-            when = sent_before(site, file_sha256(p), history, stockup)
-            (out["sent"].append((p, when)) if when else out["send"].append(p))
+            continue
+        if opts is not None and site in prep.RULES:
+            info = photo_info(p)
+            if info:
+                c = prep.check(site, info, opts)
+                out["warn"] += [(p, m) for m in c["warn"] + (c["refused"] if c["send"] else [])]
+                if c["ops"]:
+                    out["fixes"][p] = (c["ops"], c["scale"], c["fixes"])
+                if not c["send"]:
+                    out["refused"].append((p, "; ".join(c["refused"])))
+                    continue
+        when = sent_before(site, file_sha256(p), history, stockup)
+        (out["sent"].append((p, when)) if when else out["send"].append(p))
     return out
 
 
@@ -661,8 +723,12 @@ class Uploader:
     """Sends photos to several sites at once, one thread per site. status() can be read from the window at any
     time; pause(), stop() take effect part-way through a photo."""
 
-    def __init__(self, paths, sites, encrypted_only: bool = False, skip_sent: bool = True, connect_fn=None):
+    def __init__(self, paths, sites, encrypted_only: bool = False, skip_sent: bool = True, connect_fn=None,
+                 opts: dict | None = None):
+        """opts: the Upload window's choices (see upload_prep.DEFAULT_OPTS): each site's photo rules, adjusted
+        copies, Send anyway and the shuffled order. Without opts, the photos go exactly as they are, in order."""
         self.paths = list(paths)
+        self.opts = opts
         self.sites = list(sites)
         self.encrypted_only = encrypted_only
         self.skip_sent = skip_sent
@@ -690,7 +756,7 @@ class Uploader:
                 json.dump({k: sorted(v) for k, v in p.items() if v}, fh)
             os.replace(tmp, partial_path())
 
-    def _mark_done(self, site, path, sent_as, sha, encrypted):
+    def _mark_done(self, site, path, sent_as, sha, encrypted, sent_file=None):
         _record(site, sha, path)
         with self.lock:
             new = not os.path.exists(receipt_path())
@@ -699,7 +765,7 @@ class Uploader:
                 if new:
                     w.writerow(["time", "site", "photo", "sent as", "bytes", "encrypted", "sha256"])
                 w.writerow([datetime.now().isoformat(timespec="seconds"), self.progress[site]["label"], path, sent_as,
-                            os.path.getsize(path), "yes" if encrypted else "no", sha])
+                            os.path.getsize(sent_file or path), "yes" if encrypted else "no", sha])
         self._set_partial(site, sent_as, False)
 
     # ---- controls
@@ -739,19 +805,25 @@ class Uploader:
             return False
         self.stop_requested = self.paused = False
         history, theirs = load_history(), stockup_sent()
-        self._todo = {}
+        self._todo, self._fixes = {}, {}
         with self.lock:
             self.running = True
             self.progress = {}
             for s in self.sites:
-                p = plan(self.paths, s["name"], history, theirs)
+                p = plan(self.paths, s["name"], history, theirs, self.opts)
                 todo = p["send"] if self.skip_sent else p["send"] + [x for x, _ in p["sent"]]
                 self._todo[s["name"]] = todo
+                self._fixes[s["name"]] = p["fixes"]
                 self.progress[s["name"]] = {
                     "label": s.get("label") or SITES[s["name"]]["label"], "state": "waiting", "done": 0, "total": len(todo),
                     "bytes": 0, "total_bytes": sum(os.path.getsize(x) for x in todo) or 1, "current": "",
                     "errors": [], "notes": [], "skipped": len(p["sent"]) if self.skip_sent else 0,
-                    "left_out": len(p["left_out"]), "encrypted": None}
+                    "left_out": len(p["left_out"]), "refused": len(p["refused"]), "encrypted": None}
+                limit = prep.RULES.get(s["name"], {}).get("batch_gb")
+                if limit and sum(os.path.getsize(x) for x in todo) > limit * 1024 ** 3:
+                    self.progress[s["name"]]["notes"].append(
+                        f"This is over {limit} GB: {prep.LABELS.get(s['name'], s['name'])} asks for at most {limit} GB "
+                        "per upload session. If it stops taking files, send the rest later.")
         threads = [threading.Thread(target=self._run_site, args=(s,), daemon=True) for s in self.sites]
         for t in threads:
             t.start()
@@ -796,6 +868,14 @@ class Uploader:
         label = site.get("label") or SITES[name]["label"]
         conn, failures_in_row, last, on_server = None, 0, "", set()
         ours = self._partials().get(name, set())      # half-sent earlier by IPTC Tagger: safe to replace
+        fixes = self._fixes.get(name, {})
+        copies = prep.copies_dir(core.config_dir(), name)
+        if fixes:
+            shutil.rmtree(copies, ignore_errors=True)  # copies from an earlier upload
+        if self.opts and self.opts.get("shuffle") and len(self._todo[name]) > 2:
+            self._set(name, state="ordering")
+            looks = {p: _look(p) for p in self._todo[name]}
+            self._todo[name] = prep.spread_order(self._todo[name], looks, f"{name}-{time.time()}")
 
         def hang_up():
             nonlocal conn
@@ -810,7 +890,18 @@ class Uploader:
                 self._set(name, state="stopped", current="")
                 return
             remote = remote_name(name, path)
-            sha = file_sha256(path)
+            sha = file_sha256(path)                   # the original's: "sent before" goes by your own file
+            send_file = path
+            if path in fixes:
+                ops, scale, _msgs = fixes[path]
+                send_file = os.path.join(copies, os.path.basename(path))
+                try:
+                    self._set(name, state="making a copy", current=os.path.basename(path))
+                    prep.make_copy(path, send_file, ops, name, scale)
+                except Exception as e:
+                    self._err(name, f"{os.path.basename(path)}: the adjusted copy couldn't be made ({e}), so it "
+                                    "wasn't sent.")
+                    continue
             ok, skipped, attempt = False, False, 0
             while attempt < 3:
                 start_bytes = self.progress[name]["bytes"]
@@ -836,7 +927,7 @@ class Uploader:
                     self._set_partial(name, remote, True)
                     ours.add(remote)
                     started = True
-                    conn.put(path, remote, prog, lambda _name=name: self._set(_name, state="finishing"))
+                    conn.put(send_file, remote, prog, lambda _name=name: self._set(_name, state="finishing"))
                     on_server.add(remote)
                     ok = True
                     break
@@ -871,7 +962,7 @@ class Uploader:
                     time.sleep(min(2 * attempt, 4) if not os.environ.get("IPTC_TAGGER_OFFLINE") else 0.05)
             if ok:
                 failures_in_row = 0
-                self._mark_done(name, path, remote, sha, conn.encrypted if conn else False)
+                self._mark_done(name, path, remote, sha, conn.encrypted if conn else False, send_file)
                 ours.discard(remote)
                 with self.lock:
                     self.progress[name]["done"] += 1

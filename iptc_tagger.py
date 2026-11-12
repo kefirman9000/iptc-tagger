@@ -2401,7 +2401,8 @@ class MainWindow(QMainWindow):
         # when you're done: Upload… is the main button; StockUp is still there, in one button with a menu
         self.btn_upload = button("Upload…", lambda: self.open_upload(), "upload", primary=True)
         self.btn_upload.setToolTip("When you're done: send the photos to your stock sites (Shutterstock, Adobe Stock,\n"
-                                   "Dreamstime, Alamy, Depositphotos, 123RF, Pond5), with a progress bar for each site.\n"
+                                   "Dreamstime, Alamy, Depositphotos, 123RF, Pond5, and a folder for iStock), with a progress bar for each\n"
+                                   "site, each site's photo rules checked, and the order shuffled with look-alikes apart.\n"
                                    "Uses the checked photos, else the selected, else all shown.")
         self.btn_stockup = button("Open in StockUp", lambda: None, "external-link")   # (its menu opens)
         self.btn_stockup.setToolTip("Open the photos in the StockUp app instead, to check them for each stock site\n"
