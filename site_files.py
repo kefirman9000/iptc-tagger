@@ -457,7 +457,8 @@ def write_site_csvs(folder: str, rows: list[dict], sites, day: str = "", ss_text
         elif site == "pond5":
             _write(path, ["originalfilename", "title", "description", "keywords", "city", "region", "country",
                           "editorial"],
-                   [[r["file"], plain(r["title"]), desc(r), kw(r), r.get("city", ""), r.get("region", ""),
+                   [[r["file"], plain(core.pond5_title(r["title"], r.get("bare_title"))), desc(r), kw(r),
+                     r.get("city", ""), r.get("region", ""),
                      r.get("country", ""), "yes" if r.get("editorial") else "no"] for r in picked])
         else:
             continue

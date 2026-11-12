@@ -40,7 +40,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.11.12.2"
+APP_VERSION = "2026.11.12.3"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 # camera RAW files: titles and keywords go into the Lightroom sidecar next to them (photo.xmp), never the RAW.
 # DNG is left out: Lightroom ignores sidecars for DNG and keeps its metadata inside the file itself.
@@ -1858,11 +1858,21 @@ def dreamstime_checks(title: str, description: str, keywords) -> list[dict]:
     return out
 
 
-def dreamstime_title(title: str, bare: str | None = None) -> str:
+def dreamstime_title(title: str, bare: str | None = None, most: int = DT_TITLE_LONG) -> str:
     """The title the Dreamstime CSV gets: without the editorial place and date (the description and the
     Editorial column keep it editorial), cut to Dreamstime's 130 characters."""
     t = (bare if (bare or "").strip() else _dateline_split(title or "")[1]).strip() or (title or "")
-    return shorten_title(t)
+    return shorten_title(t, most)
+
+
+POND5_TITLE_MAX = 80
+
+
+def pond5_title(title: str, bare: str | None = None) -> str:
+    """The title the Pond5 CSV gets: Pond5 refuses titles over 80 characters, so it goes without the editorial
+    place and date (the description, the city / state / country columns and the editorial column keep those),
+    cut back to its main phrase."""
+    return dreamstime_title(title, bare, POND5_TITLE_MAX)
 
 
 def dreamstime_fix(title: str, description: str, keywords) -> dict:

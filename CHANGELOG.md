@@ -1,5 +1,9 @@
 # What's new
 
+## 2026.11.12.3
+
+- **Fix: Pond5 refused long titles** ("The max length of title is 80 characters"). The Pond5 CSV's title is now just the subject, without the place and date, cut back to its main phrase so it never goes over 80 characters. The photos stay editorial on Pond5: the CSV still marks them editorial, and the description and the city, state and country columns keep the place and date. Your photos and the other sites keep the full title.
+
 ## 2026.11.12.2
 
 - **Logins are easy to find:** **Settings → Stock sites → Upload logins → Logins…** opens your agency logins, with a Test button for each. You no longer need photos in the list and the Upload window open to add them. (Logins… is still in the Upload window too.)

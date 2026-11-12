@@ -130,3 +130,17 @@ def test_results_import_matches_photos_you_sent(tmp_path, monkeypatch):
     assert (s["accepted"], s["rejected"], s["earn"]) == (1, 1, 1.5)
     assert s["reasons"] == [("Noise", 1)]
     assert "Red Barn" in sr.summary_html()
+
+
+def test_pond5_csv_titles_fit_80_characters(tmp_path):
+    import csv
+    import site_files
+    long = ("Apex, North Carolina - November 11, 2026: Highlights Hidden Pictures Happy Holidays Special Edition "
+            "Magazines on Store Shelf for Children's Entertainment and Puzzle Solving")
+    rows = [{"file": "a.jpg", "title": long, "description": "Apex, North Carolina - November 11, 2026: A shelf.",
+             "keywords": ["magazine"] * 1, "editorial": True, "city": "Apex", "region": "North Carolina",
+             "country": "United States"}]
+    path = site_files.write_site_csvs(str(tmp_path), rows, ["pond5"])[0]
+    got = list(csv.reader(open(path, encoding="utf-8")))[1]
+    assert got[1] == "Highlights Hidden Pictures Happy Holidays Special Edition Magazines"
+    assert got[2].startswith("Apex, North Carolina - November 11, 2026") and got[7] == "yes"
