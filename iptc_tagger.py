@@ -549,6 +549,15 @@ class Photo:
 # --------------------------------------------------------------------------- settings dialog
 
 class SettingsDialog(QDialog):
+    def _open_logins(self):
+        """The agencies' upload logins (the same window as Logins… in the Upload window)."""
+        from upload_window import LoginsDialog
+        main = self.parent()
+        shared = getattr(main, "settings", None)
+        shared = shared if isinstance(shared, dict) else self.settings
+        if LoginsDialog(self, shared).exec():
+            self.settings["upload_encrypted_only"] = shared.get("upload_encrypted_only", False)
+
     def __init__(self, parent, settings: dict, detected_exiftool: str | None):
         super().__init__(parent)
         self.setWindowTitle("Settings")
@@ -1029,6 +1038,15 @@ class SettingsDialog(QDialog):
                                 "Shutterstock and the others read) keep the full text.\nUnticked, Check Before Upload "
                                 "lists these and Fix These changes the photos' own text.")
         f_sites.addRow("", self.dt_tidy)
+        self.btn_logins = QPushButton("Logins…")
+        self.btn_logins.setToolTip("Your FTP login for each agency you upload to (Shutterstock, Adobe Stock, Dreamstime,\n"
+                                   "Alamy, Depositphotos, 123RF, Pond5 and more), with a Test button for each.\n"
+                                   "Passwords are kept in Windows Credential Manager (Keychain on a Mac).")
+        self.btn_logins.clicked.connect(lambda *_: self._open_logins())
+        logins_row = QHBoxLayout()
+        logins_row.addWidget(self.btn_logins)
+        logins_row.addWidget(QLabel("the usernames and passwords Upload… sends with"), 1)
+        f_sites.addRow("Upload logins", logins_row)
         sync = lambda *_: self.sites_grid.setEnabled(not (self.sites_from_su.isChecked() and bool(from_su)))
         self.sites_from_su.toggled.connect(sync)
         sync()

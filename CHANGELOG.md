@@ -1,5 +1,9 @@
 # What's new
 
+## 2026.11.12.2
+
+- **Logins are easy to find:** **Settings → Stock sites → Upload logins → Logins…** opens your agency logins, with a Test button for each. You no longer need photos in the list and the Upload window open to add them. (Logins… is still in the Upload window too.)
+
 ## 2026.11.12.1
 
 The Upload window now does everything StockUp did, for all eight sites: Shutterstock, Adobe Stock, Dreamstime, Alamy, iStock, Depositphotos, 123RF and Pond5.
