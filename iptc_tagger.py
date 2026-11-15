@@ -3008,12 +3008,11 @@ class MainWindow(QMainWindow):
         bottom.addWidget(self.btn_force)
         bottom.addWidget(self.btn_unsaved)
         bottom.addWidget(self.lbl_all_saved)
-        bottom.addSpacing(16)
-        bottom.addWidget(self.btn_check)
-        bottom.addWidget(self.btn_ss_csv)
-        bottom.addWidget(self.btn_dt_csv)
-        bottom.addWidget(self.btn_stockup)
-        bottom.addWidget(self.btn_upload)
+        # the steps after tagging get a line of their own, so the window still fits a laptop screen
+        actions = QHBoxLayout()
+        actions.addStretch(1)
+        for b in (self.btn_check, self.btn_ss_csv, self.btn_dt_csv, self.btn_stockup, self.btn_upload):
+            actions.addWidget(b)
 
         central = QWidget()
         lay = QVBoxLayout(central)
@@ -3047,6 +3046,7 @@ class MainWindow(QMainWindow):
         lay.addWidget(self.et_banner)
         lay.addWidget(self.splitter, 1)
         lay.addLayout(bottom)
+        lay.addLayout(actions)
         self.setCentralWidget(central)
 
         for seq, slot in ((QKeySequence(QKeySequence.Save), self.save),
