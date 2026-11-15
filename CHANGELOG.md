@@ -1,5 +1,10 @@
 # What's new
 
+## 2026.11.14.1
+
+- **Fix: Alamy uploads go into Alamy's Stock folder.** Alamy only takes photos from the folders on its FTP server (Stock, Live News, Archive stock, Vectors); the app was putting them at the top level, where Alamy doesn't look, so they never reached Alamy Image Manager even though the upload and the connection test worked. Photos sent to the top level before are sent again to Stock next time (they don't count as sent). To use another folder (Archive stock, say), type it in Upload › Logins › Alamy.
+- **Uploads are written to the debug log:** each site's result (how many sent, to which server and folder) and every error.
+
 ## 2026.11.12.3
 
 - **Fix: Pond5 refused long titles** ("The max length of title is 80 characters"). The Pond5 CSV's titles now never go over 80 characters. A title that fits is kept as it is. A longer one keeps the editorial place and date in front only when the subject, cut back to its main phrase, still fits after them; otherwise the title is just the subject. The photos stay editorial on Pond5: the CSV still marks them editorial, and the description and the city, region and country columns keep the place and date. Your photos and the other sites keep the full title.

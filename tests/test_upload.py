@@ -348,3 +348,40 @@ def test_istock_folder_and_results(window, make_photos, monkeypatch, tmp_path):
     assert "Focus" in d.view.toPlainText()
     d.close()
     w.close()
+
+
+def test_alamy_uploads_go_into_its_stock_folder():
+    import ftplib
+    assert up._remote_dir("alamy", "") == "Stock" and up._remote_dir("alamy", "/") == "Stock"
+    assert up._remote_dir("alamy", "Archive stock") == "Archive stock"            # your own choice stays
+    assert up._remote_dir("shutterstock", "/") == "/"
+
+    class FakeFtp:
+        def __init__(self, folders):
+            self.folders, self.at = folders, "/"
+
+        def cwd(self, d):
+            if d not in self.folders:
+                raise ftplib.error_perm("550 No such folder")
+            self.at = d
+
+        def nlst(self):
+            return list(self.folders)
+
+    conn = up.FTPConn.__new__(up.FTPConn)
+    conn.ftp = FakeFtp(["Live News", "stock", "Vectors"])
+    conn._cd({"remote_dir": "Stock", "host": "upload.alamy.com"})
+    assert conn.ftp.at == "stock"                                                  # found whatever its case
+    conn.ftp = FakeFtp(["Vectors"])
+    import pytest
+    with pytest.raises(RuntimeError, match="no 'Stock' folder"):
+        conn._cd({"remote_dir": "Stock", "host": "upload.alamy.com"})
+
+
+def test_photos_sent_to_alamys_top_level_go_again():
+    old = {"alamy": {"abc": {"date": "2026-11-12", "file": "a.jpg"}},
+           "shutterstock": {"abc": {"date": "2026-11-12", "file": "a.jpg"}}}
+    assert up.sent_before("alamy", "abc", old, {}) == ""                 # went where Alamy doesn't look
+    assert up.sent_before("shutterstock", "abc", old, {}) == "2026-11-12"
+    new = {"alamy": {"abc": {"date": "2026-11-14", "file": "a.jpg", "dir": "Stock"}}}
+    assert up.sent_before("alamy", "abc", new, {}) == "2026-11-14"

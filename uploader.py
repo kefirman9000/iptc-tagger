@@ -58,6 +58,8 @@ SITES = {
         "label": "Alamy", "short": "AL",
         "ftp": {"protocol": "ftp", "host": "upload.alamy.com", "port": 21},
         "login_hint": "The email you sign in to Alamy with, and your Alamy password.",
+        # Alamy only takes photos from its folders (Stock, Live News, Archive stock, Vectors), not the top level
+        "remote_dir": "Stock",
         "after": "Alamy reads the caption and keywords saved in the photos. In Alamy Image Manager, tick "
                  "'Sell for editorial only' for your editorial photos.",
     },
@@ -316,11 +318,19 @@ def load_sites() -> list[dict]:
                       "protocol": (v.get("protocol") or ftp["protocol"]).lower(),
                       "host": v.get("host") or ftp["host"], "port": port,
                       "username": v.get("username", ""), "password": password,
-                      "remote_dir": v.get("remote_dir") or "/", "source": source})
+                      "remote_dir": _remote_dir(site, v.get("remote_dir")), "source": source})
     return sites
 
 
-def save_login(site: str, username: str, password: str = "", remote_dir: str = "", clear: bool = False,
+def _remote_dir(site: str, saved) -> str:
+    """The folder to upload into: the one you set, else the site's own (Alamy: Stock), else the top level.
+    A saved '/' counts as not set for a site with its own folder (logins saved before it had one)."""
+    saved = (saved or "").strip()
+    own = SITES.get(site, {}).get("remote_dir", "")
+    return own if own and saved in ("", "/") else (saved or "/")
+
+
+def save_login(site: str, password: str = "", remote_dir: str = "", clear: bool = False,
                host: str = "", port=None, protocol: str = "", label: str = ""):
     """Save one site's login (a blank password keeps the saved one). Passwords go in the keychain when there is
     one, otherwise in the logins file, which only you can read."""
@@ -410,8 +420,19 @@ class FTPConn:
             self._cd(site)
 
     def _cd(self, site):
-        if site["remote_dir"] not in ("", "/"):
-            self.ftp.cwd(site["remote_dir"])
+        want = site["remote_dir"]
+        if want in ("", "/"):
+            return
+        try:
+            self.ftp.cwd(want)
+        except ftplib.error_perm:
+            # the same folder written another way ("stock" / "Stock")
+            names = self.listdir()
+            match = next((n for n in names if n.casefold() == want.strip("/").casefold()), None)
+            if match is None:
+                raise RuntimeError(f"There's no '{want}' folder on {site['host']}" +
+                                   (f" (it has: {', '.join(sorted(names)[:8])})" if names else "") + ".")
+            self.ftp.cwd(match)
 
     def listdir(self):
         try:
@@ -619,6 +640,9 @@ def stockup_sent() -> dict:
             continue
         for sha, sites in (h.get("sha") or {}).items():
             for site in sites or {}:
+                entry = sites[site] if isinstance(sites, dict) else {}
+                if SITES.get(site, {}).get("remote_dir") and not (isinstance(entry, dict) and entry.get("dir")):
+                    continue                          # sent to the top level, which that site ignores
                 out.setdefault(site, set()).add(sha)
     return out
 
@@ -627,16 +651,18 @@ def sent_before(site: str, sha: str, history=None, stockup=None) -> str:
     """When this exact file was sent to this site already ('' if never), by IPTC Tagger or StockUp."""
     history = load_history() if history is None else history
     hit = (history.get(site) or {}).get(sha)
-    if hit:
+    own = SITES.get(site, {}).get("remote_dir")
+    if hit and not (own and not hit.get("dir")):      # (Alamy: sent to the top level before, which it ignores)
         return hit.get("date", "") or "before"
     stockup = stockup_sent() if stockup is None else stockup
     return "before (by StockUp)" if sha in stockup.get(site, set()) else ""
 
 
-def _record(site: str, sha: str, path: str):
+def _record(site: str, sha: str, path: str, folder: str = "/"):
     with _history_lock:
         h = load_history()
-        h.setdefault(site, {})[sha] = {"date": datetime.now().strftime("%Y-%m-%d"), "file": path}
+        h.setdefault(site, {})[sha] = {"date": datetime.now().strftime("%Y-%m-%d"), "file": path,
+                                       "dir": folder or "/"}
         os.makedirs(core.config_dir(), exist_ok=True)
         tmp = history_path() + ".tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
@@ -757,7 +783,7 @@ class Uploader:
             os.replace(tmp, partial_path())
 
     def _mark_done(self, site, path, sent_as, sha, encrypted, sent_file=None):
-        _record(site, sha, path)
+        _record(site, sha, path, next((s.get("remote_dir") for s in self.sites if s["name"] == site), "/"))
         with self.lock:
             new = not os.path.exists(receipt_path())
             with open(receipt_path(), "a", encoding="utf-8", newline="") as fh:
@@ -792,6 +818,7 @@ class Uploader:
             self.progress[site].update(kw)
 
     def _err(self, site, msg):
+        core.debug(f"upload {site}: {msg}", always=True)
         with self.lock:
             self.progress[site]["errors"].append(msg)
 
@@ -982,3 +1009,7 @@ class Uploader:
         hang_up()
         self._set(name, state="finished with errors" if self.progress[name]["errors"] else "finished",
                   current="")
+        pr = self.progress[name]
+        core.debug(f"upload {name}: finished, {pr['done']} of {pr['total']} sent to {site['host']} folder "
+                   f"{site.get('remote_dir') or '/'}, {len(pr['errors'])} error(s), {pr['skipped']} sent before",
+                   always=True)
