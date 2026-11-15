@@ -64,3 +64,15 @@ def test_check_before_upload_finds_what_sites_reject():
         dict(ok, title="Woman Shopping for Groceries"), ["shutterstock"]))
     big = precheck.check_photo(dict(ok, bytes=48 * precheck.MB), ["shutterstock", "adobe"])
     assert [i["sites"] for i in big if i["what"] == "File too big"] == [["Adobe Stock"]]
+
+
+def test_fix_plan_for_site_rules():
+    import tagger_core as core
+    assert core.site_fix_plan("Red Apple", ["apple"] * 3, ["shutterstock", "adobe"]) == \
+        {"kw_more": 7, "title_longer": True}                     # Shutterstock: 5+ words, 7+ keywords
+    assert core.site_fix_plan("Red apple on a wooden table", [f"k{i}" for i in range(60)], ["shutterstock"]) == \
+        {"kw_trim": 50}
+    long_desc = "A red apple sits on a wooden table in warm morning light, " * 6
+    assert core.site_fix_plan("Red apple on a wooden table", [f"k{i}" for i in range(20)], ["depositphotos"],
+                              long_desc)["desc_cut"] == 250
+    assert core.site_fix_plan("Red apple on a wooden table", [f"k{i}" for i in range(20)], ["shutterstock"]) == {}

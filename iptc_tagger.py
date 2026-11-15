@@ -1036,7 +1036,7 @@ class SettingsDialog(QDialog):
                                 "back to their main phrase,\nwords in capitals in normal case, descriptions that stop "
                                 "half-way ended cleanly and keyword repeats left out,\nwhile the photos (what "
                                 "Shutterstock and the others read) keep the full text.\nUnticked, Check Before Upload "
-                                "lists these and Fix These changes the photos' own text.")
+                                "lists these and Fix All changes the photos' own text.")
         f_sites.addRow("", self.dt_tidy)
         self.btn_logins = QPushButton("Logins…")
         self.btn_logins.setToolTip("Your FTP login for each agency you upload to (Shutterstock, Adobe Stock, Dreamstime,\n"
@@ -2235,11 +2235,15 @@ class CheckDialog(QDialog):
         btns = QHBoxLayout()
         fixable = [ph for ph, issues in results.items() if any(i["fixable"] and i["what"] != "Not saved"
                                                                   for i in issues)]
-        self.b_fix = QPushButton(f"Fix These ({len(fixable)})")
-        self.b_fix.setToolTip("Make the fixes listed in these photos: brands spelled your way, the title's subject "
-                              "and brand in the first ten keywords,\nand for Dreamstime: long titles cut back to "
-                              "their main phrase, capitals, descriptions that stop half-way,\nkeyword repeats. "
-                              "Not saved yet: save them after (the earlier text is kept under Earlier suggestions)")
+        self.b_fix = QPushButton(f"Fix All ({len(fixable)})")
+        self.b_fix.setProperty("primary", True)
+        self.b_fix.setToolTip("Fix everything the app can, in one go (it tells you what first):\n"
+                              "  • straight away: brand spelling, keyword order, too many keywords, a description\n"
+                              "    over a site's limit\n"
+                              "  • with the AI: Detect photos with no title or keywords, add keywords where there are\n"
+                              "    too few, reword a title or description that's too long or too short\n"
+                              "Releases, picture size and look-alikes are left for you. Nothing is saved until you\n"
+                              "save; the text before is kept under Earlier suggestions.")
         self.b_fix.setVisible(bool(fixable))
         self.b_fix.clicked.connect(lambda *_: self._done("fix"))
         unsaved = [ph for ph in results if ph.changed]
@@ -5177,7 +5181,12 @@ class MainWindow(QMainWindow):
                     "ai_markers": [m for m in ph.ai_markers if not (ph.develop_to_strip and "Lightroom" in m)],
                     "ss_text": self.settings.get("shutterstock_text", "title"),
                     "dt_tidy": bool(self.settings.get("dreamstime_tidy_csv", True))}
-            out[ph] = precheck.check_photo(info, sites)
+            issues = precheck.check_photo(info, sites)
+            plan = self.fix_plan(ph, site_rules)
+            for i in issues:                         # what Fix All can do something about
+                if i["what"] in ("No title", "No keywords") or i["what"] == "Site rule" and plan:
+                    i["fixable"] = True
+            out[ph] = issues
             self._check_infos.append(info)
         return out
 
@@ -5204,27 +5213,115 @@ class MainWindow(QMainWindow):
         dlg.exec()
         flagged = [ph for ph, issues in results.items() if issues]
         if dlg.choice == "fix":
-            fixed = 0
-            for ph, issues in results.items():
-                if any(i["fixable"] and i["what"] != "Not saved" for i in issues) and not ph.busy:
-                    self._remember_suggestion(ph, "Before fixes")
-                    self.polish(ph)
-                    if "dreamstime" in sites and not self.settings.get("dreamstime_tidy_csv", True):
-                        r = core.dreamstime_fix(ph.title, ph.description, ph.keywords)
-                        ph.title, ph.description, ph.keywords = core.clean_title(r["title"]), r["description"], \
-                            r["keywords"]
-                    if ph.status == "saved" and ph.changed:
-                        ph.status = "ready"
-                    self._show(ph)
-                    fixed += 1
-            self.toast(f"Fixed {fixed} photo{'s' if fixed != 1 else ''}. "
-                       "Save them, then upload.", "ok", 6)
+            self.fix_all(results, sites)
         elif dlg.choice == "save":
             self.save_photos([ph for ph in results if ph.changed])
         elif dlg.choice == "tick":
             self.set_checked(self.photos, False)
             self.set_checked(flagged, True)
         return dlg.choice == "upload"
+
+    def fix_plan(self, ph: Photo, site_rules=None) -> dict:
+        """What Fix All would do about this photo's site rules (core.site_fix_plan)."""
+        if site_rules is None:
+            site_rules = [k for k in self.check_sites() if k in core.STOCK_SITES]
+        return core.site_fix_plan(ph.title, ph.keywords, site_rules, ph.description,
+                                  self.settings.get("shutterstock_text", "title"))
+
+    def fix_all(self, results: dict, sites, ask: bool = True) -> dict:
+        """Check Before Upload › Fix All: fix what can be fixed straight away (brand spelling, keyword order,
+        too many keywords, a description over the limit, Dreamstime's text), and give the AI what needs new
+        words: Detect photos with no title or keywords, add keywords where there are too few, reword a title or
+        description that's too long or too short. Nothing is saved until you save. Returns what was done."""
+        site_rules = [k for k in sites if k in core.STOCK_SITES]
+        now, detect, reword, left = [], [], {}, []
+        for ph, issues in results.items():
+            if ph.busy or not issues:
+                continue
+            whats = {i["what"] for i in issues}
+            if "No title" in whats or "No keywords" in whats:
+                detect.append(ph)
+                continue
+            plan = self.fix_plan(ph, site_rules)
+            fields, options = [], []
+            if plan.get("kw_more"):
+                fields.append("keywords")
+                options.append("kw_more")
+            if plan.get("title_shorter") or plan.get("title_longer"):
+                fields.append("title")
+                options.append("shorter" if plan.get("title_shorter") else "longer")
+            if plan.get("desc_longer"):
+                fields.append("description")
+                options.append("longer")
+            if fields:
+                reword[ph] = {"fields": fields, "options": options, "instruction": "", "context_on": True}
+            local = any(i["fixable"] and i["what"] not in ("Not saved", "Site rule", "No title", "No keywords")
+                        for i in issues) or plan.get("kw_trim") or plan.get("desc_cut")
+            if local:
+                now.append((ph, plan))
+            if not fields and not local:
+                left += [i["what"] for i in issues if i["what"] != "Not saved"]
+        if not (now or detect or reword):
+            self.status.setText("Nothing here can be fixed by the app: these need you (releases, picture size, "
+                                "look-alikes…).")
+            return {"now": 0, "detect": 0, "reword": 0}
+        if ask and not os.environ.get("IPTC_TAGGER_OFFLINE"):
+            lines = []
+            if now:
+                lines.append(f"Fix now, in {len(now)} photo{'s' if len(now) != 1 else ''}: brand spelling, keyword "
+                             "order, too many keywords, descriptions over the limit"
+                             + (", Dreamstime's text" if "dreamstime" in sites
+                                and not self.settings.get("dreamstime_tidy_csv", True) else "") + ".")
+            if detect:
+                lines.append(f"Detect {len(detect)} photo{'s' if len(detect) != 1 else ''} with no title or keywords.")
+            if reword:
+                lines.append(f"Reword {len(reword)} photo{'s' if len(reword) != 1 else ''} with the AI: add keywords "
+                             "where there are too few, a title or description that's too long or too short.")
+            if left:
+                lines.append("Left for you: " + ", ".join(dict.fromkeys(left)).lower()
+                             + " (the app can't fix these).")
+            box = QMessageBox(QMessageBox.Question, "Fix All", "\n\n".join(lines) + "\n\nNothing is saved into the "
+                              "files until you save. The text before is kept under Earlier suggestions.")
+            box.setStandardButtons(QMessageBox.Yes | QMessageBox.Cancel)
+            box.button(QMessageBox.Yes).setText("Fix All")
+            if box.exec() != QMessageBox.Yes:
+                return {"now": 0, "detect": 0, "reword": 0}
+        for ph, plan in now:
+            self._remember_suggestion(ph, "Before fixes")
+            self.polish(ph)
+            if "dreamstime" in sites and not self.settings.get("dreamstime_tidy_csv", True):
+                r = core.dreamstime_fix(ph.title, ph.description, ph.keywords)
+                ph.title, ph.description, ph.keywords = core.clean_title(r["title"]), r["description"], r["keywords"]
+            if plan.get("kw_trim"):                  # the first ones are the ones that matter most
+                ph.keywords = ph.keywords[:plan["kw_trim"]]
+            if plan.get("desc_cut") and ph.description:
+                ph.description = core.clean_description(ph.description, max_len=plan["desc_cut"])
+            if ph.status == "saved" and ph.changed:
+                ph.status = "ready"
+            ph.message = "Fixed. Not saved yet"
+            self._show(ph)
+        if detect:
+            self.identify_photos(detect)
+        if reword:
+            targets = [ph for ph in reword if not ph.busy]
+            self._check_then(targets, lambda ok: self._start_fix_reword(ok, reword))
+        done = {"now": len(now), "detect": len(detect), "reword": len(reword)}
+        bits = ([f"fixed {len(now)}"] if now else []) + ([f"detecting {len(detect)}"] if detect else []) + (
+            [f"rewording {len(reword)}"] if reword else [])
+        self.toast("Fix All: " + ", ".join(bits) + ". Save when they're done, then check again.", "ok", 7)
+        if self.review.photo is not None:
+            self.review.show_photo(self.review.photo)
+        return done
+
+    def _start_fix_reword(self, targets, jobs: dict):
+        """Fix All's AI part: each photo reworded with its own fields and options."""
+        self._begin_batch(len(targets), "Fixing")
+        self.status.setText(f"Fixing with {self.text_model() or self.settings['model']} (text only)…")
+        for ph in targets:
+            self._remember_suggestion(ph, "Before fixes")
+            self._queue_reword(ph, jobs[ph])
+        self.ai_timer.start()
+        self._refresh_buttons()
 
     def look_alike_groups(self, photos=None) -> list[list]:
         """Photos whose pictures are nearly the same (a burst, the same shelf twice): sites reject the extras."""

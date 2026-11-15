@@ -40,7 +40,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.11.14.2"
+APP_VERSION = "2026.11.14.3"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 # camera RAW files: titles and keywords go into the Lightroom sidecar next to them (photo.xmp), never the RAW.
 # DNG is left out: Lightroom ignores sidecars for DNG and keeps its metadata inside the file itself.
@@ -1914,6 +1914,41 @@ def dreamstime_fix(title: str, description: str, keywords) -> dict:
         kws = kept
         fixes.append("keyword repeats")
     return {"title": t, "description": d, "keywords": kws, "fixes": fixes}
+
+
+def site_fix_plan(title: str, keywords, sites, description: str = "", ss_text: str = "title") -> dict:
+    """How to fix what site_problems finds, for Check Before Upload's Fix All. Keys (only those needed):
+    kw_more: the AI adds keywords (to reach this many); kw_trim: keep only this many keywords;
+    desc_cut: cut the description at a phrase to this many characters; desc_longer: the AI makes the
+    description fuller; title_shorter / title_longer: the AI rewords the title (a site that gets the title as
+    its description: Shutterstock). Limits the photo can't meet this way aren't in it."""
+    title, description = (title or "").strip(), (description or "").strip()
+    n, plan = len(keywords or []), {}
+    rules = [STOCK_SITES[k] for k in sites if k in STOCK_SITES]
+    if not title and not n:
+        return plan
+    need = max([r.get("kw_min") or 0 for r in rules] or [0])
+    cap = min([r["kw_max"] for r in rules if r.get("kw_max")] or [0])
+    if n < need:
+        plan["kw_more"] = need
+    if cap and n > cap:
+        plan["kw_trim"] = cap
+    for key in sites:
+        r = STOCK_SITES.get(key)
+        if not r:
+            continue
+        gets_title = key == "shutterstock" and ss_text != "description" and title
+        d = title if gets_title else (description or title)
+        if r.get("desc_max") and len(d) > r["desc_max"]:
+            if gets_title or not description:
+                plan["title_shorter"] = True
+            else:
+                plan["desc_cut"] = min(plan.get("desc_cut", r["desc_max"]), r["desc_max"])
+        if r.get("desc_min_words") and d and len(d.split()) < r["desc_min_words"]:
+            plan["title_longer" if gets_title or not description else "desc_longer"] = True
+    if plan.get("title_shorter"):
+        plan.pop("title_longer", None)
+    return plan
 
 
 SUGGESTIONS_PER_PHOTO = 5   # earlier AI suggestions remembered per photo

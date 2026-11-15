@@ -514,3 +514,20 @@ def test_send_dreamstime_csv_button_in_the_main_window(window, make_photos, monk
     monkeypatch.setattr(up, "send_csv", lambda site, path, enc=False, **kw: sent.append((site, path)) or "Sent it.")
     win.btn_dt_csv.click()
     assert sent and sent[0][0] == "dreamstime" and os.path.exists(sent[0][1])
+
+
+def test_fix_all_fixes_what_it_can_and_asks_the_ai_for_the_rest(window, make_photos, monkeypatch):
+    app, win = window
+    add(win, make_photos(3))
+    a, b, c = win.photos
+    a.title, a.keywords = "Red apple on a wooden kitchen table", [f"apple {i}" for i in range(60)]
+    b.title, b.keywords = "Red apple on a wooden kitchen table", ["apple", "fruit"]
+    c.title, c.keywords = "", []
+    detected, reworded = [], []
+    monkeypatch.setattr(win, "identify_photos", lambda ps, fresh=False: detected.extend(ps))
+    monkeypatch.setattr(win, "_check_then", lambda ps, start: reworded.extend(ps))
+    results = win.precheck_results(win.photos)
+    assert any(i["fixable"] for i in results[c])                 # "No title" can be fixed (Detect)
+    done = win.fix_all(results, ["shutterstock"], ask=False)
+    assert len(a.keywords) == 50 and done["now"] >= 1             # cut straight away
+    assert detected == [c] and reworded == [b]                    # the AI does the rest

@@ -1,5 +1,14 @@
 # What's new
 
+## 2026.11.14.3
+
+- **Fix All in Check Before Upload:** one button fixes everything the app can, and says what it will do first:
+  - **Straight away:** brand spelling, keyword order, too many keywords (the first ones are kept), a description over a site's limit (cut at the end of a phrase), and Dreamstime's text if you fix the photos' own text for it.
+  - **With the AI:** photos with no title or keywords are detected; photos with too few keywords get more; a title or description that's too long or too short for a site is reworded.
+  - **Left for you:** releases, picture size, look-alikes and AI markers, which the app can't fix.
+
+  Nothing is saved until you save, and the text before is kept under Earlier suggestions. Save when they're done, then check again.
+
 ## 2026.11.14.2
 
 - **Send Dreamstime CSV button in the main window**, next to Make Shutterstock CSV: it makes the Dreamstime CSV for the checked photos (or all of them) and puts it in your Dreamstime FTP folder, any time, whichever app you uploaded with. Click it once the photos show up in Dreamstime's Unfinished section.
