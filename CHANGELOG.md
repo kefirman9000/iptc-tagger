@@ -1,5 +1,10 @@
 # What's new
 
+## 2026.11.14.2
+
+- **Send Dreamstime CSV button in the main window**, next to Make Shutterstock CSV: it makes the Dreamstime CSV for the checked photos (or all of them) and puts it in your Dreamstime FTP folder, any time, whichever app you uploaded with. Click it once the photos show up in Dreamstime's Unfinished section.
+- The Upload window's **Send Dreamstime CSV** button is now there whenever you have a Dreamstime login, not only after an upload to Dreamstime.
+
 ## 2026.11.14.1
 
 - **Fix: Alamy uploads go into Alamy's Stock folder.** Alamy only takes photos from the folders on its FTP server (Stock, Live News, Archive stock, Vectors); the app was putting them at the top level, where Alamy doesn't look, so they never reached Alamy Image Manager even though the upload and the connection test worked. Photos sent to the top level before are sent again to Stock next time (they don't count as sent). To use another folder (Archive stock, say), type it in Upload › Logins › Alamy.

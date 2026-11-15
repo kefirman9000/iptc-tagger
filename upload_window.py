@@ -320,6 +320,7 @@ class UploadWindow(QDialog):
         for b in (self.btn_ss_csv, self.btn_csvs, self.btn_dt_csv, self.btn_receipt):
             b.hide()
             row.addWidget(b)
+        self.btn_dt_csv.setVisible(up.login_for("dreamstime") is not None)   # any time, not only after an upload
         row.addStretch(1)
         self.btn_start = QPushButton("Start Upload")
         self.btn_start.setDefault(True)
@@ -538,7 +539,7 @@ class UploadWindow(QDialog):
         if self.csv_sites:
             self.btn_csvs.setText("Make CSVs: " + ", ".join(up.SITES[n]["label"] for n in self.csv_sites))
         self.btn_csvs.setVisible(bool(self.csv_sites))
-        self.btn_dt_csv.setVisible("dreamstime" in sent)
+        self.btn_dt_csv.setVisible("dreamstime" in sent or up.login_for("dreamstime") is not None)
         if auto_dt:
             self.btn_dt_csv.setText("Send Dreamstime CSV Now")
             self.log.appendPlainText("The Dreamstime CSV will be sent by itself once Dreamstime has taken the photos in.")
@@ -631,22 +632,8 @@ class UploadWindow(QDialog):
             QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
 
     def _send_dreamstime_csv(self):
-        import site_files
-        if not os.environ.get("IPTC_TAGGER_OFFLINE") and QMessageBox.question(
-                self, "Send Dreamstime CSV",
-                "Dreamstime only fills in photos that are already in its Unfinished section. Are these photos "
-                "showing there yet? (If not, wait a little and click this again: sending too early does nothing.)"
-        ) != QMessageBox.Yes:
-            return
-        folder = os.path.dirname(self.photos[0].path)
-        try:
-            path = site_files.write_site_csvs(folder, self.win._csv_rows(self.photos), ["dreamstime"],
-                                              dt_tidy=bool(self.win.settings.get("dreamstime_tidy_csv", True)))[0]
-        except OSError as e:
-            QMessageBox.warning(self, "Send Dreamstime CSV", f"The CSV couldn't be made: {e}")
-            return
-        if self.win.send_dreamstime_csv(path):
-            self.log.appendPlainText(f"Sent {os.path.basename(path)} to your Dreamstime FTP folder.")
+        if self.win.send_dreamstime_csv_for(self.photos, parent=self):
+            self.log.appendPlainText("Sent the Dreamstime CSV to your Dreamstime FTP folder.")
 
     def _logins(self):
         if LoginsDialog(self, self.win.settings).exec():

@@ -2432,6 +2432,11 @@ class MainWindow(QMainWindow):
             "All photos in the list", lambda: self.open_in_stockup(list(self.photos)))
         self.btn_stockup.setMenu(self.stockup_menu)
         self.btn_ss_csv = button("Make Shutterstock CSV", lambda: self.make_shutterstock_csv(), "file-check")
+        self.btn_dt_csv = button("Send Dreamstime CSV", lambda: self.send_dreamstime_csv_for(), "file-spreadsheet")
+        self.btn_dt_csv.setToolTip("Makes the Dreamstime CSV for the checked photos (or all of them) and puts it in your\n"
+                                   "Dreamstime FTP folder, the only place Dreamstime reads it from. Click it once the\n"
+                                   "photos show up in Dreamstime's Unfinished section: it fills in their titles,\n"
+                                   "descriptions, keywords, categories and editorial.")
         self.btn_check = button("Check", lambda: self.check_before_upload(), "circle-check")
         self.btn_check.setToolTip("Check Before Upload: everything the stock sites would reject, or that would hurt sales, in one list: titles\n"
                                   "and keywords, picture size, editorial captions, releases, look-alike photos, brand\n"
@@ -3006,6 +3011,7 @@ class MainWindow(QMainWindow):
         bottom.addSpacing(16)
         bottom.addWidget(self.btn_check)
         bottom.addWidget(self.btn_ss_csv)
+        bottom.addWidget(self.btn_dt_csv)
         bottom.addWidget(self.btn_stockup)
         bottom.addWidget(self.btn_upload)
 
@@ -4187,6 +4193,32 @@ class MainWindow(QMainWindow):
                 QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
             elif send is not None and box.clickedButton() is send:
                 self.send_dreamstime_csv(dt_csv)
+
+    def send_dreamstime_csv_for(self, photos=None, parent=None) -> bool:
+        """Send Dreamstime CSV: make the Dreamstime CSV for these photos (the checked ones, else all) and put it in
+        your Dreamstime FTP folder. Asks first whether they're in Dreamstime's Unfinished section yet."""
+        import site_files
+        parent = parent or self
+        if photos is None:
+            photos = self.checked_photos() or list(self.photos)
+        photos = [p for p in photos if not p.busy and (p.title.strip() or p.keywords)]
+        if not photos:
+            self.status.setText("No photos with a title or keywords to put in a Dreamstime CSV yet.")
+            return False
+        n = len(photos)
+        if not os.environ.get("IPTC_TAGGER_OFFLINE") and QMessageBox.question(
+                parent, "Send Dreamstime CSV",
+                f"Send the Dreamstime CSV for {n} photo{'s' if n != 1 else ''}?\n\nDreamstime only fills in photos "
+                "that are already in its Unfinished section. Are they showing there yet? (If not, wait a little and "
+                "click this again: sending too early does nothing.)") != QMessageBox.Yes:
+            return False
+        try:
+            path = site_files.write_site_csvs(os.path.dirname(photos[0].path), self._csv_rows(photos), ["dreamstime"],
+                                              dt_tidy=bool(self.settings.get("dreamstime_tidy_csv", True)))[0]
+        except OSError as e:
+            QMessageBox.warning(parent, "Send Dreamstime CSV", f"The CSV couldn't be made: {e}")
+            return False
+        return self.send_dreamstime_csv(path)
 
     def send_dreamstime_csv(self, path: str) -> bool:
         """Put a Dreamstime CSV in your Dreamstime FTP folder (the only place Dreamstime reads it from)."""
@@ -6208,6 +6240,8 @@ class MainWindow(QMainWindow):
         n_csv = n_checked or n_all
         self.btn_ss_csv.setEnabled(n_csv > 0)
         self.btn_ss_csv.setText(f"Make Shutterstock CSV ({n_csv})" if n_csv else "Make Shutterstock CSV")
+        self.btn_dt_csv.setEnabled(n_csv > 0)
+        self.btn_dt_csv.setText(f"Send Dreamstime CSV ({n_csv})" if n_csv else "Send Dreamstime CSV")
         self.btn_stockup.setEnabled(n_all > 0)
         self.act_stockup_all.setEnabled(n_all > 0)
         self.act_stockup_all.setText(f"All {n_all} photo{'s' if n_all != 1 else ''} in the list" if n_all

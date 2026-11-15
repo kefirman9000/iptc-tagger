@@ -499,3 +499,18 @@ def test_dreamstime_csv_is_sent_by_itself_after_uploading(window, make_photos, m
     assert "Sent dreamstime.csv" in win.status.text() and not win.csv_watchers
     win.settings["dreamstime_csv_auto"] = False
     assert not win.auto_send_dreamstime_csv(win.photos)                     # off in Settings: nothing waits
+
+
+def test_send_dreamstime_csv_button_in_the_main_window(window, make_photos, monkeypatch):
+    import uploader as up
+    app, win = window
+    add(win, make_photos(2))
+    for ph in win.photos:
+        ph.title, ph.keywords = "Pepperidge Farm Cookies on a Grocery Store Shelf", ["cookies", "grocery"]
+    win._refresh_buttons()
+    assert win.btn_dt_csv.isEnabled() and "(2)" in win.btn_dt_csv.text()
+    sent = []
+    monkeypatch.setattr(up, "login_for", lambda site: {"name": site})
+    monkeypatch.setattr(up, "send_csv", lambda site, path, enc=False, **kw: sent.append((site, path)) or "Sent it.")
+    win.btn_dt_csv.click()
+    assert sent and sent[0][0] == "dreamstime" and os.path.exists(sent[0][1])
