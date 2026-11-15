@@ -330,7 +330,7 @@ def _remote_dir(site: str, saved) -> str:
     return own if own and saved in ("", "/") else (saved or "/")
 
 
-def save_login(site: str, password: str = "", remote_dir: str = "", clear: bool = False,
+def save_login(site: str, username: str, password: str = "", remote_dir: str = "", clear: bool = False,
                host: str = "", port=None, protocol: str = "", label: str = ""):
     """Save one site's login (a blank password keeps the saved one). Passwords go in the keychain when there is
     one, otherwise in the logins file, which only you can read."""
