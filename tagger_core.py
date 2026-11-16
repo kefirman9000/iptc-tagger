@@ -40,7 +40,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.11.14.3"
+APP_VERSION = "2026.11.16.1"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 # camera RAW files: titles and keywords go into the Lightroom sidecar next to them (photo.xmp), never the RAW.
 # DNG is left out: Lightroom ignores sidecars for DNG and keeps its metadata inside the file itself.
@@ -3569,20 +3569,29 @@ def title_words(length: str = "detailed") -> tuple[int, int]:
     return next(((lo, hi) for k, _, lo, hi in TITLE_LENGTHS if k == length), (14, 22))
 
 
+# Name the holiday: the AI tends to write the safe, vague "holiday" when the photo plainly shows Christmas
+HOLIDAY_RULE = (
+    "Name the holiday: when the photo or the notes show a particular holiday, say which one by name in the title, the "
+    "description and the keywords. Christmas trees, Santa Claus, ornaments, stockings, a nativity scene, reindeer, "
+    "candy canes, nutcrackers or 'Merry Christmas' mean Christmas: write 'Christmas', never only 'holiday' or "
+    "'festive'. Likewise Halloween, Thanksgiving, Easter, Hanukkah, Valentine's Day, the Fourth of July and so on. "
+    "'Holiday', 'festive' and 'seasonal' are fine as extra words and keywords next to the holiday's name, never "
+    "instead of it.")
+
 # The context: not just "Protein Shakes on Shelf" but what they're for and who buys them
 CONCEPT_TITLE_RULE = (
     "(5) Finish with the context, so the title isn't only a list of what's on the shelf: what the product or scene is "
     "for, who uses or buys it, or the lifestyle, theme or concept it belongs to, in a few words joined with 'for', "
     "'and' or a comma. For example: 'Protein Shakes on a Store Shelf for Health-Conscious Consumers, Nutrition and "
     "Supplementation'; 'Canned Beef Stew for Quick Comfort Food Meals and Pantry Stocking'; 'Christmas Lights Display "
-    "for Holiday Decorating and Seasonal Shopping'; 'Pancake Mix for Easy Family Breakfasts and Home Baking'. This "
+    "for Christmas Holiday Decorating and Seasonal Shopping'; 'Pancake Mix for Easy Family Breakfasts and Home Baking'. This "
     "context is general and true for that kind of product (never an invented detail about this photo), and it stays "
     "within the word count.")
 CONCEPT_DESCRIPTION_RULE = (
     "Make it two sentences. The first says what the photo shows. The second gives the context and the mood: what the "
     "product or scene is for, who uses or buys it, and the lifestyle, theme or concept it relates to (for protein "
-    "shakes: nutrition, fitness and supplementation for health-conscious consumers; for Christmas lights: holiday "
-    "decorating, festive homes and seasonal shopping; for canned stew: quick, hearty comfort food and stocking the "
+    "shakes: nutrition, fitness and supplementation for health-conscious consumers; for Christmas lights: Christmas "
+    "decorating, festive homes and holiday shopping; for canned stew: quick, hearty comfort food and stocking the "
     "pantry). Keep that general and true for that kind of product: never invent details about this photo.")
 
 
@@ -3825,6 +3834,7 @@ def build_prompt(keyword_min: int, keyword_max: int, context: str = "", existing
                   "instructions here rather than copying it: "
                   + json.dumps({"title": existing_title, "keywords": list(existing_keywords or [])},
                                ensure_ascii=False)]
+    lines += ["", HOLIDAY_RULE]          # (before the photographer's directions, which come last and win)
     if merged:
         lines += ["", "Remember: follow every direction in the photographer's instructions at the top exactly, even "
                   "where it differs from the rules above."]
@@ -4134,6 +4144,7 @@ def build_reword_prompt(title: str, description: str, keywords, fields, options=
     keep = [dict(REWORD_FIELDS)[f].lower() for f, _ in REWORD_FIELDS if f not in fields]
     if keep:
         lines += ["", "Give the " + " and ".join(keep) + " back exactly as they are."]
+    lines += ["", HOLIDAY_RULE]
     lines += ["", 'Output only JSON in exactly this form: {"title": "...", "description": "...", "keywords": ["..."]}']
     return "\n".join(lines)
 
@@ -5162,3 +5173,94 @@ def look_alike_groups(hashes: dict, max_bits: int = 6) -> list[list[str]]:
     for k in keys:
         groups.setdefault(find(k), []).append(k)
     return [g for g in groups.values() if len(g) > 1]
+
+
+
+# Holidays by name ---------------------------------------------------------------------------------------------
+# Signs of each holiday in the AI's own words or your notes. When they're there but the title only says
+# "holiday", the holiday's name is put back (the AI likes the safe, vague word).
+HOLIDAY_SIGNS = {
+    "Christmas": ["christmas", "xmas", "santa", "santa claus", "father christmas", "christmas tree", "nativity",
+                  "reindeer", "rudolph", "candy cane", "candy canes", "nutcracker", "nutcrackers", "mistletoe",
+                  "poinsettia", "poinsettias", "stocking stuffer", "stocking stuffers", "christmas stocking",
+                  "christmas stockings", "advent calendar", "advent", "yuletide", "yule", "noel", "elf on the shelf",
+                  "jingle bells", "north pole", "sleigh", "gingerbread house", "ugly sweater", "tinsel", "ornament",
+                  "ornaments", "baubles", "bauble", "wreath", "wreaths", "garland", "garlands"],
+    "Halloween": ["halloween", "jack-o'-lantern", "jack o lantern", "jack-o-lantern", "trick or treat",
+                  "trick-or-treat", "costume", "costumes", "witch", "witches", "ghost", "ghosts", "skeleton",
+                  "skeletons", "spooky", "haunted", "zombie", "bats"],
+    "Thanksgiving": ["thanksgiving", "pilgrim", "pilgrims", "cornucopia", "turkey dinner"],
+    "Easter": ["easter", "easter egg", "easter eggs", "easter bunny", "egg hunt"],
+    "Hanukkah": ["hanukkah", "chanukah", "menorah", "dreidel", "dreidels"],
+    "Valentine's Day": ["valentine", "valentines", "valentine's", "valentine's day"],
+    "Fourth of July": ["fourth of july", "4th of july", "independence day"],
+}
+# signs that are only signs when something more specific backs them up (an ornament or a wreath can be any season)
+_WEAK_SIGNS = {"ornament", "ornaments", "bauble", "baubles", "wreath", "wreaths", "garland", "garlands", "advent",
+               "noel", "costume", "costumes", "witch", "witches", "ghost", "ghosts", "skeleton", "skeletons",
+               "zombie", "bats", "sleigh", "tinsel", "yule", "spooky", "haunted", "pilgrim", "pilgrims"}
+_VAGUE = re.compile(r"\b(holiday|holidays|festive|seasonal|season's)\b", re.IGNORECASE)
+
+
+def holidays_shown(*texts) -> list[str]:
+    """Which holidays these words show: their own name, or two or more of their signs."""
+    low = " " + " ".join(single_line(str(x)) for x in texts if x).casefold().replace("’", "'") + " "
+    found = []
+    for name, signs in HOLIDAY_SIGNS.items():
+        hits = {s for s in signs if re.search(r"(?<![\w'])" + re.escape(s) + r"(?:s|es)?(?![\w'])", low)}
+        strong = hits - _WEAK_SIGNS
+        distinct = {re.sub(r"(?:es|s)$", "", h) for h in hits}      # "ornament" and "ornaments" are one sign
+        if strong or len(distinct) >= 2:
+            found.append(name)
+    return found
+
+
+def name_the_holiday(title: str, description: str, keywords, known: str = "", keyword_max: int = 50) -> dict:
+    """Christmas (or Halloween, Easter…) by name wherever the AI wrote only 'holiday': in the title, the
+    description and the keywords. 'Holiday' stays as an extra word. Nothing is done when no holiday is shown, or
+    when the title already names it. Returns {'title', 'description', 'keywords', 'fixes'}."""
+    keywords = list(keywords or [])
+    fixes = []
+    shown = holidays_shown(title, description, " , ".join(keywords), known)
+    if len(shown) != 1:               # none, or a mix (Christmas and Hanukkah): leave the AI's words alone
+        return {"title": title, "description": description, "keywords": keywords, "fixes": fixes}
+    name = shown[0]
+    low_name = name.casefold()
+
+    def named(text):
+        return low_name in (text or "").casefold().replace("’", "'")
+
+    def add_name(text):
+        """'Holiday Lights' -> 'Christmas Holiday Lights'; 'Festive Display' -> 'Festive Christmas Display'.
+        A 'holiday' is preferred over a 'festive' when the text has both."""
+        hits = list(_VAGUE.finditer(text))
+        m = next((h for h in hits if h.group(1).lower() in ("holiday", "holidays")), hits[0] if hits else None)
+        if m is None:
+            return text
+        if m.group(1).lower() in ("holiday", "holidays"):
+            return text[:m.start()] + name + " " + text[m.start():]
+        return text[:m.end()] + " " + name + text[m.end():]
+
+    if title and not named(title):
+        new = add_name(title)
+        if new != title:
+            fixes.append(f"title: added {name}")
+            title = new
+    if description and not named(description):
+        new = add_name(description)
+        if new != description:
+            fixes.append(f"description: added {name}")
+            description = new
+    if not any(named(k) for k in keywords):
+        kw = name.lower() if not keywords or keywords[0] == keywords[0].lower() else name
+        # right after the title's own words, near the front where it counts
+        at = min(len(keywords), 3)
+        if len(keywords) >= keyword_max:
+            # make room: drop a vague word rather than going over the maximum
+            vague = [i for i, k in enumerate(keywords) if k.casefold() in ("festive", "seasonal", "season")]
+            if not vague:
+                return {"title": title, "description": description, "keywords": keywords, "fixes": fixes}
+            keywords.pop(vague[-1])
+        keywords.insert(at, kw)
+        fixes.append(f"keyword: added {kw}")
+    return {"title": title, "description": description, "keywords": keywords, "fixes": fixes}
