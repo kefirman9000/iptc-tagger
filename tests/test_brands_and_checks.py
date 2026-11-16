@@ -76,3 +76,25 @@ def test_fix_plan_for_site_rules():
     assert core.site_fix_plan("Red apple on a wooden table", [f"k{i}" for i in range(20)], ["depositphotos"],
                               long_desc)["desc_cut"] == 250
     assert core.site_fix_plan("Red apple on a wooden table", [f"k{i}" for i in range(20)], ["shutterstock"]) == {}
+
+
+def test_christmas_is_named_not_just_holiday():
+    r = core.name_the_holiday("Holiday Decorations Display with Santa Claus Figurines and Red Ornaments",
+                              "Festive holiday display in a store.", ["holiday", "decorations", "santa claus"])
+    assert r["title"] == "Christmas Holiday Decorations Display with Santa Claus Figurines and Red Ornaments"
+    assert r["description"] == "Festive Christmas holiday display in a store."
+    assert "christmas" in r["keywords"] and "holiday" in r["keywords"]            # holiday stays as well
+    # ornaments and wreaths together are Christmas; one of them alone isn't proof
+    assert "Christmas" in core.name_the_holiday("Festive Ornaments and Wreaths", "", ["ornaments", "wreath"])["title"]
+    assert core.name_the_holiday("Festive Glass Ornaments", "", ["ornaments"])["fixes"] == []
+    # no sign of Christmas: "holiday" is left alone; your note is enough of a sign
+    assert core.name_the_holiday("Holiday Lights on a House", "", ["lights"])["fixes"] == []
+    assert core.name_the_holiday("Holiday Lights on a House", "", ["lights"],
+                                 known="christmas display")["title"] == "Christmas Holiday Lights on a House"
+    # already named, or two different holidays: nothing changes
+    assert core.name_the_holiday("Christmas Tree Lot", "", ["christmas tree"])["fixes"] == []
+    assert core.name_the_holiday("Holiday Candles", "", ["menorah", "christmas tree"])["fixes"] == []
+    assert core.name_the_holiday("Holiday Candy", "", ["candy cane"])["title"] == "Christmas Holiday Candy"
+    assert "Halloween" in core.name_the_holiday("Holiday Decor with Jack-O'-Lanterns", "", [])["title"]
+    # the AI is told to name the holiday
+    assert "Christmas" in core.HOLIDAY_RULE and core.HOLIDAY_RULE in core.build_prompt(7, 50)

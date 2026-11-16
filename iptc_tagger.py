@@ -5099,9 +5099,16 @@ class MainWindow(QMainWindow):
         """After the AI (or Reword, or Fix common problems): brands spelled your way, their other search spellings
         added, and the keywords that matter in the first ten. Returns what was changed."""
         fixes = []
+        kmax = core.keyword_range(self.settings.get("keyword_min"), self.settings.get("keyword_max"))[1]
+        # Christmas (or Halloween, Easter…) by name when the AI only wrote "holiday"; your note and instructions
+        # count as evidence too
+        r = core.name_the_holiday(ph.title, ph.description, ph.keywords,
+                                  known=" ".join([ph.note or "", self.context.toPlainText()]),
+                                  keyword_max=max(kmax, len(ph.keywords)))
+        ph.title, ph.description, ph.keywords = core.clean_title(r["title"]), r["description"], r["keywords"]
+        fixes += r["fixes"]
         rules = self.brand_rules()
         if rules:
-            kmax = core.keyword_range(self.settings.get("keyword_min"), self.settings.get("keyword_max"))[1]
             r = core.fix_brand_spellings(ph.title, ph.description, ph.keywords, rules,
                                          bool(self.settings.get("brand_alternates", True)),
                                          keyword_max=max(kmax, len(ph.keywords)))

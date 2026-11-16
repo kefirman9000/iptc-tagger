@@ -1,5 +1,12 @@
 # What's new
 
+## 2026.11.16.1
+
+- **Christmas by name, not just "holiday":** the AI tended to write the safe, vague *holiday* even when a photo plainly showed Christmas.
+  - It's now told to name the holiday in the title, description and keywords whenever the photo or your notes show one. Santa, a Christmas tree, ornaments, stockings, a nativity scene, candy canes or *Merry Christmas* mean Christmas. *Holiday*, *festive* and *seasonal* are fine as extra words, never instead of the name.
+  - **Safety net:** after every Detect, Reword and Fix common problems, if the AI's own words (or your photo note or instructions) show Christmas but it only wrote *holiday*, the app puts Christmas back: *Holiday Decorations* → *Christmas Holiday Decorations*, *Festive Display* → *Festive Christmas Display*, and adds the *christmas* keyword near the front. *Holiday* stays too.
+  - The same goes for Halloween, Thanksgiving, Easter, Hanukkah, Valentine's Day and the Fourth of July. Nothing changes when there's no sign of a particular holiday, or when a photo shows two different ones.
+
 ## 2026.11.14.3
 
 - **Fix All in Check Before Upload:** one button fixes everything the app can, and says what it will do first:
