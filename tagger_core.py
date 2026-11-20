@@ -40,7 +40,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.11.16.1"
+APP_VERSION = "2026.11.20.1"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 # camera RAW files: titles and keywords go into the Lightroom sidecar next to them (photo.xmp), never the RAW.
 # DNG is left out: Lightroom ignores sidecars for DNG and keeps its metadata inside the file itself.
@@ -441,6 +441,7 @@ DEFAULT_SETTINGS = {
     "avoid_on": False,        # show the per-photo Avoid column and use it
     "strip_develop": True,    # saving a JPEG takes out Lightroom's develop settings (XMP-crs), AI masks included
     "dreamstime_csv_auto": True,
+    "shutterstock_csv_auto": True,   # after uploading to Shutterstock, make its CSV by itself (as is, no questions)
     "dreamstime_tidy_csv": True,   # Dreamstime's fixes go into its CSV only; the photos keep the full text   # after uploading to Dreamstime, send its CSV by itself once the photos are in
     "shutterstock_text": "title",  # Shutterstock's one text column gets: title / description
     "stockup_path": "",       # StockUp.app / StockUp.exe / stockup.py ("" = look in the usual places)
@@ -573,6 +574,12 @@ def unused_path(path: str) -> str:
     return path
 
 
+def shutterstock_file_name(name: str) -> str:
+    """The file name as Shutterstock lists it: without the leading underscores some cameras add (Sony's
+    _DSC5231.JPG becomes DSC5231.JPG on Shutterstock), so the CSV's rows line up with the uploaded photos."""
+    return name.lstrip("_") or name
+
+
 def adobe_title(title: str, bare: str = "") -> str:
     """Adobe Stock's CSV title: plain text, no commas, at most 70 characters (cut at a word), and without an
     editorial location and date in front (Adobe asks for no editorial-style captions)."""
@@ -605,7 +612,7 @@ def export_csv(path: str, rows: list[dict], fmt: str = "shutterstock", categorie
         ss = (lambda r: single_line(r["title"]) or desc(r)) if ss_text != "description" else desc
         # Shutterstock asks for no special characters: curly quotes, long dashes and accents are always made
         # plain here, whatever the Symbols setting
-        body = [[r["file"], plain_text(ss(r)), ",".join(k for k in (plain_text(x) for x in r["keywords"]) if k),
+        body = [[shutterstock_file_name(r["file"]), plain_text(ss(r)), ",".join(k for k in (plain_text(x) for x in r["keywords"]) if k),
                  cats(r), "No", "No", "Yes" if r.get("editorial") else "No"] for r in rows]
         enc = "utf-8"
     elif fmt == "adobe":

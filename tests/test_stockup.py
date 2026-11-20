@@ -54,6 +54,19 @@ def test_shutterstock_csv_can_get_the_description(tmp_path):
     assert _shutterstock_csv(tmp_path, ss_text="description")["Description"] == CAPTION
 
 
+def test_shutterstock_csv_drops_the_cameras_leading_underscore(tmp_path):
+    import csv
+    rows = [{"file": n, "folder": "", "title": TITLE, "description": "", "keywords": ["k"], "categories": ["Food and drink"]}
+            for n in ("_DSC5231.JPG", "__DSC5232.JPG", "DSC5233.JPG", "IMG_0001.JPG")]
+    p = tmp_path / "ss.csv"
+    core.export_csv(str(p), rows, "shutterstock")
+    assert [r["Filename"] for r in csv.DictReader(open(p, encoding="utf-8"))] == \
+        ["DSC5231.JPG", "DSC5232.JPG", "DSC5233.JPG", "IMG_0001.JPG"]       # as Shutterstock lists them
+    p = tmp_path / "ad.csv"
+    core.export_csv(str(p), rows[:1], "adobe")
+    assert next(csv.DictReader(open(p, encoding="utf-8")))["Filename"] == "_DSC5231.JPG"   # only Shutterstock's
+
+
 def test_shutterstock_checks_look_at_what_it_gets():
     long_title = "Word " * 45                                                 # 225 characters
     out = core.site_problems(long_title.strip(), ["k"] * 10, ["shutterstock"], "A short caption that fits fine here.")

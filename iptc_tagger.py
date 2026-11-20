@@ -1030,6 +1030,12 @@ class SettingsDialog(QDialog):
                                 "Dreamstime has taken the photos in (checked every 2 minutes, at most an hour).\n"
                                 "Keep IPTC Tagger open until it's sent.")
         f_sites.addRow("", self.dt_auto)
+        self.ss_auto = QCheckBox("After uploading to Shutterstock, make its CSV by itself")
+        self.ss_auto.setChecked(bool(settings.get("shutterstock_csv_auto", True)))
+        self.ss_auto.setToolTip("When an upload to Shutterstock finishes, the Shutterstock CSV is saved next to the\n"
+                                "photos straight away, as is (no offer to fix problems first). Then, once the photos\n"
+                                "show up on Shutterstock's Submit page, click CSV there and choose it.")
+        f_sites.addRow("", self.ss_auto)
         self.dt_tidy = QCheckBox("Tidy the text for Dreamstime in its CSV only (the photos keep the full text)")
         self.dt_tidy.setChecked(bool(settings.get("dreamstime_tidy_csv", True)))
         self.dt_tidy.setToolTip("Dreamstime is stricter than Shutterstock. Ticked, the Dreamstime CSV gets long titles cut "
@@ -1284,7 +1290,7 @@ class SettingsDialog(QDialog):
                  stock_sites=[k for k, cb in self.site_boxes.items() if cb.isChecked()],
                  stock_sites_from_stockup=self.sites_from_su.isChecked(),
                  shutterstock_text=self.ss_text.currentData() or "title",
-                 dreamstime_csv_auto=self.dt_auto.isChecked(), dreamstime_tidy_csv=self.dt_tidy.isChecked(),
+                 dreamstime_csv_auto=self.dt_auto.isChecked(), shutterstock_csv_auto=self.ss_auto.isChecked(), dreamstime_tidy_csv=self.dt_tidy.isChecked(),
                  keyword_order=self.kw_order.isChecked(), brand_alternates=self.brand_alts.isChecked(),
                  # unchanged built-in list: stays None, so later versions' additions still arrive
                  brand_spellings=(None if self.brands.toPlainText().strip() == core.DEFAULT_BRAND_SPELLINGS.strip()
@@ -4360,16 +4366,17 @@ class MainWindow(QMainWindow):
             r["categories"], r["adobe_category"] = c["shutterstock"], c["adobe"]
         return rows
 
-    def make_shutterstock_csv(self, photos=None, ask_categories=None) -> str:
+    def make_shutterstock_csv(self, photos=None, ask_categories=None, auto: bool = False) -> str:
         """One click: the Shutterstock upload CSV for the checked photos (or all of them), saved next to the
-        photos as shutterstock_<date>_<time>.csv. Returns its path ('' if nothing was made)."""
+        photos as shutterstock_<date>_<time>.csv. Returns its path ('' if nothing was made).
+        auto: made by itself after an upload to Shutterstock: as is (no offer to fix first) and no message box."""
         if photos is None:
             photos = self.checked_photos() or list(self.photos)
         photos = [p for p in photos if not p.busy and (p.title.strip() or p.keywords)]
         if not photos:
             self.status.setText("No photos with a title or keywords to put in a Shutterstock CSV yet.")
             return ""
-        if not self._check_before_csv(photos):
+        if not auto and not self._check_before_csv(photos):
             return ""
         categories = []                               # each photo gets its own (site_files.pick_categories)
         folder = os.path.dirname(photos[0].path)
@@ -4381,13 +4388,15 @@ class MainWindow(QMainWindow):
             count = core.export_csv(path, rows, "shutterstock", categories,
                                     self.settings.get("shutterstock_text", "title"))
         except OSError as e:
-            QMessageBox.warning(self, "Shutterstock CSV", f"The CSV couldn't be saved:\n{e}")
+            core.debug(f"Shutterstock CSV: couldn't save it: {e}", always=True)
+            if not auto:
+                QMessageBox.warning(self, "Shutterstock CSV", f"The CSV couldn't be saved:\n{e}")
             return ""
         what = "titles" if self.settings.get("shutterstock_text", "title") != "description" else "descriptions"
         self.status.setText(f"Saved {os.path.basename(path)} with {count} photo{'s' if count != 1 else ''} in "
                             f"{folder}. On Shutterstock's Submit page, click CSV and choose it.")
         core.debug(f"Shutterstock CSV: {count} photo(s) -> {path}")
-        if not os.environ.get("IPTC_TAGGER_OFFLINE"):
+        if not auto and not os.environ.get("IPTC_TAGGER_OFFLINE"):
             box = QMessageBox(QMessageBox.Information, "Shutterstock CSV",
                               f"Saved {os.path.basename(path)} with {count} photo{'s' if count != 1 else ''}, "
                               f"using their {what} exactly as in the list, in:\n{folder}\n\n"

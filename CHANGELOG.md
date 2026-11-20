@@ -1,5 +1,10 @@
 # What's new
 
+## 2026.11.20.1
+
+- **The Shutterstock CSV is made by itself after an upload to Shutterstock**, next to the photos, as is (no "fix first?" question, no pop-up). The Upload window shows its name under *What's left on the sites*: once the photos show up on Shutterstock's Submit page, click CSV there and choose it. Turn it off in **Settings → Stock sites → After uploading to Shutterstock, make its CSV by itself**. The Make Shutterstock CSV button still works as before.
+- **Fix: Sony file names in the Shutterstock CSV.** Sony cameras name files like *_DSC5231.JPG*, and Shutterstock drops the leading underscore, so the CSV's rows didn't line up with the uploaded photos. The Shutterstock CSV now lists them as *DSC5231.JPG*. Your files keep their names, and the other sites' CSVs are unchanged.
+
 ## 2026.11.16.1
 
 - **Christmas by name, not just "holiday":** the AI tended to write the safe, vague *holiday* even when a photo plainly showed Christmas.
