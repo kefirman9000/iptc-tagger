@@ -520,6 +520,7 @@ def test_fix_all_fixes_what_it_can_and_asks_the_ai_for_the_rest(window, make_pho
     app, win = window
     add(win, make_photos(3))
     a, b, c = win.photos
+    win.settings["title_length"] = "short"                        # (7-word titles are long enough here)
     a.title, a.keywords = "Red apple on a wooden kitchen table", [f"apple {i}" for i in range(60)]
     b.title, b.keywords = "Red apple on a wooden kitchen table", ["apple", "fruit"]
     c.title, c.keywords = "", []
@@ -531,3 +532,18 @@ def test_fix_all_fixes_what_it_can_and_asks_the_ai_for_the_rest(window, make_pho
     done = win.fix_all(results, ["shutterstock"], ask=False)
     assert len(a.keywords) == 50 and done["now"] >= 1             # cut straight away
     assert detected == [c] and reworded == [b]                    # the AI does the rest
+
+
+def test_fix_all_brings_photos_up_to_your_own_aims(window, make_photos):
+    app, win = window
+    add(win, make_photos(1))
+    ph = win.photos[0]
+    win.settings.update(keyword_min=30, keyword_max=40, title_length="detailed")
+    ph.title, ph.keywords = "Benefiber Prebiotic Fiber Supplement on Store Shelf", [f"k{i}" for i in range(9)]
+    whats = {i["what"]: i for i in win.precheck_results([ph])[ph]}
+    assert whats["Few keywords"]["fixable"] and whats["Short title"]["fixable"]
+    plan = win.fix_plan(ph, ["shutterstock"])
+    assert plan["kw_more"] == 30 and plan["title_longer"]
+    ph.keywords = [f"k{i}" for i in range(32)]
+    ph.title = "Benefiber Prebiotic Fiber Supplement Powder on a Pharmacy Store Shelf for Digestive Health and Gut Wellness"
+    assert not {"Few keywords", "Short title"} & {i["what"] for i in win.precheck_results([ph])[ph]}
