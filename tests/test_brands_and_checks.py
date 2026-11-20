@@ -98,3 +98,15 @@ def test_christmas_is_named_not_just_holiday():
     assert "Halloween" in core.name_the_holiday("Holiday Decor with Jack-O'-Lanterns", "", [])["title"]
     # the AI is told to name the holiday
     assert "Christmas" in core.HOLIDAY_RULE and core.HOLIDAY_RULE in core.build_prompt(7, 50)
+
+
+def test_check_flags_your_own_keyword_minimum_and_title_length():
+    import precheck
+    base = {"file": "a.jpg", "title": "Benefiber Prebiotic Fiber Supplement on Store Shelf",
+            "bare_title": "Benefiber Prebiotic Fiber Supplement on Store Shelf", "keywords": [f"k{i}" for i in range(9)],
+            "keyword_min": 30, "title_words_min": 14}
+    whats = {i["what"]: i for i in precheck.check_photo(base, ["shutterstock"])}
+    assert whats["Few keywords"]["fixable"] and "9 keywords" in whats["Few keywords"]["detail"]
+    assert whats["Short title"]["fixable"] and "7 words" in whats["Short title"]["detail"]
+    ok = dict(base, keywords=[f"k{i}" for i in range(32)], bare_title=" ".join(["word"] * 15))
+    assert not {"Few keywords", "Short title"} & {i["what"] for i in precheck.check_photo(ok, ["shutterstock"])}

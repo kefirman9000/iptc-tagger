@@ -40,7 +40,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.11.20.1"
+APP_VERSION = "2026.11.20.2"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 # camera RAW files: titles and keywords go into the Lightroom sidecar next to them (photo.xmp), never the RAW.
 # DNG is left out: Lightroom ignores sidecars for DNG and keeps its metadata inside the file itself.
@@ -4840,15 +4840,22 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
                   + "Title Case, no quotation marks and no full stop at the end. "
                   + (DIRECT_TITLE_RULE + " " if direct_titles else "")
                   + 'Output only JSON: {"title": "..."}')
-        try:
-            longer = split_leaked_keywords(str(ask(expand, TITLE_SCHEMA, "longer title").get("title", "") or "").strip())[0]
+        # small models often come back still short: a second try, a little more freely, saying how short it was
+        for attempt, temperature in ((1, 0.2), (2, 0.5)):
+            try:
+                longer = split_leaked_keywords(str(ask(expand, TITLE_SCHEMA, "longer title", temperature=temperature)
+                                                   .get("title", "") or "").strip())[0]
+            except Stopped:
+                raise
+            except ApiError:
+                break                                # keep what we have
             if len(longer.split()) > len(raw_title.split()):
                 debug(f"{name}: title was {len(raw_title.split())} words, expanded to {len(longer.split())}")
                 raw_title = longer
-        except Stopped:
-            raise
-        except ApiError:
-            pass                                     # keep the short one
+            if len(raw_title.split()) >= lo:
+                break
+            expand += (f"\n\nYour title had only {len(longer.split())} words: {json.dumps(longer, ensure_ascii=False)}. "
+                       f"It must have at least {lo} words. Write it again, fuller, keeping every correct detail.")
     raw_title = drop_sizes(tidy_symbols(drop_trailing_location(raw_title, title_location), symbols))
     title = style_title(raw_title, direction, title_caps, direct_titles)
     avoid = avoid_terms(photo_avoid)                 # this photo's own: always out of the title too
@@ -4887,15 +4894,24 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
         # take the junk out now, so the step below can top the list back up to the minimum
         keywords = fix_common_problems(title, "", keywords, (), own_known, label=read)["keywords"]
 
-    if title and len(keywords) < keyword_min:
-        # one follow-up request for more keywords so every photo gets at least the minimum
-        want = keyword_max - len(keywords)
-        more_prompt = (prompt + "\n\nYou have already chosen these keywords: " + ", ".join(keywords)
-                       + f".\nGive {want} MORE keywords for the same photo, following the same rules and the "
-                       "photographer's directions, none of them repeating or rewording the ones above. "
-                       "Output only JSON: {\"keywords\": [\"...\"]}")
-        try:
-            more = ask(more_prompt, MORE_KEYWORDS_SCHEMA, "more keywords")
+    def top_up(keywords: list) -> list:
+        """Ask for more keywords until the photo has the minimum: up to three rounds (the extras are filtered, and
+        a small model often gives fewer than asked), stopping early when a round adds nothing."""
+        for _round in range(3):
+            if len(keywords) >= keyword_min:
+                break
+            want = keyword_max - len(keywords)
+            more_prompt = (prompt + "\n\nYou have already chosen these keywords: " + ", ".join(keywords)
+                           + f".\nGive {want} MORE keywords for the same photo, following the same rules and the "
+                           "photographer's directions, none of them repeating or rewording the ones above. Only "
+                           "words for what can be seen in the photo or is in the notes: no guesses, codes or numbers. "
+                           "Output only JSON: {\"keywords\": [\"...\"]}")
+            try:
+                more = ask(more_prompt, MORE_KEYWORDS_SCHEMA, "more keywords", temperature=0.2 + 0.2 * _round)
+            except Stopped:
+                raise
+            except ApiError:
+                break                                # keep what we have; the photo still gets its title
             extra = drop_never_keywords(drop_size_keywords([tidy_symbols(str(k), symbols)
                                                             for k in _as_list(more.get("keywords", []))]), never_use)
             if copyright_free:
@@ -4905,11 +4921,16 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
                 extra = tidy_keywords(extra, title, protect)
             if fix_common:
                 extra = fix_common_problems(title, "", extra, (), own_known, label=read)["keywords"]
-            keywords += extra[:keyword_max - len(keywords)]
-        except Stopped:
-            raise
-        except ApiError:
-            pass                                     # keep what we have; the photo still gets its title
+            seen = {k.casefold() for k in keywords}
+            extra = [k for k in extra if k.casefold() not in seen][:keyword_max - len(keywords)]
+            debug(f"{name}: more keywords, round {_round + 1}: +{len(extra)} -> {len(keywords) + len(extra)}")
+            if not extra:
+                break
+            keywords = keywords + extra
+        return keywords
+
+    if title and len(keywords) < keyword_min:
+        keywords = top_up(keywords)
 
     if not title and not keywords:
         debug(f"{name}: FAILED: no title or keywords after {time.monotonic() - started:.1f} s")
@@ -4940,6 +4961,8 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
         if fixed["fixes"]:
             debug(f"{name}: fixed automatically: " + "; ".join(fixed["fixes"]))
         title, desc, keywords, cats = fixed["title"], fixed["description"], fixed["keywords"], fixed["categories"]
+        if title and len(keywords) < keyword_min:   # the last clean-up took some out: top up again
+            keywords = top_up(keywords)
     debug(f"{name}: DONE in {time.monotonic() - started:.1f} s: {len(keywords)} keywords, revised={revised}, "
           f"title={title!r}")
     result = {"title": title, "keywords": keywords, "description": desc, "categories": cats, "adobe_category": adobe,

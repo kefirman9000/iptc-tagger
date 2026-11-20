@@ -221,3 +221,42 @@ def test_reword_keeps_titles_from_getting_shorter():
                     opener=FakeAI(lambda b: {"title": "Hormel Chili Cans on Shelf", "description": "",
                                              "keywords": []}), fix_common=False)
     assert r["title"] == "Hormel Chili Cans on Shelf"                         # asked for shorter: fine
+
+
+def test_keywords_are_topped_up_in_rounds_until_the_minimum(make_photos):
+    """A small model gives a few more keywords at a time: Detect keeps asking (up to three rounds) until the
+    photo has your minimum, instead of stopping after one try with 9 keywords."""
+    batches = iter([["alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf"],
+                    ["hotel", "india", "juliet", "kilo", "lima", "mike", "november"],
+                    ["oscar", "papa", "quebec", "romeo", "sierra", "tango", "uniform"]])
+
+    def answer(body):
+        f, text = schema_fields(body), body["messages"][-1]["content"]
+        if {"title", "keywords"} <= f:
+            return {"title": LONG, "keywords": ["magazines", "shelf", "library", "reading", "home",
+                                                "wooden shelf", "plants", "books", "decor"]}
+        if "MORE keywords" in text:
+            return {"keywords": next(batches, [])}
+        return {}
+    ai = FakeAI(answer)
+    r = core.identify(make_photos(1)[0], "http://ollama", "model", 30, 40, opener=ai, revise=False)
+    asked = sum("MORE keywords" in p for p in ai.prompts())
+    assert asked >= 2 and len(r["keywords"]) > 20, (asked, len(r["keywords"]))
+
+
+def test_short_title_gets_a_second_try(make_photos):
+    tries = []
+
+    def answer(body):
+        f, text = schema_fields(body), body["messages"][-1]["content"]
+        if "too short" in text:
+            tries.append(text)
+            return {"title": "Grogu Toy on Shelf" if len(tries) == 1 else
+                    "Grogu Sound and Action Combos Toy on a Store Shelf, Interactive Collectible Figure for Kids and Fans"}
+        if {"title", "keywords"} <= f:
+            return {"title": "Grogu Toy on Shelf", "keywords": [f"k{i}" for i in range(35)]}
+        return {}
+    ai = FakeAI(answer)
+    r = core.identify(make_photos(1)[0], "http://ollama", "model", 30, 40, opener=ai, revise=False, expand_short=True)
+    assert len(tries) == 2 and "only 4 words" in tries[1]
+    assert len(r["title"].split()) >= 14

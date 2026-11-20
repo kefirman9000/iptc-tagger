@@ -24,7 +24,8 @@ SEVERE, WARN = "fix", "check"
 
 def check_photo(p: dict, sites) -> list[dict]:
     """p: file, title, description, keywords, editorial, unsaved, width, height, bytes, raw, site_problems,
-    order_note, brand_fixes, look_alikes (other file names), ss_text.
+    order_note, brand_fixes, look_alikes (other file names), ss_text, and your aims: keyword_min, bare_title
+    (without the place and date) and title_words_min.
     Returns [{'level': 'fix'|'check', 'what': short name, 'detail': sentence, 'sites': [labels], 'fixable': bool}]."""
     out = []
     labels = lambda keys: [core.STOCK_SITES.get(k, {}).get("label") or site_files.SITE_LABELS.get(k, k) for k in keys]
@@ -46,6 +47,16 @@ def check_photo(p: dict, sites) -> list[dict]:
             add(SEVERE, "Site rule", rest[:1].upper() + rest[1:], [by_label[site]])
         else:
             add(SEVERE, "Site rule", prob)
+    # your own aims (Settings): below them isn't a site rule, but fewer keywords and short titles sell less
+    n_kw, kw_min = len(p.get("keywords") or []), int(p.get("keyword_min") or 0)
+    kw_rule = any("keyword" in prob for prob in p.get("site_problems") or [])
+    if n_kw and kw_min and n_kw < kw_min and not kw_rule:
+        add(WARN, "Few keywords", f"{n_kw} keywords; you aim for at least {kw_min} (Settings → Keywords). More "
+            "keywords help buyers find it.", fixable=True)
+    bare, t_min = (p.get("bare_title") or "").strip(), int(p.get("title_words_min") or 0)
+    if bare and t_min and len(bare.split()) < t_min:
+        add(WARN, "Short title", f"The title is {len(bare.split())} words; your title length asks for at least "
+            f"{t_min}. A fuller title is found in more searches.", fixable=True)
     # the picture itself
     w, h, size = p.get("width") or 0, p.get("height") or 0, p.get("bytes") or 0
     if w and h and not p.get("raw"):
