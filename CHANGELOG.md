@@ -1,5 +1,11 @@
 # What's new
 
+## 2026.11.20.2
+
+- **Fewer photos left short of keywords.** When Detect comes back under your keyword minimum (Settings → Keywords, 30 by default), it now asks for more up to three times instead of once, because a small model often gives only a few at a time and some are filtered out. It also tops up again if the last clean-up removed keywords. Before, a photo could end up with 9 to 20 keywords.
+- **Short titles get a second try.** If the AI's title is still shorter than your title length after Detect asks for a fuller one, it asks once more and says how short it was.
+- **Check Before Upload flags photos below your own aims, not just the sites' rules:** *Few keywords* (under your minimum) and *Short title* (under your title length). **Fix All** rewords them with the AI: more keywords up to your range, and a fuller title.
+
 ## 2026.11.20.1
 
 - **The Shutterstock CSV is made by itself after an upload to Shutterstock**, next to the photos, as is (no "fix first?" question, no pop-up). The Upload window shows its name under *What's left on the sites*: once the photos show up on Shutterstock's Submit page, click CSV there and choose it. Turn it off in **Settings → Stock sites → After uploading to Shutterstock, make its CSV by itself**. The Make Shutterstock CSV button still works as before.

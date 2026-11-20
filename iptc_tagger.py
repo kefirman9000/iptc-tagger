@@ -5196,11 +5196,16 @@ class MainWindow(QMainWindow):
                     # Lightroom's own markers go at the next save (Settings → Saving), so they're not listed
                     "ai_markers": [m for m in ph.ai_markers if not (ph.develop_to_strip and "Lightroom" in m)],
                     "ss_text": self.settings.get("shutterstock_text", "title"),
-                    "dt_tidy": bool(self.settings.get("dreamstime_tidy_csv", True))}
+                    "dt_tidy": bool(self.settings.get("dreamstime_tidy_csv", True)),
+                    "keyword_min": core.keyword_range(self.settings.get("keyword_min"),
+                                                      self.settings.get("keyword_max"))[0],
+                    "bare_title": self.bare_title(ph),
+                    "title_words_min": core.title_words(self.settings.get("title_length", "detailed"))[0]}
             issues = precheck.check_photo(info, sites)
             plan = self.fix_plan(ph, site_rules)
             for i in issues:                         # what Fix All can do something about
-                if i["what"] in ("No title", "No keywords") or i["what"] == "Site rule" and plan:
+                if i["what"] in ("No title", "No keywords") or i["what"] in ("Site rule", "Few keywords",
+                                                                              "Short title") and plan:
                     i["fixable"] = True
             out[ph] = issues
             self._check_infos.append(info)
@@ -5241,8 +5246,19 @@ class MainWindow(QMainWindow):
         """What Fix All would do about this photo's site rules (core.site_fix_plan)."""
         if site_rules is None:
             site_rules = [k for k in self.check_sites() if k in core.STOCK_SITES]
-        return core.site_fix_plan(ph.title, ph.keywords, site_rules, ph.description,
+        plan = core.site_fix_plan(ph.title, ph.keywords, site_rules, ph.description,
                                   self.settings.get("shutterstock_text", "title"))
+        if not ph.title.strip() and not ph.keywords:
+            return plan
+        # your own aims too (Settings): at least your keyword minimum and a title of your chosen length
+        kmin = core.keyword_range(self.settings.get("keyword_min"), self.settings.get("keyword_max"))[0]
+        if len(ph.keywords) < kmin and not plan.get("kw_trim"):
+            plan["kw_more"] = max(plan.get("kw_more", 0), kmin)
+        bare = self.bare_title(ph).strip()
+        if bare and len(bare.split()) < core.title_words(self.settings.get("title_length", "detailed"))[0] \
+                and not plan.get("title_shorter"):
+            plan["title_longer"] = True
+        return plan
 
     def fix_all(self, results: dict, sites, ask: bool = True) -> dict:
         """Check Before Upload › Fix All: fix what can be fixed straight away (brand spelling, keyword order,
@@ -5271,7 +5287,8 @@ class MainWindow(QMainWindow):
                 options.append("longer")
             if fields:
                 reword[ph] = {"fields": fields, "options": options, "instruction": "", "context_on": True}
-            local = any(i["fixable"] and i["what"] not in ("Not saved", "Site rule", "No title", "No keywords")
+            local = any(i["fixable"] and i["what"] not in ("Not saved", "Site rule", "No title", "No keywords",
+                                                           "Few keywords", "Short title")
                         for i in issues) or plan.get("kw_trim") or plan.get("desc_cut")
             if local:
                 now.append((ph, plan))
