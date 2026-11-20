@@ -528,9 +528,21 @@ class UploadWindow(QDialog):
         if not sent:
             return
         auto_dt = "dreamstime" in sent and self.win.auto_send_dreamstime_csv(self.photos)
-        after = lambda n: ("The Dreamstime CSV is sent by itself as soon as Dreamstime has taken the photos into its "
-                           "Unfinished section (checked every 2 minutes). Keep IPTC Tagger open until then."
-                           if n == "dreamstime" and auto_dt else up.SITES[n]["after"])
+        auto_ss = ""
+        if "shutterstock" in sent and self.win.settings.get("shutterstock_csv_auto", True):
+            auto_ss = self.win.make_shutterstock_csv(self.photos, auto=True)
+            if auto_ss:
+                self.log.appendPlainText(f"Made the Shutterstock CSV: {auto_ss}")
+
+        def after(n):
+            if n == "dreamstime" and auto_dt:
+                return ("The Dreamstime CSV is sent by itself as soon as Dreamstime has taken the photos into its "
+                        "Unfinished section (checked every 2 minutes). Keep IPTC Tagger open until then.")
+            if n == "shutterstock" and auto_ss:
+                return (f"The CSV is made: <b>{os.path.basename(auto_ss)}</b>, next to the photos. Wait until the "
+                        "photos show up on Shutterstock's Submit page (a few minutes), then click CSV there and "
+                        "choose it. That's how Shutterstock gets your categories and the editorial flag.")
+            return up.SITES[n]["after"]
         steps = "".join(f"<li><b>{up.SITES[n]['label']}:</b> {after(n)}</li>" for n in sent)
         self.next_steps.setText("<b>What's left on the sites</b><ul style='margin-top:2px'>" + steps + "</ul>")
         self.next_steps.show()

@@ -227,6 +227,8 @@ def test_upload_window_end_to_end(window, make_photos, servers, monkeypatch):
     assert all(sha(os.path.join(al.root, os.path.basename(p))) == sha(p) for p in paths)   # exact, as saved
     assert w.next_steps.isVisibleTo(w) and "Submit page" in w.next_steps.text()
     assert w.btn_ss_csv.isVisibleTo(w)
+    made = [f for f in os.listdir(os.path.dirname(paths[0])) if f.startswith("shutterstock_") and f.endswith(".csv")]
+    assert len(made) == 1 and made[0] in w.next_steps.text()                 # the Shutterstock CSV, made by itself
     w.close()
 
 
