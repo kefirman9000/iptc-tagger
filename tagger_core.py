@@ -3240,7 +3240,11 @@ CATEGORY_EVIDENCE = {
                        "mints", "sweets", "treats", "confectionery", "restaurant", "cooking", "recipe",
                        "ingredients", "grocery", "groceries", "espresso", "yams", "potatoes", "raisins", "lemon",
                        "oranges", "popsicle", "jello", "nutella", "spam", "canned food", "fast food", "eating",
-                       "superfood", "superfoods", "smoothie", "drink mix"],
+                       "superfood", "superfoods", "smoothie", "smoothies", "drink mix", "shake", "shakes",
+                       "protein", "protein bar", "protein bars", "nutrition bar", "granola", "oatmeal", "rice",
+                       "beans", "eggs", "butter", "yogurt", "honey", "jam", "syrup", "salsa", "chips", "crisps",
+                       "seafood", "fish", "tuna", "salmon", "bottled water", "sparkling water", "energy drink",
+                       "kombucha", "liquor", "whiskey", "vodka", "cocktail", "spices", "seasoning", "condiments"],
 }
 # Things that are none of the AI's food words, and where the photo really belongs
 PET_FOOD = ["cat food", "dog food", "pet food", "cat treats", "dog treats", "fish food", "kibble", "cat litter"]
