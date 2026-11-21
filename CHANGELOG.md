@@ -1,5 +1,22 @@
 # What's new
 
+## 2026.11.21.1
+
+From a review of real Shutterstock CSVs made with the app:
+
+- **Brand misspellings read off the packaging are fixed:** *Realemom* → ReaLemon, *Meta Mucil* → Metamucil, *Buttoni* → Buitoni, *Berkeley Jensen* → Berkley Jensen, *Stove Stop* → Stove Top, *Bon Am* → Bon Ami, *Jakts* → Jakks, *Buterball* → Butterball, *Pokiemon* → Pokémon, *Freoport McMoran* → Freeport-McMoRan and about 20 more (Settings → Brands; if you edited your list, **Add the Built-in Brands** brings them in).
+- **The misspelling can stay as a keyword:** new in Settings → Brands, *Keep a misspelling as a keyword too*, on by default. When the AI misspells a brand in the keywords, the fixed keyword goes in and the misspelling stays right after it, so a buyer who types it that way still finds the photo. Only on photos where it was misspelled, and Check Before Upload doesn't flag it again.
+- **The AI's own instructions are taken out of the keywords:** a small model sometimes hands back *keywords*, *title*, *plus*, *json format*, *all lowercase*, *no duplicates*, *single json object* and the like as keywords.
+- **Hashtag keywords go:** when the AI writes a run of keywords with the spaces taken out (*financialinnovation, equinoxgold, mobilebanking…*), they're removed. Real words that happen to split (*gingerbread*, *watermelon*, *healthcare*, *metamucil*) are kept.
+- **Phone and stock chart keywords only on phone and chart photos:** after a batch of logos on phones, the AI kept adding *smartphone display, financial chart, stock market* to shelf photos (vinyl records, speakers). Those keywords now need a phone, screen or chart in the title.
+- **Company logo with stock chart:** the AI is told the subject is the logo, not a product, so no more *Devon Premium Craft Ale*, *Moderna Vaccine*, *Blue Owl Bluetooth Speaker* or *Keurig Dr Pepper Coffee Maker*. It spells the company as the logo does.
+- **Categories:**
+  - *Food and drink* only when there's food or drink (it was going on toys, vinyl, cleaning products and medicine).
+  - Cat and pet food gets *Animals/Wildlife* instead of *Food and drink*.
+  - Medicine and supplements get *Healthcare/Medical* when *Food and drink* comes off.
+  - A *stock chart background* no longer counts as *Backgrounds/Textures*.
+- **Fix: repeated keywords in the Shutterstock and Adobe CSVs.** Taking accents off for the CSV made *nestlé* and *nestle* (or *pokémon* and *pokemon*) the same word twice; each now appears once.
+
 ## 2026.11.20.2
 
 - **Fewer photos left short of keywords.** When Detect comes back under your keyword minimum (Settings → Keywords, 30 by default), it now asks for more up to three times instead of once, because a small model often gives only a few at a time and some are filtered out. It also tops up again if the last clean-up removed keywords. Before, a photo could end up with 9 to 20 keywords.

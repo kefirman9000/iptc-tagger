@@ -1076,6 +1076,11 @@ class SettingsDialog(QDialog):
         self.brand_alts = QCheckBox("Add the search spellings to the keywords (bjs, coca cola, haagen dazs…)")
         self.brand_alts.setChecked(bool(settings.get("brand_alternates", True)))
         brow.addWidget(self.brand_alts, 1)
+        self.brand_keep = QCheckBox("Keep a misspelling as a keyword too (meta mucil next to metamucil)")
+        self.brand_keep.setToolTip("When the AI misspells a brand in the keywords, the misspelling stays next to the "
+                                   "fixed keyword, so buyers who type it that way still find the photo")
+        self.brand_keep.setChecked(bool(settings.get("brand_keep_misspelled", True)))
+        brow.addWidget(self.brand_keep, 1)
         b_reset = QPushButton("Add the Built-in Brands")
         b_reset.setToolTip("Adds the built-in brands that aren't in your list yet (your own lines are kept)")
 
@@ -1292,6 +1297,7 @@ class SettingsDialog(QDialog):
                  shutterstock_text=self.ss_text.currentData() or "title",
                  dreamstime_csv_auto=self.dt_auto.isChecked(), shutterstock_csv_auto=self.ss_auto.isChecked(), dreamstime_tidy_csv=self.dt_tidy.isChecked(),
                  keyword_order=self.kw_order.isChecked(), brand_alternates=self.brand_alts.isChecked(),
+                 brand_keep_misspelled=self.brand_keep.isChecked(),
                  # unchanged built-in list: stays None, so later versions' additions still arrive
                  brand_spellings=(None if self.brands.toPlainText().strip() == core.DEFAULT_BRAND_SPELLINGS.strip()
                                   else self.brands.toPlainText()))
@@ -5120,7 +5126,8 @@ class MainWindow(QMainWindow):
         if rules:
             r = core.fix_brand_spellings(ph.title, ph.description, ph.keywords, rules,
                                          bool(self.settings.get("brand_alternates", True)),
-                                         keyword_max=max(kmax, len(ph.keywords)))
+                                         keyword_max=max(kmax, len(ph.keywords)),
+                                         keep_misspelled=bool(self.settings.get("brand_keep_misspelled", True)))
             ph.title, ph.description, ph.keywords = core.clean_title(r["title"]), r["description"], r["keywords"]
             fixes += r["fixes"]
         if self.settings.get("keyword_order", True):
@@ -5182,7 +5189,9 @@ class MainWindow(QMainWindow):
         self._check_infos = []
         for ph in photos:
             size = QImageReader(ph.path).size() if not core.is_raw(ph.path) else QSize()
-            spelled = core.fix_brand_spellings(ph.title, ph.description, ph.keywords, rules, False)["fixes"] \
+            spelled = core.fix_brand_spellings(ph.title, ph.description, ph.keywords, rules, False,
+                                               keep_misspelled=bool(self.settings.get("brand_keep_misspelled",
+                                                                                      True)))["fixes"] \
                 if rules else []
             info = {"file": os.path.basename(ph.path), "title": ph.title, "description": ph.description,
                     "keywords": list(ph.keywords), "editorial": self.is_editorial(ph), "unsaved": ph.changed,

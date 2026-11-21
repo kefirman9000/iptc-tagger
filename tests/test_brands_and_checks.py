@@ -110,3 +110,41 @@ def test_check_flags_your_own_keyword_minimum_and_title_length():
     assert whats["Short title"]["fixable"] and "7 words" in whats["Short title"]["detail"]
     ok = dict(base, keywords=[f"k{i}" for i in range(32)], bare_title=" ".join(["word"] * 15))
     assert not {"Few keywords", "Short title"} & {i["what"] for i in precheck.check_photo(ok, ["shutterstock"])}
+
+
+# ---------- misspellings the AI read off the packaging (rows from real Shutterstock CSVs)
+def test_a_misspelled_brand_keyword_is_kept_next_to_the_fixed_one():
+    r = core.fix_brand_spellings("Meta Mucil Fiber Capsules on Store Shelves", "",
+                                 ["fiber capsules", "meta mucil", "psyllium"], RULES, keep_misspelled=True)
+    assert r["title"] == "Metamucil Fiber Capsules on Store Shelves"
+    assert r["keywords"] == ["fiber capsules", "metamucil", "meta mucil", "psyllium"]
+    # running it again changes nothing and reports nothing, so Check Before Upload doesn't keep flagging it
+    again = core.fix_brand_spellings(r["title"], "", r["keywords"], RULES, keep_misspelled=True)
+    assert again["keywords"] == r["keywords"] and not again["fixes"]
+    # off: the misspelling is just fixed
+    assert core.fix_brand_spellings("x", "", ["meta mucil"], RULES)["keywords"] == ["metamucil"]
+
+
+def test_only_real_misspellings_are_kept_not_punctuation():
+    r = core.fix_brand_spellings("x", "", ["campbells", "coca cola"], RULES, add_alternates=False,
+                                 keep_misspelled=True)
+    assert r["keywords"] == ["campbell's", "coca-cola"]
+
+
+def test_the_misspellings_from_the_packaging_are_fixed():
+    for wrong, right in (("Realemom Lemon Juice", "ReaLemon Lemon Juice"), ("Buttoni Ravioli", "Buitoni Ravioli"),
+                         ("Berkeley Jensen Famotidine", "Berkley Jensen Famotidine"), ("Bon Am Cleanser", "Bon Ami Cleanser"),
+                         ("Stove Stop Turkey Gravy", "Stove Top Turkey Gravy"), ("Jakts Mario Racer", "Jakks Mario Racer"),
+                         ("Freoport McMoran Logo", "Freeport-McMoRan Logo"), ("Fruit of Loom Logo", "Fruit of the Loom Logo")):
+        assert core.fix_brand_spellings(wrong, "", [], RULES)["title"] == right, wrong
+    # Bon Ami isn't turned into Bon Amii
+    assert core.fix_brand_spellings("Bon Ami Cleanser", "", [], RULES)["title"] == "Bon Ami Cleanser"
+
+
+def test_shutterstock_csv_has_no_repeats_after_accents_are_taken_off(tmp_path):
+    import csv
+    path = tmp_path / "ss.csv"
+    core.export_csv(str(path), [{"file": "a.jpg", "title": "Stouffer's Fettuccine", "keywords":
+                                 ["nestlé", "nestle", "pasta", "pokémon", "pokemon"], "categories": ["Objects"]}])
+    rows = list(csv.reader(open(path, encoding="utf-8")))
+    assert rows[1][2] == "nestle,pasta,pokemon"

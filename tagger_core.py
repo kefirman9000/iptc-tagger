@@ -40,7 +40,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.11.20.2"
+APP_VERSION = "2026.11.21.1"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 # camera RAW files: titles and keywords go into the Lightroom sidecar next to them (photo.xmp), never the RAW.
 # DNG is left out: Lightroom ignores sidecars for DNG and keeps its metadata inside the file itself.
@@ -471,6 +471,7 @@ DEFAULT_SETTINGS = {
     "keyword_order": True,    # the first ten keywords: the title's subject and brand, specific before general
     "brand_spellings": None,  # None = the built-in list (DEFAULT_BRAND_SPELLINGS); your own edits otherwise
     "brand_alternates": True, # add the other ways buyers search for a brand (bjs, coca cola) to the keywords
+    "brand_keep_misspelled": True,  # a keyword the AI misspelled (meta mucil) stays next to the fixed one
     "ai_description": True,   # also write a separate description (caption): Alamy, Dreamstime, Shutterstock
     "concept": True,          # titles and descriptions also say what it's for, who buys it, the theme around it
     "fix_common": True,       # fix the AI's usual mistakes (stray quotes, other stores, prices and codes as keywords,
@@ -590,6 +591,18 @@ def adobe_title(title: str, bare: str = "") -> str:
     return text
 
 
+def plain_keywords(keywords) -> list[str]:
+    """The keywords made plain for a site's CSV, without the repeats that making them plain can cause
+    (nestlé and nestle both become nestle; Shutterstock counts that as a duplicate)."""
+    out, seen = [], set()
+    for k in keywords or []:
+        p = plain_text(str(k)).strip()
+        if p and p.casefold() not in seen:
+            seen.add(p.casefold())
+            out.append(p)
+    return out
+
+
 def export_csv(path: str, rows: list[dict], fmt: str = "shutterstock", categories=(), ss_text: str = "title") -> int:
     """Write the photos to a CSV file. rows: dicts with file, folder, title, description, keywords,
     editorial (bool), and for 'full' also type, note, taken, saved. Returns how many photos were written.
@@ -612,13 +625,13 @@ def export_csv(path: str, rows: list[dict], fmt: str = "shutterstock", categorie
         ss = (lambda r: single_line(r["title"]) or desc(r)) if ss_text != "description" else desc
         # Shutterstock asks for no special characters: curly quotes, long dashes and accents are always made
         # plain here, whatever the Symbols setting
-        body = [[shutterstock_file_name(r["file"]), plain_text(ss(r)), ",".join(k for k in (plain_text(x) for x in r["keywords"]) if k),
+        body = [[shutterstock_file_name(r["file"]), plain_text(ss(r)), ",".join(plain_keywords(r["keywords"])),
                  cats(r), "No", "No", "Yes" if r.get("editorial") else "No"] for r in rows]
         enc = "utf-8"
     elif fmt == "adobe":
         head = ["Filename", "Title", "Keywords", "Category", "Releases"]
         body = [[r["file"], adobe_title(r["title"], r.get("bare_title", "")),
-                 ",".join(k for k in (plain_text(x) for x in r["keywords"]) if k), r.get("adobe_category") or "", ""]
+                 ",".join(plain_keywords(r["keywords"])), r.get("adobe_category") or "", ""]
                 for r in rows]
         enc = "utf-8"
     else:
@@ -2988,6 +3001,21 @@ NEEDS_EVIDENCE = {
                                                                            "entrance", "outside"],
     "machine vision system": ["machine vision"], "industrial automation": ["automation"],
 }
+# The "logo on a phone in front of a stock chart" words: after a batch of those, the AI kept adding them to plain
+# shelf photos (GTA vinyl with "smartphone display, financial chart, stock market")
+_SCREEN_PROOF = ["smartphone", "phone", "screen", "monitor", "chart", "stock market", "tablet", "laptop", "computer"]
+NEEDS_EVIDENCE.update({k: _SCREEN_PROOF for k in (
+    "smartphone display", "smartphone screen", "smartphone", "mobile screen", "screen display", "digital screen",
+    "computer screen", "financial chart", "financial charts", "stock market", "stock market chart",
+    "stock market display", "stock market data", "stock chart", "stock trading", "financial data",
+    "financial performance", "financial performance chart", "financial technology")})
+# Bits of the instructions that a small model sometimes hands back as keywords ("all lowercase, no duplicates,
+# json format, single json object", "keywords backup1")
+_LEAKED_INSTRUCTION = re.compile(
+    r"^(?:keywords?|keywords? backup\d*|tags?|titles?|description|plus|json|json format|json object|single json object|"
+    r"product name|other text|original keywords|additional keywords|all lowercase|no special characters|unique|"
+    r"no duplicates|no near duplicates|no guessing|following all rules|strictly adhered to|"
+    r"only requested information|letters and numbers only|seo keywords?|most relevant first)$")
 _PACKAGE_COUNTS = (r"calories|pouches|servings|pancakes|pieces|count|ct|cookies|bars|packets|sticks|tablets|capsules|"
                    r"caplets|softgels|gummies|wipes|sheets|rolls|loads|cups|pods|bags|grams|mg")
 _JUNK_KEYWORD = [
@@ -3038,11 +3066,44 @@ def stores_in(text: str, brands: bool = True) -> list[str]:
     return [c for _, c in sorted(found)]
 
 
+def run_together(keyword: str, words) -> str:
+    """'financialinnovation' -> 'financial innovation': a keyword with the spaces taken out, split into two or three
+    words of at least three letters that are all used elsewhere (words: the other keywords and the title).
+    '' when it doesn't split that way. Real words split too (gingerbread, watermelon), so the caller only drops one
+    when the AI wrote a whole run of them (hashtag style), and never one the title uses."""
+    k = (keyword or "").casefold().strip()
+    if not re.fullmatch(r"[a-z]{9,}", k):
+        return ""
+    vocab = {w for w in words if len(w) >= 3 and w != k}
+
+    def split(s, parts):
+        if s in vocab:
+            return [s]
+        if parts < 2:
+            for i in range(3, len(s) - 2):
+                if s[:i] in vocab:
+                    rest = split(s[i:], parts + 1)
+                    if rest:
+                        return [s[:i]] + rest
+        return None
+    for i in range(3, len(k) - 2):
+        if k[:i] in vocab:
+            rest = split(k[i:], 1)
+            if rest:
+                return " ".join([k[:i]] + rest)
+    return ""
+
+
+HASHTAG_RUN = 4   # this many run-together keywords in one list: the AI wrote hashtags, and they all go
+
+
 def junk_keyword(keyword: str) -> str:
     """Why a keyword is no use to a buyer (a price, a date or product code, a number off the package), or ''."""
     k = _norm_words(keyword).strip()
     if re.fullmatch(r"(?:(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]* )?(?:19|20)\d\d", k):
         return ""                                      # a year, or month and year
+    if _LEAKED_INSTRUCTION.match(k):
+        return "words from the AI's instructions"
     for pattern, why in _JUNK_KEYWORD:
         if pattern.search(k):
             return why
@@ -3121,7 +3182,8 @@ CATEGORY_MEANINGS = {   # what each Shutterstock category is for, so it isn't pi
     "Beauty/Fashion": "cosmetics, hair, clothing and style", "Buildings/Landmarks": "buildings, storefronts seen from "
     "outside, architecture and landmarks (not products on a shelf)", "Business/Finance": "business, money, shops "
     "and retail", "Celebrities": "famous people who are in the photo", "Education": "school and learning",
-    "Food and drink": "food, drinks and groceries", "Healthcare/Medical": "medicine, health products and care",
+    "Food and drink": "food, drinks and groceries for people (not pet food, toys, medicine, "
+    "clothing or music)", "Healthcare/Medical": "medicine, health products and care",
     "Holidays": "Christmas, Halloween, Thanksgiving and other holidays", "Industrial": "industry, tools, machines, "
     "fuel and building supplies", "Interiors": "the inside of a room or a whole store", "Miscellaneous": "anything "
     "else", "Nature": "plants, trees, leaves, landscapes and weather", "Objects": "products and things, including "
@@ -3162,8 +3224,26 @@ CATEGORY_EVIDENCE = {
     "Science": ["science", "laboratory", "lab", "microscope", "experiment", "research"],
     "Vintage": ["vintage", "retro", "antique", "old fashioned", "classic"],
     "Abstract": ["abstract", "pattern", "texture"],
-    "Backgrounds/Textures": ["background", "texture", "pattern", "surface"],
+    # not "background": "Logo on a Phone with a Stock Chart Background" isn't a texture
+    "Backgrounds/Textures": ["texture", "textures", "pattern", "patterns", "surface", "backdrop", "copy space",
+                             "wallpaper", "abstract background", "texture background"],
+    # the AI put Food and drink on toys, vinyl records, cleaning products, cat food and medicine
+    "Food and drink": ["food", "foods", "drink", "drinks", "beverage", "beverages", "snack", "snacks", "candy",
+                       "candies", "chocolate", "chocolates", "gum", "cookie", "cookies", "cereal", "coffee", "tea",
+                       "soda", "cola", "juice", "milk", "dairy", "cheese", "meat", "turkey", "chicken", "beef", "pork",
+                       "sausage", "pasta", "ravioli", "sauce", "soup", "bread", "cake", "cakes", "cupcake",
+                       "cupcakes", "baking", "bakery", "dessert", "desserts", "ice cream", "fruit", "fruits",
+                       "vegetable", "vegetables", "produce", "meal", "meals", "dinner", "breakfast", "lunch",
+                       "pizza", "burger", "donut", "donuts", "doughnut", "doughnuts", "popcorn", "cracker",
+                       "crackers", "spread", "peanut butter", "yeast", "sweetener", "sugar", "flour", "gravy",
+                       "stuffing", "frosting", "icing", "wine", "beer", "ale", "nuts", "pretzels", "gummies",
+                       "mints", "sweets", "treats", "confectionery", "restaurant", "cooking", "recipe",
+                       "ingredients", "grocery", "groceries", "espresso", "yams", "potatoes", "raisins", "lemon",
+                       "oranges", "popsicle", "jello", "nutella", "spam", "canned food", "fast food", "eating",
+                       "superfood", "superfoods", "smoothie", "drink mix"],
 }
+# Things that are none of the AI's food words, and where the photo really belongs
+PET_FOOD = ["cat food", "dog food", "pet food", "cat treats", "dog treats", "fish food", "kibble", "cat litter"]
 _PRODUCT_WORDS = ["shelf", "shelves", "display", "package", "packaging", "box", "boxes", "can", "cans", "bottle",
                   "bottles", "jar", "jars", "bag", "bags", "pack", "product", "products", "retail", "carton"]
 
@@ -3176,12 +3256,26 @@ def fit_categories(categories, title: str = "", description: str = "", keywords=
     text = re.sub(r" (?:interior(?: and)? exterior|exterior(?: and)? interior|interior|exterior)"
                   r"(?= (?:paint|primer|enamel|stain|finish|latex|acrylic|use|protection|sealer|wood|coating)\b)",
                   " ", text)
+    pets = any(f" {w} " in text for w in PET_FOOD)
     out = []
     for c in shutterstock_categories(list(categories or [])):
         needs = CATEGORY_EVIDENCE.get(c)
         if needs and not any(f" {w} " in text for w in needs):
             continue
+        if pets and c == "Food and drink":            # cat food isn't food and drink
+            continue
         out.append(c)
+    if pets and "Animals/Wildlife" not in out:
+        out.insert(0, "Animals/Wildlife")
+    # medicine that had Food and drink taken off: Healthcare/Medical is where it goes (from the title and
+    # description only, so a "health food" keyword doesn't make cereal medical)
+    head = _norm_words(" ".join([title or "", description or ""]))
+    if len(out) < 2 and "Healthcare/Medical" not in out and any(
+            f" {w} " in head for w in ("medicine", "medication", "pharmacy", "laxative", "antacid", "heartburn",
+                                       "pain relief", "acid reducer", "anti diarrheal", "supplement", "supplements",
+                                       "capsules", "tablets", "softgels", "vitamins", "fiber supplement",
+                                       "symptom relief", "heartburn relief")):
+        out.insert(0, "Healthcare/Medical")
     product = any(f" {w} " in text for w in _PRODUCT_WORDS)
     if product and "Objects" not in out and len(out) < 2:
         out.append("Objects")
@@ -3259,6 +3353,13 @@ def fix_common_problems(title: str, description: str, keywords, categories=(), k
     shelf_stable = any(f" {w} " in alltext + kw_text for w in ("can", "cans", "canned", "boxed", "stuffing mix",
                                                                 "baking mix", "jar", "jars", "shelf stable"))
     frozen_ok = any(f" {w} " in alltext + known_n for w in ("frozen", "freezer", "freezer section", "ice cream"))
+    vocab = set(alltext.split())
+    for k in keywords or []:
+        if " " in k.strip():
+            vocab.update(_norm_words(k).split())
+    spaced = {k: run_together(_norm_words(k).strip(), vocab) for k in keywords or []}
+    spaced = {k: s for k, s in spaced.items() if s}
+    hashtags = len(spaced) >= HASHTAG_RUN
     kept, dropped = [], []
     for k in keywords or []:
         kn = _norm_words(k)
@@ -3270,6 +3371,8 @@ def fix_common_problems(title: str, description: str, keywords, categories=(), k
         if not why and kn.strip() and f" {kn.strip()} " in known_n:
             kept.append(k)
             continue
+        if not why and k in spaced and hashtags and f" {kn.strip()} " not in alltext:
+            why = "words run together"
         if not why and store in HARDWARE_STORES and " grocery " in kn:
             why = "grocery at a hardware store"
         if not why and shelf_stable and not frozen_ok and " frozen " in kn:
@@ -3473,7 +3576,11 @@ PHOTO_TYPES = [
     # editorial and brand situations
     ("logo_stock", "Company logo with stock chart",
      "a stock photo of a company's logo displayed on a smartphone screen, held in front of a computer "
-     "screen showing a stock market or financial performance chart"),
+     "screen showing a stock market or financial performance chart. The subject is the company's logo, not one of "
+     "its products: write '[Company] Logo on a Smartphone Screen' and never describe a product, device or service "
+     "the company might make (not a speaker, game console, coffee maker, vaccine, router or bike). Name the company "
+     "exactly as the logo spells it, letter for letter (Marvell and Marvel are different companies); if the logo alone doesn't make "
+     "it clear which company it is, use the name on the logo and don't guess what the company does"),
     ("product_shelf", "Product on a store shelf",
      "a photo of a retail product sitting on a grocery or retail store shelf; name the brand, the exact product, "
      "its variety, flavour or scent from the packaging, and the brand's parent company only if it is printed on the "
@@ -5025,6 +5132,37 @@ T-Mobile = TMobile, T Mobile | t mobile
 iPhone = I-Phone, I Phone | iphone
 YouTube = You Tube | youtube
 PlayStation = Play Station | playstation
+# Misread off the packaging by the AI (with "Keep the misspelling as a keyword" on, a keyword the AI misspelled
+# stays next to the fixed one, so a buyer who types it that way still finds the photo)
+ReaLemon = Realemom, Reallemon, Real Lemon | real lemon
+Metamucil = Meta Mucil, Metamucel
+ProSupps = Pro Supps, ProSups, Pro Sups | pro supps
+Berkley Jensen = Berkeley Jensen, Berkly Jensen
+Buitoni = Buttoni, Butoni
+Stove Top = Stove Stop | stovetop
+Bon Ami = Bon Am
+Jakks Pacific = Jakts Pacific, Jaks Pacific | jakks
+Jakks = Jakts
+Ageless Male = Agelles Male, Ageles Male
+Betty Crocker = Bette Crocker, BetteCrocker
+Breyers = Broyers, Breyer's
+Butterball = Buterball
+Pokémon = Pokiemon, Pikiemon, Pokimon, Pokemom | pokemon
+Mandalorian = Mandolorian
+SpongeBob = Sporenbob, Sponges Bob | sponge bob
+Krusty Krab = Kristy Krab, Krusty Crab
+Canada Dry = Canad Dry
+Freeport-McMoRan = Freoport McMoran | freeport mcmoran
+IAMGOLD = I AMGOLD, I Am Gold
+DraftKings = Draft Kings | draft kings
+D-Wave = D:Wave | d wave
+James Hardie = JamesHardie
+The Trade Desk = TheTradeDesk | trade desk
+Fruit of the Loom = Fruit of Loom
+Prevacid = Previcid
+Prilosec = Prilocsec
+Deftones = Defontes
+Pussycat Dolls = Pussycats Dolls
 """
 
 
@@ -5082,9 +5220,12 @@ def brand_rules(text: str):
 
 
 def fix_brand_spellings(title: str, description: str, keywords, rules, add_alternates: bool = True,
-                        keyword_max: int = 50) -> dict:
+                        keyword_max: int = 50, keep_misspelled: bool = False) -> dict:
     """Write every brand the way it's spelled (in the title, description and keywords), and add the other ways
     buyers search for it to the keywords, right after the brand, while there's room.
+    keep_misspelled: a keyword that was spelled wrong ('meta mucil') stays too, right after the fixed one
+    ('metamucil'), while there's room, so buyers who type it that way still find the photo. Only on the photos
+    where it was misspelled: it's never added to the others.
     Returns {'title', 'description', 'keywords', 'fixes': ["BJs → BJ's", …]}."""
     fixes = []
 
@@ -5105,13 +5246,27 @@ def fix_brand_spellings(title: str, description: str, keywords, rules, add_alter
 
     title = fix_text(title)
     description = fix_text(description)
-    kws, seen, added = [], set(), []
+    kws, seen, added, kept_wrong = [], set(), [], []
+    total = len(keywords or [])
     for k in keywords or []:
         lower = k == k.lower()
+        before = len(fixes)
         nk = fix_text(k, lower=lower)
-        if nk.casefold() not in seen:
+        was_there = nk.casefold() in seen
+        if not was_there:
             seen.add(nk.casefold())
             kws.append(nk)
+        # a real misspelling, not just the apostrophe, hyphen, accent or capitals ("campbells", "coca cola")
+        if keep_misspelled and _norm_words(nk) != _norm_words(k) and k.casefold() not in seen \
+                and len(kws) < keyword_max:
+            seen.add(k.casefold())
+            kws.append(k)
+            if was_there:
+                del fixes[before:]                   # already fixed and kept on purpose: nothing to report
+            else:
+                kept_wrong.append(k)
+    if kept_wrong:
+        fixes.append("kept the misspelling as a keyword: " + ", ".join(kept_wrong))
     if add_alternates:
         out = []
         for k in kws:

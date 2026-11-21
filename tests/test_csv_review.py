@@ -1,0 +1,61 @@
+"""Fixes from a review of real Shutterstock CSVs: instructions handed back as keywords, hashtag keywords, phone and
+stock chart words on shelf photos, and categories (core only, no window)."""
+import tagger_core as core
+
+
+
+# ---------- the AI's instructions handed back as keywords
+def test_words_from_the_instructions_are_junk():
+    for k in ("keywords", "keywords backup1", "title", "plus", "json format", "single json object", "all lowercase",
+              "no duplicates", "no guessing", "following all rules", "original keywords", "product name"):
+        assert core.junk_keyword(k), k
+    for k in ("plush toy", "titleist", "unique gift", "product display", "keyword research"):
+        assert not core.junk_keyword(k), k
+
+
+def test_hashtag_keywords_with_the_spaces_taken_out_go():
+    kws = ["equinox gold", "smartphone", "stock market", "financial display", "digital branding", "mobile technology",
+           "modern finance", "equinoxgold", "financialdisplay", "digitalbranding", "mobiletechnology", "modernfinance"]
+    r = core.fix_common_problems("Equinox Gold Logo on a Smartphone Screen with Stock Market Chart", "", kws)
+    assert r["keywords"] == kws[:7]
+
+
+def test_real_compound_words_are_kept():
+    kws = ["gingerbread", "ginger", "bread", "watermelon", "water", "melon", "healthcare", "health care",
+           "metamucil", "meta mucil", "peppermint"]
+    r = core.fix_common_problems("Gingerbread Cookie Mix on a Store Shelf", "", kws)
+    assert r["keywords"] == kws
+
+
+def test_phone_and_stock_chart_keywords_need_a_phone_or_chart_in_the_photo():
+    kws = ["grand theft auto", "vinyl record", "smartphone display", "financial chart", "stock market"]
+    r = core.fix_common_problems("Grand Theft Auto the Album Vinyl Record at Target", "", kws)
+    assert r["keywords"] == ["grand theft auto", "vinyl record"]
+    r = core.fix_common_problems("Cerebras Logo on a Smartphone Screen with a Stock Market Chart", "",
+                                 ["cerebras", "smartphone display", "financial chart", "stock market"])
+    assert r["keywords"] == ["cerebras", "smartphone display", "financial chart", "stock market"]
+
+
+# ---------- categories
+def test_food_and_drink_only_for_food():
+    assert core.fit_categories(["Objects", "Food and drink"], "Zuru Fuggler Toys on a Store Shelf",
+                               keywords=["zuru", "toys", "plush"]) == ["Objects"]
+    assert core.fit_categories(["Objects", "Food and drink"], "Kit Kat Bits Chocolate Candy on a Shelf") == \
+        ["Objects", "Food and drink"]
+
+
+def test_cat_food_is_animals_not_food_and_drink():
+    assert core.fit_categories(["Objects", "Food and drink"], "Fancy Feast Canned Cat Food on a Grocery Shelf") == \
+        ["Animals/Wildlife", "Objects"]
+
+
+def test_medicine_gets_healthcare_when_food_and_drink_goes():
+    assert core.fit_categories(["Objects", "Food and drink"], "Metamucil Fiber Capsules on Store Shelves",
+                               keywords=["fiber", "capsules"]) == ["Healthcare/Medical", "Objects"]
+
+
+def test_a_chart_background_is_not_a_texture():
+    assert core.fit_categories(["Technology", "Backgrounds/Textures"],
+                               "Fastly Logo on a Smartphone with a Stock Market Chart Background") == ["Technology"]
+    assert core.fit_categories(["Backgrounds/Textures"], "Weathered Wood Texture with Copy Space") == \
+        ["Backgrounds/Textures"]
