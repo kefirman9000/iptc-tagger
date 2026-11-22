@@ -3035,8 +3035,9 @@ _JUNK_KEYWORD = [
     (re.compile(r"^\d+ (?:" + _PACKAGE_COUNTS + r")$"), "a number from the package"),
     (re.compile(r"^\d+ in (?:\d+|minutes?)$|^\d+$"), "a stray number"),
     # 75 colder, 75 less sugar, 75 percent, 524 cal slice, 67 spk strips, 2 8 kgs, 40 20604, about 145 pancakes
-    (re.compile(r"\b\d+ (?:percent|cal|kcal|calories|kgs?|g|grams?|mg|ml|l|oz|fl oz|lbs?|cm|mm|inch|inches|"
-                r"count|ct|pk|pack)\b|^(?:about |over |up to |only )?\d+ (?:less|more|colder|fewer|off|" + _PACKAGE_COUNTS
+    # (an "18 pack", "5 percent minoxidil" or "4 month supply" is kept: a buyer searches for those)
+    (re.compile(r"^\d+ percent$|\b\d+ (?:cal|kcal|kgs?|grams?|mg|ml|fl oz|cm|mm)\b|"
+                r"^(?:about |over |only )?\d+ (?:less|more|colder|fewer|" + _PACKAGE_COUNTS
                 + r")\b|^\d+ \d+(?: \w+)?$|^\d+ \w+ (?:strips|slices?|stripes)$"), "a number from the package"),
     (re.compile(r"\blabel id\b|^(?:cm|mm|kg|kgs|oz|lb|lbs|ml|ct|pk)$"), "a label or unit off the package"),
     (re.compile(r"^(?:[a-z] )+[a-z]$"), "single letters"),          # u d (U.S.D.A., a torn label)
