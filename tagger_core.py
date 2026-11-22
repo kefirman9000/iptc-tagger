@@ -40,7 +40,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.11.21.1"
+APP_VERSION = "2026.11.21.2"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 # camera RAW files: titles and keywords go into the Lightroom sidecar next to them (photo.xmp), never the RAW.
 # DNG is left out: Lightroom ignores sidecars for DNG and keeps its metadata inside the file itself.
@@ -622,7 +622,9 @@ def export_csv(path: str, rows: list[dict], fmt: str = "shutterstock", categorie
         default = shutterstock_categories(list(categories or []))
         cats = lambda r: ",".join(shutterstock_categories(r.get("categories")) or default)
         head = ["Filename", "Description", "Keywords", "Categories", "Illustration", "Mature Content", "Editorial"]
-        ss = (lambda r: single_line(r["title"]) or desc(r)) if ss_text != "description" else desc
+        # never over Shutterstock's limit (it refuses the row): cut back to the main phrase, place and date kept
+        ss = (lambda r: shorten_title(single_line(r["title"]) or desc(r), SHUTTERSTOCK_TEXT_MAX)) \
+            if ss_text != "description" else (lambda r: shorten_title(desc(r), SHUTTERSTOCK_TEXT_MAX))
         # Shutterstock asks for no special characters: curly quotes, long dashes and accents are always made
         # plain here, whatever the Symbols setting
         body = [[shutterstock_file_name(r["file"]), plain_text(ss(r)), ",".join(plain_keywords(r["keywords"])),
@@ -1673,7 +1675,7 @@ def open_in_stockup(app_path: str, paths: list[str], new_window: bool = False) -
 # The photo list, kept as you work so nothing is lost if the app closes unexpectedly ----------------
 # Stock-site text rules, the same ones StockUp checks (from each site's contributor help pages) ---------------
 STOCK_SITES = {
-    "shutterstock": {"label": "Shutterstock", "kw_min": 7, "kw_max": 50, "desc_max": 200, "desc_min_words": 5,
+    "shutterstock": {"label": "Shutterstock", "kw_min": 7, "kw_max": 50, "desc_max": 1024, "desc_min_words": 5,
                      "plain": True},   # "Exclude special characters" (its help on rejected titles)
     "adobe": {"label": "Adobe Stock", "kw_min": 5, "kw_max": 49, "title_max": 70},
     "dreamstime": {"label": "Dreamstime", "own_desc": True, "kw_min": 7, "kw_max": 50},   # title: dreamstime_checks
@@ -2936,7 +2938,8 @@ DESCRIPTION_SCHEMA = {
                                                                   15, 16, 17, 18, 19, 20, 21]}},
     "required": ["description", "categories", "adobe_category"],
 }
-DESCRIPTION_MAX = 200       # Shutterstock's limit for the description; Alamy and Dreamstime take this too
+DESCRIPTION_MAX = 200       # the description's length: Alamy and Dreamstime take this, and it reads well everywhere
+SHUTTERSTOCK_TEXT_MAX = 1024   # Shutterstock's one text field (shown as the title): 200 until late 2026, now 1024
 
 
 def shutterstock_categories(value) -> list[str]:
@@ -3006,9 +3009,14 @@ NEEDS_EVIDENCE = {
 _SCREEN_PROOF = ["smartphone", "phone", "screen", "monitor", "chart", "stock market", "tablet", "laptop", "computer"]
 NEEDS_EVIDENCE.update({k: _SCREEN_PROOF for k in (
     "smartphone display", "smartphone screen", "smartphone", "mobile screen", "screen display", "digital screen",
-    "computer screen", "financial chart", "financial charts", "stock market", "stock market chart",
-    "stock market display", "stock market data", "stock chart", "stock trading", "financial data",
-    "financial performance", "financial performance chart", "financial technology")})
+    "computer screen", "financial technology", "smartphone photography")})
+# a phone in the title isn't proof of a stock chart: Bisquick "on Smartphone Screen" got "financial chart, stock
+# market image, financial visualization". Chart words need a chart (or the stock market) in the title or notes.
+_CHART_PROOF = ["chart", "charts", "stock market", "stock price", "stock prices", "trading", "candlestick", "graph",
+                "stock exchange", "ticker"]
+_CHART_KEYWORD = re.compile(r"\b(?:charts?|stock market|stock trading|stock exchange|stock prices?|candlestick|"
+                            r"financial (?:data|visualization|visualisation|performance|graph|graphs|analysis)|"
+                            r"market data|trading|ticker|investment chart)\b")
 # Bits of the instructions that a small model sometimes hands back as keywords ("all lowercase, no duplicates,
 # json format, single json object", "keywords backup1")
 _LEAKED_INSTRUCTION = re.compile(
@@ -3026,6 +3034,12 @@ _JUNK_KEYWORD = [
     (re.compile(r"\b(?=\w*[a-z])\w*\d{4,}\w*\b|\b0\d{2,}\b|\b[a-z]\d \d{3,}\b|\b[a-z]\d{3} \d+x\b"), "a product code"),
     (re.compile(r"^\d+ (?:" + _PACKAGE_COUNTS + r")$"), "a number from the package"),
     (re.compile(r"^\d+ in (?:\d+|minutes?)$|^\d+$"), "a stray number"),
+    # 75 colder, 75 less sugar, 75 percent, 524 cal slice, 67 spk strips, 2 8 kgs, 40 20604, about 145 pancakes
+    (re.compile(r"\b\d+ (?:percent|cal|kcal|calories|kgs?|g|grams?|mg|ml|l|oz|fl oz|lbs?|cm|mm|inch|inches|"
+                r"count|ct|pk|pack)\b|^(?:about |over |up to |only )?\d+ (?:less|more|colder|fewer|off|" + _PACKAGE_COUNTS
+                + r")\b|^\d+ \d+(?: \w+)?$|^\d+ \w+ (?:strips|slices?|stripes)$"), "a number from the package"),
+    (re.compile(r"\blabel id\b|^(?:cm|mm|kg|kgs|oz|lb|lbs|ml|ct|pk)$"), "a label or unit off the package"),
+    (re.compile(r"^(?:[a-z] )+[a-z]$"), "single letters"),          # u d (U.S.D.A., a torn label)
 ]
 
 
@@ -3200,8 +3214,10 @@ CATEGORY_EVIDENCE = {
     "Celebrities": ["celebrity", "actor", "actress", "singer", "musician", "athlete", "politician"],
     "Parks/Outdoor": ["park", "garden", "outdoor", "outdoors", "yard", "lawn", "trail", "beach", "playground",
                       "patio", "camping", "hiking", "picnic", "street", "outside"],
+    # not "toy": a toy car on a shelf is Objects, not sport (Matchbox Lexus got Sports/Recreation)
     "Sports/Recreation": ["sport", "sports", "fitness", "gym", "workout", "exercise", "protein", "athlete", "game",
-                          "ball", "bike", "bicycle", "fishing", "camping", "hiking", "golf", "running", "toy", "toys"],
+                          "ball", "bike", "bicycle", "fishing", "camping", "hiking", "golf", "running", "sled",
+                          "strength training", "skateboard", "playground"],
     "Buildings/Landmarks": ["building", "buildings", "storefront", "exterior", "facade", "architecture", "landmark",
                             "house", "church", "bridge", "tower", "skyline", "entrance", "street"],
     "Nature": ["nature", "leaf", "leaves", "tree", "trees", "forest", "flower", "flowers", "plant", "plants", "sky",
@@ -3248,6 +3264,12 @@ CATEGORY_EVIDENCE = {
 }
 # Things that are none of the AI's food words, and where the photo really belongs
 PET_FOOD = ["cat food", "dog food", "pet food", "cat treats", "dog treats", "fish food", "kibble", "cat litter"]
+_NOT_FOOD = ["cleaning", "cleaner", "cleaners", "detergent", "laundry", "trash bag", "trash bags", "garbage bags",
+             "paper towels", "toilet paper", "household", "toy", "toys", "plush", "plushie", "doll", "action figure",
+             "car accessories", "car decal", "bumper", "headlight", "eyelashes", "makeup", "cosmetics", "shampoo",
+             "hand dryer", "badge", "clips", "stationery", "office supplies", "batteries", "light bulbs"]
+_HOLIDAY_NAMES = ["christmas", "easter", "halloween", "thanksgiving", "hanukkah", "valentine", "valentines",
+                  "fourth of july", "st patricks", "new years", "diwali", "lunar new year", "kwanzaa"]
 _PRODUCT_WORDS = ["shelf", "shelves", "display", "package", "packaging", "box", "boxes", "can", "cans", "bottle",
                   "bottles", "jar", "jars", "bag", "bags", "pack", "product", "products", "retail", "carton"]
 
@@ -3261,19 +3283,23 @@ def fit_categories(categories, title: str = "", description: str = "", keywords=
                   r"(?= (?:paint|primer|enamel|stain|finish|latex|acrylic|use|protection|sealer|wood|coating)\b)",
                   " ", text)
     pets = any(f" {w} " in text for w in PET_FOOD)
+    head = _norm_words(" ".join([title or "", description or ""]))
+    # cleaning products, toys and car parts on a grocery shelf aren't food: the title says what it is (Glad
+    # trash bags got Food and drink from "grocery store" in the keywords)
+    not_food = any(f" {w} " in head for w in _NOT_FOOD) and not any(
+        f" {w} " in head for w in CATEGORY_EVIDENCE["Food and drink"] if w not in ("grocery", "groceries"))
     out = []
     for c in shutterstock_categories(list(categories or [])):
         needs = CATEGORY_EVIDENCE.get(c)
         if needs and not any(f" {w} " in text for w in needs):
             continue
-        if pets and c == "Food and drink":            # cat food isn't food and drink
+        if (pets or not_food) and c == "Food and drink":   # cat food (or trash bags) isn't food and drink
             continue
         out.append(c)
     if pets and "Animals/Wildlife" not in out:
         out.insert(0, "Animals/Wildlife")
     # medicine that had Food and drink taken off: Healthcare/Medical is where it goes (from the title and
     # description only, so a "health food" keyword doesn't make cereal medical)
-    head = _norm_words(" ".join([title or "", description or ""]))
     if len(out) < 2 and "Healthcare/Medical" not in out and any(
             f" {w} " in head for w in ("medicine", "medication", "pharmacy", "laxative", "antacid", "heartburn",
                                        "pain relief", "acid reducer", "anti diarrheal", "supplement", "supplements",
@@ -3283,6 +3309,13 @@ def fit_categories(categories, title: str = "", description: str = "", keywords=
     product = any(f" {w} " in text for w in _PRODUCT_WORDS)
     if product and "Objects" not in out and len(out) < 2:
         out.append("Objects")
+    # a holiday named in the title or description (Easter candy, Christmas lights): Holidays, in place of Objects
+    # if both places are taken (a vague "holiday" alone isn't enough)
+    if "Holidays" not in out and any(f" {w} " in head for w in _HOLIDAY_NAMES):
+        if len(out) < 2:
+            out.append("Holidays")
+        elif "Objects" in out:
+            out[out.index("Objects")] = "Holidays"
     if not out:
         out = ["Miscellaneous"]
     return out[:2]
@@ -3384,6 +3417,9 @@ def fix_common_problems(title: str, description: str, keywords, categories=(), k
         if not why:
             need = NEEDS_EVIDENCE.get(kn.strip())
             if need is not None and not any(w in alltext + known_n for w in need):
+                why = "not in the photo"
+            elif need is None and _CHART_KEYWORD.search(kn) and not any(
+                    f" {w} " in alltext + known_n for w in _CHART_PROOF):   # whole words: not "graph" in photography
                 why = "not in the photo"
         if why:
             dropped.append(k)
@@ -3671,7 +3707,7 @@ def type_description(settings: dict, key: str) -> str:
 
 
 INPUT_RULES = """How to read the photographer's input:
-- If the input is only a company name, the photo is a stock photo of that company's logo displayed on a smartphone screen, held in front of a computer screen showing a stock market or financial performance chart.
+- If the input is only a company name and the photo shows a phone, the photo is a stock photo of that company's logo displayed on a smartphone screen, held in front of a computer screen showing a stock market or financial performance chart. If the photo shows packages on a shelf, a sign, a building or anything else, the name is the brand or business in it: describe what you see, with no phone, screen or chart.
 - If the input is only a retail product name, the photo shows that product sitting on a grocery or retail store shelf; name its variety or flavour from the packaging, and its parent company only if it is printed on the package.
 - If the input is a name followed by the word "app", the photo shows that app on a phone screen in the Google Play Store.
 - Otherwise, treat the input as accurate information about the photo.
@@ -3910,9 +3946,11 @@ def build_prompt(keyword_min: int, keyword_max: int, context: str = "", existing
         "objects, colours, concepts and likely search terms. For a product or brand, include the brand, the "
         "product line, its variety or flavour and the parent company as keywords; related brands and stores are fine "
         "as keywords too. Never use prices, sale amounts, product or barcode numbers, date or lot codes, or "
-        "numbers copied off the package (such as calories or pieces) as keywords, and don't add things that aren't "
-        "in the photo (a shopping cart, customers, a warehouse) or that aren't true for the product (frozen for "
-        "canned or boxed food).",
+        "numbers copied off the package (such as calories or pieces) as keywords; a number that is part of a name "
+        "stays (One Direction, 7 Up, Maroon 5, Five Guys). Don't add things that aren't in the photo (a shopping "
+        "cart, customers, a warehouse, a phone screen or a stock chart) or that aren't true for the product (frozen "
+        "for canned or boxed food). Only say the photo is on a smartphone screen, or add phone, screen or chart "
+        "keywords, when a phone, screen or chart is really in the photo.",
         "", COPYRIGHT_FREE_RULES if copyright_free else BRAND_RULES,
     ]
     if (style or "").strip():

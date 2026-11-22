@@ -68,9 +68,9 @@ def test_shutterstock_csv_drops_the_cameras_leading_underscore(tmp_path):
 
 
 def test_shutterstock_checks_look_at_what_it_gets():
-    long_title = "Word " * 45                                                 # 225 characters
+    long_title = "Word " * 210                                                # 1050 characters
     out = core.site_problems(long_title.strip(), ["k"] * 10, ["shutterstock"], "A short caption that fits fine here.")
-    assert out and "title 224 characters (most 200)" in out[0]
+    assert out and "title 1049 characters (most 1024)" in out[0]
     out = core.site_problems(long_title.strip(), ["k"] * 10, ["shutterstock"], "A short caption that fits fine here.",
                              ss_text="description")
     assert out == []

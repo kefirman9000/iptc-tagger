@@ -147,3 +147,39 @@ def test_pond5_csv_titles_fit_80_characters(tmp_path):
     short = "Apex, NC - Nov 1, 2026: Box of Cereal on a Grocery Store Shelf, Honey Oat Flavor for Breakfast"
     import tagger_core as core
     assert core.pond5_title(short) == "Apex, NC - Nov 1, 2026: Box of Cereal on a Grocery Store Shelf, Honey Oat Flavor"
+
+
+def test_shutterstock_csv_text_never_over_its_limit(tmp_path):
+    import csv
+    import tagger_core as core
+    long = ("NYC, New York - April 6, 2026: Ben and Jerry's Ice Cream Bars on a Shelf, Frozen Dessert Variety with PB "
+            "Pretzel, Cookie Dough and Strawberry Cheesecake")
+    path = str(tmp_path / "ss.csv")
+    rows = [{"file": "a.jpg", "folder": "", "title": long, "keywords": ["ice cream"], "editorial": True},
+            {"file": "b.jpg", "folder": "", "title": long + ", " + "with more words " * 70, "keywords": ["x"],
+             "editorial": True}]
+    core.export_csv(path, rows, "shutterstock")
+    got = [r[1] for r in list(csv.reader(open(path, encoding="utf-8-sig")))[1:]]
+    assert got[0] == long                                    # 212 characters: fine now (1024 allowed)
+    assert len(got[1]) <= 1024 and got[1].startswith(long)
+
+
+def test_keywords_and_categories_from_a_real_shutterstock_csv():
+    import tagger_core as core
+    shelf = "NYC, New York - April 5, 2026: Kool-Aid Jammers Tropical Punch on a Store Shelf"
+    out = core.fix_common_problems(shelf, "", ["jammers", "75 less sugar", "75 percent", "524 cal slice", "u d",
+                                               "label id 17045", "2 8 kgs", "one direction", "2 in 1 shampoo",
+                                               "7 up", "2024 lexus gx", "financial chart", "stock market"])
+    assert out["keywords"] == ["jammers", "one direction", "2 in 1 shampoo", "7 up", "2024 lexus gx"]
+    phone = "Betty Crocker Bisquick Pancake Mix on Smartphone Screen"
+    assert core.fix_common_problems(phone, "", ["bisquick", "stock market", "smartphone display"])["keywords"] == \
+        ["bisquick", "smartphone display"]                  # a phone is no proof of a stock chart
+    chart = "Oscar Logo on a Smartphone Display with Stock Market Chart Background"
+    assert core.fix_common_problems(chart, "", ["oscar", "stock market", "trading"])["keywords"] == \
+        ["oscar", "stock market", "trading"]
+    fc = lambda t, cats: core.fit_categories(cats, t, "", ["grocery store", "retail display"])
+    assert fc("Glad Tough Sheet Cleaning Supplies on a Supermarket Shelf", ["Objects", "Food and drink"]) == ["Objects"]
+    assert fc("Matchbox Moving Parts Toy Set with a Lexus GX", ["Objects", "Sports/Recreation"]) == ["Objects"]
+    assert fc("Peeps Chick Shaped Gummies on a Store Shelf for Easter", ["Objects", "Food and drink"]) == \
+        ["Holidays", "Food and drink"]
+    assert fc("Rogue Sleds on a Gym Floor", ["Sports/Recreation", "Objects"]) == ["Sports/Recreation", "Objects"]

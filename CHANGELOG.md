@@ -1,5 +1,21 @@
 # What's new
 
+## 2026.11.21.2
+
+From a review of a real Shutterstock CSV:
+
+- **Shutterstock now takes 1,024 characters** in its one text field (it was 200). Check Before Upload no longer flags longer titles for Shutterstock, and the Shutterstock CSV keeps them whole. Only a title over 1,024 is cut back, at its main phrase with the place and date kept in front.
+- **No more phone screens and stock charts on shelf photos:**
+  - The AI was told that a company name on its own means "a logo on a smartphone in front of a stock chart". It now hears that only when the photo shows a phone. A brand on packages, a sign or a building is described as it is (this gave *Bisquick on Smartphone Screen*, *Whole Foods Smartphone Display*).
+  - Chart keywords (*financial chart, stock market, stock market image, financial visualization, trading*) now need a chart or the stock market in the title. A phone in the title isn't enough. Your logo-with-stock-chart photos keep them.
+  - The AI is told not to say *smartphone screen*, or add phone, screen or chart keywords, unless one is really in the photo.
+- **Numbers and text off the package come out of the keywords:** *75 colder, 75 less sugar, 75 percent, 524 cal slice, 67 spk strips, 5 classic strips, 2 8 kgs, 40 20604, about 145 pancakes, label id 17045*, lone units (*cm, kgs, oz*) and single letters (*u d*). Names with numbers stay: *One Direction, 7 Up, Maroon 5, 2024 Lexus GX, 2 in 1*.
+- **"One Direction" keeps its "One":** the AI read "no numbers off the package" as "no number words" and wrote *direction, direction fans*. It's now told that a number that is part of a name stays.
+- **Categories:**
+  - *Food and drink* comes off cleaning products, toys, car accessories, beauty products and office supplies whose title has no food in it (Glad on a supermarket shelf got it from *grocery store* in the keywords).
+  - Toys no longer get *Sports/Recreation*: a toy car on a shelf is *Objects*.
+  - A photo whose title names a holiday (Easter, Christmas, Halloween…) gets *Holidays*, in place of *Objects* when both places are taken.
+
 ## 2026.11.21.1
 
 From a review of real Shutterstock CSVs made with the app:
