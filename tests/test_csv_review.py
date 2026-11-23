@@ -59,3 +59,34 @@ def test_a_chart_background_is_not_a_texture():
                                "Fastly Logo on a Smartphone with a Stock Market Chart Background") == ["Technology"]
     assert core.fit_categories(["Backgrounds/Textures"], "Weathered Wood Texture with Copy Space") == \
         ["Backgrounds/Textures"]
+
+
+# ---------- is the editorial location still right?
+def test_a_location_is_asked_about_for_new_days_only():
+    rec = core.confirm_location("NYC, New York", {}, ["2026-11-18"])
+    assert rec == {"location": "NYC, New York", "dates": ["2026-11-18"]}
+    assert core.unconfirmed_dates("NYC, New York", rec, ["2026-11-18"]) == []
+    assert core.unconfirmed_dates("NYC,  new york", rec, ["2026-11-20", "2026-11-18", "2026-11-19"]) == \
+        ["2026-11-19", "2026-11-20"]
+    # a location just typed is meant for these photos: nothing to ask, and it starts its own record
+    assert core.unconfirmed_dates("Charlotte, North Carolina", rec, ["2026-11-20"]) == []
+    assert core.confirm_location("Charlotte, North Carolina", rec, ["2026-11-20"])["dates"] == ["2026-11-20"]
+    # no location, no dates: nothing to ask
+    assert core.unconfirmed_dates("", rec, ["2026-11-20"]) == []
+    assert core.unconfirmed_dates("NYC, New York", rec, ["", "not a date"]) == []
+    # used again: the new days are added
+    assert core.confirm_location("NYC, New York", rec, ["2026-11-20"])["dates"] == ["2026-11-18", "2026-11-20"]
+
+
+def test_dates_are_written_for_people():
+    assert core.describe_dates(["2026-11-20"]) == "November 20, 2026"
+    assert core.describe_dates(["2026-11-20", "2026-11-19"]) == "November 19 and 20, 2026"
+    assert core.describe_dates(["2026-11-18", "2026-11-19", "2026-11-20"]) == "November 18 to 20, 2026"
+    assert core.describe_dates(["2026-10-30", "2026-11-02"]) == "October 30, 2026 to November 2, 2026"
+    assert core.describe_dates([]) == ""
+
+
+def test_the_default_photo_type_goes_back_to_automatic():
+    s = {"default_type": "logo_stock"}
+    assert core.reset_default_type(s) == "logo_stock" and s["default_type"] == "auto"
+    assert core.reset_default_type(s) == ""

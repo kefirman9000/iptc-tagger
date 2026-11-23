@@ -207,7 +207,7 @@ def test_make_shutterstock_csv_button(window, make_photos):
     for ph in (a, b):
         win._show(ph)
     win._refresh_buttons()
-    assert win.btn_ss_csv.text() == "Make Shutterstock CSV (2)"
+    assert win.btn_ss_csv.text() == "Shutterstock CSV: all (2)"
     path = win.make_shutterstock_csv(ask_categories=lambda n, t: ["Food and drink"])
     rows = {r["Filename"]: r for r in csv.DictReader(open(path, encoding="utf-8"))}
     assert rows[os.path.basename(a.path)]["Description"] == title             # the title, as in the list
@@ -547,3 +547,40 @@ def test_fix_all_brings_photos_up_to_your_own_aims(window, make_photos):
     ph.keywords = [f"k{i}" for i in range(32)]
     ph.title = "Benefiber Prebiotic Fiber Supplement Powder on a Pharmacy Store Shelf for Digestive Health and Gut Wellness"
     assert not {"Few keywords", "Short title"} & {i["what"] for i in win.precheck_results([ph])[ph]}
+
+
+def test_photo_type_starts_at_automatic_and_clearing_resets_it(qapp, monkeypatch, make_photos):
+    exe = exiftool_path()
+    if not exe:
+        pytest.skip("ExifTool isn't installed here")
+    core.save_settings({**core.DEFAULT_SETTINGS, "exiftool_path": exe, "confirm_save": False,
+                        "last_seen_version": core.APP_VERSION, "default_type": "logo_stock"})
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes))
+    import iptc_tagger as app
+    win = app.MainWindow()
+    try:
+        assert win.settings["default_type"] == "auto" and win.type_reset_from == "logo_stock"
+        assert core.load_settings()["default_type"] == "auto"
+        # picked again for this batch: shown in the folded summary and the Options tab
+        win.default_type.setCurrentIndex(win.default_type.findData("logo_stock"))
+        win._update_instr_summary()
+        assert "Photo type: Company logo with stock chart" in win.instr_summary_text.text()
+        assert win.instr_tabs.tabText(3).startswith("Options: Company logo")
+        # a new batch (Clear List) starts at Automatic again
+        add(win, make_photos(1))
+        win.clear_list()
+        assert win.settings["default_type"] == "auto" and win.instr_tabs.tabText(3) == "Options"
+    finally:
+        win.close()
+        QApplication.processEvents()
+
+
+def test_buttons_say_which_photos_they_use(window, make_photos):
+    app, win = window
+    add(win, make_photos(3))
+    win.table.clearSelection()
+    win._refresh_buttons()
+    assert win.btn_check.text() == "Check all (3)" and win.btn_upload.text() == "Upload all (3)…"
+    assert win.btn_export.text() == "Export CSV: all (3)…"
+    win.set_checked(win.photos[:2], True)
+    assert win.btn_check.text() == "Check checked (2)" and win.btn_ss_csv.text() == "Shutterstock CSV: checked (2)"

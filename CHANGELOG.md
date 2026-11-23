@@ -1,5 +1,12 @@
 # What's new
 
+## 2026.11.23.1
+
+- **Is the location still right?** The editorial location stays in the box from one shoot to the next, so a new batch could get last week's city. The app now remembers which days you've used the location for. When you Detect photos taken on other days, it asks first: *Yes, use it*, *Change Location…* or *Cancel*. It also says when a custom date is on, since titles will then show that date instead. Typing a new location never asks; Watch Folder doesn't stop to ask but shows a warning.
+- **The Editorial tab is laid out as a grid:** the switch, then Location, Date taken and Separators each on a line of their own, instead of two crowded rows. Under the location it says which days it was used for.
+- **The photo type starts at Automatic** each time the app opens, and again when you clear the list. A type picked for one batch (*Company logo with stock chart*) no longer carries into the next, where it was putting "smartphone screen, stock chart" into shelf photos. While a type other than Automatic is on, it shows in orange in the folded Instructions line and on the Options tab.
+- **Every button says which photos it will use:** *Check*, *Upload* and *Export CSV* now say checked, selected or all, with the count (*Check checked (12)*, *Export CSV: all (57)…*), like Detect and Save already did. The Shutterstock and Dreamstime CSV buttons say whether they'll use the checked photos or all of them.
+
 ## 2026.11.21.2
 
 From a review of a real Shutterstock CSV:

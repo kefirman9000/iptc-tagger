@@ -40,7 +40,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.11.21.2"
+APP_VERSION = "2026.11.23.1"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 # camera RAW files: titles and keywords go into the Lightroom sidecar next to them (photo.xmp), never the RAW.
 # DNG is left out: Lightroom ignores sidecars for DNG and keeps its metadata inside the file itself.
@@ -417,6 +417,7 @@ DEFAULT_SETTINGS = {
     "title_date_format": "long",
     "title_date_sep": "colon",  # "Tokyo, Japan - October 26, 2026: Title" (the editorial style)
     "title_location": "",     # location put just before the date in titles (editorial style)
+    "location_confirmed": {},  # {'location', 'dates'}: the capture dates the location was used for
     "editorial_on": False,    # Editorial: include the location and date taken in titles and keywords
     "editorial_pos": "before",  # where they go: before / after the AI's title and keywords
     "title_loc_sep": "dash",  # what goes between the location and the date
@@ -2533,6 +2534,63 @@ def format_date(taken: str, fmt: str) -> str:
     return (pattern.replace("{Weekday}", WEEKDAYS[wd]).replace("{Month}", MONTHS[mo - 1])
             .replace("{Mon}", MONTHS[mo - 1][:3]).replace("{Y}", f"{y:04d}").replace("{m}", f"{mo:02d}")
             .replace("{dd}", f"{d:02d}").replace("{d}", str(d)))
+
+
+def reset_default_type(settings: dict) -> str:
+    """Put the default photo type back to Automatic (at startup and when the list is cleared). Returns the type
+    it was, or '' if it was already Automatic. Photos' own types aren't touched."""
+    was = settings.get("default_type") or "auto"
+    if was == "auto":
+        return ""
+    settings["default_type"] = "auto"
+    return was
+
+
+# ---------- is the editorial location still right?
+# The location box keeps its text from one session to the next, so a batch shot somewhere else can get last
+# week's city ("NYC, New York" on photos from Charlotte). The app remembers which capture dates you've used the
+# location for, and asks before Detect writes it on photos taken on other days.
+LOCATION_DATES_KEPT = 120
+
+
+def unconfirmed_dates(location: str, record, taken_dates) -> list[str]:
+    """The capture dates (YYYY-MM-DD) the location hasn't been used for yet. [] when there's nothing to ask:
+    no location, no dates, or the location was just changed (a new location is taken as meant for these
+    photos). record: {'location', 'dates'} as kept by confirm_location."""
+    loc = " ".join((location or "").split()).casefold()
+    dates = sorted({d for d in taken_dates or [] if re.fullmatch(r"\d{4}-\d{2}-\d{2}", d or "")})
+    if not loc or not dates or not isinstance(record, dict):
+        return []
+    if " ".join(str(record.get("location") or "").split()).casefold() != loc:
+        return []
+    known = set(record.get("dates") or [])
+    return [d for d in dates if d not in known]
+
+
+def confirm_location(location: str, record, taken_dates) -> dict:
+    """The record after using the location for these capture dates (a new location starts a new record)."""
+    loc = " ".join((location or "").split())
+    same = isinstance(record, dict) and " ".join(str(record.get("location") or "").split()).casefold() == loc.casefold()
+    dates = set(record.get("dates") or []) if same else set()
+    dates.update(d for d in taken_dates or [] if re.fullmatch(r"\d{4}-\d{2}-\d{2}", d or ""))
+    return {"location": loc, "dates": sorted(dates)[-LOCATION_DATES_KEPT:]}
+
+
+def describe_dates(dates) -> str:
+    """'November 20, 2026', 'November 19 and 20, 2026', 'November 18 to 20, 2026', or across months/years
+    'October 30, 2026 to November 2, 2026'."""
+    ds = sorted({d for d in dates or [] if format_date(d, "long")})
+    if not ds:
+        return ""
+    if len(ds) == 1:
+        return format_date(ds[0], "long")
+    first, last = ds[0], ds[-1]
+    if first[:7] == last[:7]:
+        month, year = MONTHS[int(first[5:7]) - 1], first[:4]
+        days = [str(int(d[8:])) for d in ds]
+        joined = f"{days[0]} and {days[1]}" if len(ds) == 2 else f"{days[0]} to {days[-1]}"
+        return f"{month} {joined}, {year}"
+    return f"{format_date(first, 'long')} to {format_date(last, 'long')}"
 
 
 def _date_before(date: str, text: str, sep: str) -> str:

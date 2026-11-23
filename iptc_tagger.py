@@ -2316,6 +2316,11 @@ class MainWindow(QMainWindow):
         self.setAcceptDrops(True)
 
         self.settings = core.load_settings()
+        # the default photo type starts at Automatic every time: a type picked for one batch (Company logo with
+        # stock chart) left on put "smartphone screen, stock chart" into the next batch's shelf photos
+        self.type_reset_from = core.reset_default_type(self.settings)
+        if self.type_reset_from:
+            core.save_settings(self.settings)
         self._sites = None                 # stock sites whose rules are checked (worked out when first needed)
         Photo.track_description = "description" in core.meta_fields(self.settings)
         Photo.strip_develop = bool(self.settings.get("strip_develop", True))
@@ -2363,6 +2368,9 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._show_avoid_column()
         self._ready = True
+        if self.type_reset_from:
+            QTimer.singleShot(800, lambda: self.toast(
+                f"Photo type is back to Automatic (it was {self._type_name(self.type_reset_from)})", "ok", 6))
         self._update_instr_summary()
         self.ai_timer = QTimer(self)                  # ticks once a second while the AI works
         self.ai_timer.setInterval(1000)
@@ -2719,40 +2727,53 @@ class MainWindow(QMainWindow):
             lab.setStyleSheet(f"color:{GREY}")
             return lab
 
-        # one row per piece, in the order they appear in the title: location, then date
-        loc_row = QHBoxLayout()
-        loc_row.addWidget(self.editorial)
-        loc_row.addWidget(self.editorial_pos, 1)
-        loc_row.addWidget(self.ed_kw)
-        loc_row.addSpacing(12)
+        # a grid, one line per piece in the order they appear in the title (switch, location, date, separators),
+        # so the controls line up and don't squash together with Windows' larger fonts
         self.loc_label = QLabel("<b>Location</b>")
-        loc_row.addWidget(self.loc_label)
-        loc_row.addWidget(self.location_box, 3)
-        loc_row.addWidget(self.loc_ai)
+        self.date_label = QLabel("<b>Date taken</b>")
         self.btn_set_loc = QPushButton("Set for Photos…")
         self.btn_set_loc.setToolTip("Give the checked photos (or the selected ones, or all shown) a different location.\n"
                                     "Their titles, location keywords and City / State / Country are updated right away,\n"
                                     "without detecting again. The location box here stays the main one for the rest.")
         self.btn_set_loc.clicked.connect(lambda *_: self.set_location_dialog())
-        loc_row.addWidget(self.btn_set_loc)
-        loc_row.addSpacing(12)
         self.loc_sep_label = small("Between location and date:")
-        loc_row.addWidget(self.loc_sep_label)
-        loc_row.addWidget(self.loc_sep, 1)
-        pages["editorial"].addLayout(loc_row)
-        date_row = QHBoxLayout()
-        self.date_label = QLabel("<b>Date taken</b>")
-        date_row.addWidget(self.date_label)
-        date_row.addWidget(small("Format:"))
-        date_row.addWidget(self.date_fmt, 1)
-        date_row.addSpacing(8)
-        date_row.addWidget(self.custom_date_on)
-        date_row.addWidget(self.custom_date)
-        date_row.addSpacing(8)
         self.date_sep_label = small("Between date and title:")
-        date_row.addWidget(self.date_sep_label)
-        date_row.addWidget(self.date_sep, 1)
-        pages["editorial"].addLayout(date_row)
+        self.loc_used = small("")                     # which days the location was last used for
+        self.loc_used.setWordWrap(True)
+        self.loc_used.setToolTip("Before Detect writes this location on photos taken on other days, it asks\n"
+                                 "whether it's still right")
+        ed = QGridLayout()
+        ed.setHorizontalSpacing(8)
+        ed.setVerticalSpacing(4)
+        switch = QHBoxLayout()
+        switch.addWidget(self.editorial)
+        switch.addWidget(self.editorial_pos)
+        switch.addWidget(self.ed_kw)
+        switch.addWidget(self.loc_ai)
+        switch.addStretch(1)
+        ed.addLayout(switch, 0, 0, 1, 4)
+        ed.addWidget(self.loc_label, 1, 0)
+        ed.addWidget(self.location_box, 1, 1, 1, 2)
+        ed.addWidget(self.btn_set_loc, 1, 3)
+        ed.addWidget(self.loc_used, 2, 1, 1, 3)
+        ed.addWidget(self.date_label, 3, 0)
+        ed.addWidget(self.date_fmt, 3, 1)
+        custom = QHBoxLayout()
+        custom.addWidget(self.custom_date_on)
+        custom.addWidget(self.custom_date)
+        custom.addStretch(1)
+        ed.addLayout(custom, 3, 2, 1, 2)
+        seps = QHBoxLayout()
+        seps.addWidget(self.loc_sep_label)
+        seps.addWidget(self.loc_sep)
+        seps.addSpacing(16)
+        seps.addWidget(self.date_sep_label)
+        seps.addWidget(self.date_sep)
+        seps.addStretch(1)
+        ed.addWidget(small("Separators"), 4, 0)
+        ed.addLayout(seps, 4, 1, 1, 3)
+        ed.setColumnStretch(2, 1)
+        pages["editorial"].addLayout(ed)
         pages["editorial"].addWidget(self.title_preview)
         pages["editorial"].addStretch(1)
         self.default_type = QComboBox()
@@ -3157,6 +3178,9 @@ class MainWindow(QMainWindow):
                                                                  if where else "on") if on else "off"))
         n_text = int(bool(self.lead.text().strip())) + int(bool(self.prefix.text().strip()))
         self.instr_tabs.setTabText(2, "Keywords && title text" + (f" ({n_text})" if n_text else ""))
+        dt = self.settings.get("default_type", "auto")
+        name = next((label for k, label in self.type_items() if k == dt), dt).split(" (")[0].replace("&", "&&")
+        self.instr_tabs.setTabText(3, "Options" if dt == "auto" else f"Options: {name[:24]}")
 
     def toggle_instructions(self):
         show = not self.instructions.isVisibleTo(self)
@@ -3184,6 +3208,10 @@ class MainWindow(QMainWindow):
             where = s.get("title_location") or "no location"
             bits.append(f"<b>Editorial:</b> {esc(where)}"
                         + ("" if s.get("editorial_keywords", True) else " (not in keywords)"))
+        dt = s.get("default_type", "auto")
+        if dt != "auto":
+            name = next((label for k, label in self.type_items() if k == dt), dt).split(" (")[0]
+            bits.append(f"<b style='color:{theme.color('unsaved_dot')}'>Photo type: {esc(name)}</b>")
         model = s.get("model", "")
         bits.append(f"<b>Model:</b> {esc(model)}" + (f" + {esc(s.get('text_model'))}" if s.get("text_model") else ""))
         self.instr_summary_text.setText(" &nbsp;·&nbsp; ".join(bits))
@@ -3605,7 +3633,7 @@ class MainWindow(QMainWindow):
                 if ph and not ph.busy and not ph.title.strip() and not ph.keywords and ph.status != "error":
                     todo.append(ph)
         if todo:
-            self.identify_photos(todo)
+            self.identify_photos(todo, ask=False)
 
     # ---------- near-identical titles
     def similar_groups(self) -> list[list]:
@@ -5953,7 +5981,25 @@ class MainWindow(QMainWindow):
                                     "Between date and title:")
         if save:
             self._remember_options()
+        self._show_location_used()
         self._update_title_preview()
+
+    def _show_location_used(self):
+        """Under the location: the days it was last used for, so a location left from another shoot stands out."""
+        if not hasattr(self, "loc_used"):
+            return
+        loc = self.location.text().strip()
+        rec = self.settings.get("location_confirmed") or {}
+        same = loc and " ".join(str(rec.get("location") or "").split()).casefold() == " ".join(loc.split()).casefold()
+        dates = (rec.get("dates") or []) if same else []
+        if not self.editorial.isChecked() or not loc:
+            self.loc_used.setText("")
+        elif dates:
+            recent = [d for d in dates if d[:7] == dates[-1][:7]][-5:]   # the last month it was used, up to 5 days
+            self.loc_used.setText(f"Used for photos taken on {core.describe_dates(recent)}. Detect asks before "
+                                  "using it on photos from other days.")
+        else:
+            self.loc_used.setText("Not used yet: the next Detect uses it for those photos' days.")
 
     def _update_title_preview(self):
         self._update_tab_labels()
@@ -6127,6 +6173,9 @@ class MainWindow(QMainWindow):
         """The photo's own type, or the default; an unknown (deleted) type falls back to Automatic."""
         key = ph.type_key or self.settings.get("default_type", "auto")
         return key if any(k == key for k, _ in self.type_items()) else "auto"
+
+    def _type_name(self, key: str) -> str:
+        return next((label for k, label in self.type_items() if k == key), key).split(" (")[0]
 
     def _default_label(self) -> str:
         key = self.settings.get("default_type", "auto")
@@ -6378,9 +6427,10 @@ class MainWindow(QMainWindow):
         n_all, n_checked = len(sendable(self.photos)), len(sendable(self.checked_photos()))
         n_csv = n_checked or n_all
         self.btn_ss_csv.setEnabled(n_csv > 0)
-        self.btn_ss_csv.setText(f"Make Shutterstock CSV ({n_csv})" if n_csv else "Make Shutterstock CSV")
+        csv_scope = "checked" if n_checked else "all"      # (these two use the ticks, else every photo)
+        self.btn_ss_csv.setText(f"Shutterstock CSV: {csv_scope} ({n_csv})" if n_csv else "Make Shutterstock CSV")
         self.btn_dt_csv.setEnabled(n_csv > 0)
-        self.btn_dt_csv.setText(f"Send Dreamstime CSV ({n_csv})" if n_csv else "Send Dreamstime CSV")
+        self.btn_dt_csv.setText(f"Dreamstime CSV: {csv_scope} ({n_csv})" if n_csv else "Send Dreamstime CSV")
         self.btn_stockup.setEnabled(n_all > 0)
         self.act_stockup_all.setEnabled(n_all > 0)
         self.act_stockup_all.setText(f"All {n_all} photo{'s' if n_all != 1 else ''} in the list" if n_all
@@ -6391,7 +6441,10 @@ class MainWindow(QMainWindow):
         up_n = len([p for p in self.targets()[0] if not p.busy]) if self.photos else 0
         self.btn_upload.setEnabled(up_n > 0)
         self.btn_check.setEnabled(up_n > 0)
-        self.btn_upload.setText(f"Upload ({up_n})…" if up_n else "Upload…")
+        self.btn_upload.setText(f"Upload {scope} ({up_n})…" if up_n else "Upload…")
+        self.btn_check.setText(f"Check {scope} ({up_n})" if up_n else "Check")
+        self.btn_export.setEnabled(up_n > 0)
+        self.btn_export.setText(f"Export CSV: {scope} ({up_n})…" if up_n else "Export CSV…")
         visible = self.visible_photos()
         self.btn_check_all.setEnabled(any(not p.checked for p in visible))
         self.btn_uncheck_all.setEnabled(any(p.checked for p in self.photos))
@@ -6430,6 +6483,12 @@ class MainWindow(QMainWindow):
         self.rows.clear()
         self.table.setRowCount(0)
         self.stack.setCurrentIndex(0)
+        was = core.reset_default_type(self.settings)     # a new batch starts at Automatic, as at startup
+        if was:
+            core.save_settings(self.settings)
+            self.refresh_type_combos()
+            self._update_instr_summary()
+            self.toast(f"Photo type is back to Automatic (it was {self._type_name(was)})", "ok", 5)
         self.apply_filter()
         self._selection_changed()
         self._session_changed()
@@ -6594,17 +6653,24 @@ class MainWindow(QMainWindow):
     def identify(self):
         self.identify_photos(self.targets()[0])
 
-    def identify_photos(self, photos, fresh: bool = False):
+    def identify_photos(self, photos, fresh: bool = False, ask: bool = True):
         """Start the AI on these photos. Nothing here waits for Ollama: a quick readiness check runs in
         the background first, so the window keeps responding. fresh: you asked for this one photo again (Detect
         Again, its row's Detect): its title is replaced even when Keep existing titles is on."""
         targets = [p for p in photos if not p.busy]
         if not targets:
             return
+        self._remember_options()
+        if not self._editorial_location_ok(targets, ask=ask):
+            for ph in targets:                         # a Redo cleared its text first: put it back
+                if ph.redo:
+                    self._restore_after_redo(ph)
+                    ph.redo = None
+                    self._show(ph)
+            return
         for ph in targets:
             ph.fresh = fresh
         self._keep_scroll_position()
-        self._remember_options()
         for ph in targets:
             ph.busy, ph.status, ph.message = True, "identifying", "Checking that the AI is ready…"
             ph.ai_started, ph.retries, ph.timed_out, ph.stop_requested = 0.0, 0, False, False
@@ -6616,6 +6682,57 @@ class MainWindow(QMainWindow):
         run_job(self, Job("ready", core.ai_ready, self.settings["ollama_url"]), self.io_pool,
                 lambda _k, info, t=targets: self._start_identify(t, info),
                 lambda _k, _msg, t=targets: self._start_identify(t, {"version": None, "names": []}))
+
+    def _editorial_location_ok(self, targets, ask: bool = True) -> bool:
+        """Before Detect writes the editorial location into titles: if these photos were taken on days the
+        location hasn't been used for, ask whether it's still right (it stays in the box from last time).
+        True: go ahead. ask=False (Watch Folder, nobody there to answer): go ahead and say so in a toast."""
+        loc = self.location.text().strip()
+        if not self.editorial.isChecked() or not loc:
+            return True
+        mine = [p for p in targets if not p.location]          # a photo with its own location isn't asked about
+        dates = [p.taken for p in mine if p.taken]
+        record = self.settings.get("location_confirmed") or {}
+        new = core.unconfirmed_dates(loc, record, dates)
+        if new and not ask:
+            self.toast(f"Used the location {loc} for photos taken on {core.describe_dates(new)}: "
+                       "check it's right for them", "warn", 8)
+        elif new:
+            esc = lambda t: (t or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            last = core.describe_dates((record.get("dates") or [])[-1:])
+            n = sum(1 for p in mine if p.taken in new)
+            text = (f"The editorial location is <b>{esc(loc)}</b>, last used for photos taken on {esc(last)}.<br><br>"
+                    f"{'This photo was' if n == 1 else f'{n} of these photos were'} taken on "
+                    f"<b>{esc(core.describe_dates(new))}</b>. Were they taken in {esc(loc)} too?")
+            if self.custom_date_on.isChecked():
+                custom = self.custom_date.date().toString("yyyy-MM-dd")
+                text += (f"<br><br>The <b>custom date</b> is also on, so their titles will say "
+                         f"{esc(core.describe_dates([custom]))}, not the day they were taken.")
+            box = QMessageBox(QMessageBox.Question, "Is the location still right?", text, parent=self)
+            box.setTextFormat(Qt.RichText)
+            use = box.addButton(f"Yes, Use {loc[:40]}".replace("&", "&&"), QMessageBox.AcceptRole)
+            change = box.addButton("Change Location…", QMessageBox.ActionRole)
+            box.addButton(QMessageBox.Cancel)
+            box.setDefaultButton(use)
+            box.exec()
+            if box.clickedButton() is change:
+                self.show_editorial_location()
+                return False
+            if box.clickedButton() is not use:
+                return False
+        self.settings["location_confirmed"] = core.confirm_location(loc, record, dates)
+        core.save_settings(self.settings)
+        self._show_location_used()
+        return True
+
+    def show_editorial_location(self):
+        """Open the Editorial tab with the location box ready to type in."""
+        if not self.instructions.isVisibleTo(self):
+            self.toggle_instructions()
+        self.instr_tabs.setCurrentIndex(1)
+        self.location.setFocus()
+        self.location.selectAll()
+        self.status.setText("Type the location for these photos (or pick one you've used), then click Detect again.")
 
     def _keep_scroll_position(self):
         """Put the list back where it was once Qt has finished reacting to the click (backstop for any
