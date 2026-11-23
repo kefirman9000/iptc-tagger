@@ -117,10 +117,11 @@ class FlowLayout(QLayout):
     """Lays its widgets out in a row and wraps onto the next line when there isn't room (so the window fits a
     laptop screen). A group gap is a fixed-width spacer widget."""
 
-    def __init__(self, parent=None, spacing: int = 6):
+    def __init__(self, parent=None, spacing: int = 6, right: bool = False):
         super().__init__(parent)
         self._items = []
         self._gap = spacing
+        self._right = right                  # each line pushed to the right edge (the Upload row)
         self.setContentsMargins(0, 0, 0, 0)
 
     def addItem(self, item):
@@ -165,16 +166,26 @@ class FlowLayout(QLayout):
         return size
 
     def _place(self, rect, apply: bool) -> int:
-        x, y, line = rect.x(), rect.y(), 0
+        lines, x = [[]], rect.x()                     # first which items go on which line, then where
         for item in self._items:
             hint = item.sizeHint()
-            if x + hint.width() > rect.right() + 1 and line > 0:
-                x, y, line = rect.x(), y + line + self._gap, 0
-            if apply:
-                item.setGeometry(QRect(QPoint(x, y), hint))
+            if x + hint.width() > rect.right() + 1 and lines[-1]:
+                lines.append([])
+                x = rect.x()
+            lines[-1].append((item, hint))
             x += hint.width() + self._gap
-            line = max(line, hint.height())
-        return y + line - rect.y()
+        y = rect.y()
+        for n, row in enumerate(lines):
+            if not row:
+                continue
+            width = sum(h.width() for _, h in row) + self._gap * (len(row) - 1)
+            x = rect.right() + 1 - width if self._right else rect.x()
+            if apply:
+                for item, hint in row:
+                    item.setGeometry(QRect(QPoint(max(rect.x(), x), y), hint))
+                    x += hint.width() + self._gap
+            y += max(h.height() for _, h in row) + (self._gap if n < len(lines) - 1 else 0)
+        return y - rect.y()
 
 
 class BusyBarDelegate(QStyledItemDelegate):
@@ -3046,10 +3057,15 @@ class MainWindow(QMainWindow):
         bottom.addWidget(self.btn_unsaved)
         bottom.addWidget(self.lbl_all_saved)
         # the steps after tagging get a line of their own, so the window still fits a laptop screen
-        actions = QHBoxLayout()
-        actions.addStretch(1)
+        # (wraps onto two lines on a laptop, now that the buttons say which photos they use)
+        actions_box = QWidget()
+        actions = FlowLayout(actions_box, right=True)
         for b in (self.btn_check, self.btn_ss_csv, self.btn_dt_csv, self.btn_stockup, self.btn_upload):
             actions.addWidget(b)
+        sp = actions_box.sizePolicy()
+        sp.setHeightForWidth(True)
+        sp.setHorizontalPolicy(QSizePolicy.Ignored)
+        actions_box.setSizePolicy(sp)
 
         central = QWidget()
         lay = QVBoxLayout(central)
@@ -3083,7 +3099,7 @@ class MainWindow(QMainWindow):
         lay.addWidget(self.et_banner)
         lay.addWidget(self.splitter, 1)
         lay.addLayout(bottom)
-        lay.addLayout(actions)
+        lay.addWidget(actions_box)
         self.setCentralWidget(central)
 
         for seq, slot in ((QKeySequence(QKeySequence.Save), self.save),
