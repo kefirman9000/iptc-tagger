@@ -57,9 +57,11 @@ def test_windows_updater_replaces_a_locked_program(tmp_path):
                                      version="9.9.9")
         path = tmp_path / "update.cmd"
         path.write_text(script, encoding="utf-8", newline="")
-        subprocess.run(["cmd", "/c", str(path)], timeout=120, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        run = subprocess.run(["cmd", "/c", str(path)], timeout=120, capture_output=True, text=True, errors="replace")
         time.sleep(1)
-        assert (root / "IPTC Tagger.exe").read_bytes() == b"new"
+        log = open(core.update_log_path(), errors="replace").read()[-3000:] if os.path.exists(
+            core.update_log_path()) else "(no log)"
+        assert (root / "IPTC Tagger.exe").read_bytes() == b"new", (script, run.stdout, run.stderr, log)
         assert (root / "locker.exe").read_bytes().endswith(b"\0new version")
         with open(core.update_report_path(), encoding="utf-8") as f:
             assert f.read().strip() == "installed 9.9.9"

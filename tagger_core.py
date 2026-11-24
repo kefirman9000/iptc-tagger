@@ -814,6 +814,7 @@ def updater_script(new_root: str, app_root: str, work: str, pid: int, relaunch: 
             f'taskkill /PID {pid} /F >nul 2>&1',             # still there after 30 s: it's stuck, stop it
             *([stop_rest] if own_folder else []),            # ExifTool and anything else from the program folder
             "ping -n 2 127.0.0.1 >nul",
+            f'if not exist "{os.path.dirname(log)}" mkdir "{os.path.dirname(log)}"',   # (robocopy won't run without it)
             f'robocopy "{new_root}" "{root}" /E /R:10 /W:1 /NP /LOG:"{log}" >nul',
             f'if errorlevel 8 ( echo failed {version}> "{report}" ) else ( echo installed {version}> "{report}" )',
             *([f'start "" "{exe}"'] if relaunch else []),
