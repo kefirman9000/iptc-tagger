@@ -41,7 +41,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.11.23.2"
+APP_VERSION = "2026.11.23.3"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 # camera RAW files: titles and keywords go into the Lightroom sidecar next to them (photo.xmp), never the RAW.
 # DNG is left out: Lightroom ignores sidecars for DNG and keeps its metadata inside the file itself.
@@ -771,19 +771,51 @@ def unpack_update(zip_path: str, dest: str, windows: bool = os.name == "nt") -> 
     raise ApiError("the download doesn't contain the program")
 
 
+def update_report_path() -> str:
+    """Where the updater writes what happened (read at the next start, then removed)."""
+    return os.path.join(config_dir(), "update_result.txt")
+
+
+def update_log_path() -> str:
+    return os.path.join(config_dir(), "update_log.txt")
+
+
 def updater_script(new_root: str, app_root: str, work: str, pid: int, relaunch: bool,
-                   windows: bool = os.name == "nt") -> str:
+                   windows: bool = os.name == "nt", version: str = "") -> str:
     """A small script that waits for this app to close, puts the new version in place of the old one and
-    (optionally) starts it again. Runs on its own after the app has quit."""
+    (optionally) starts it again. Runs on its own after the app has quit.
+
+    Windows: it waits up to about 30 seconds for the app to close; then anything still running from the program
+    folder (an app that didn't quite close, the background ExifTool) is stopped, because Windows won't let a
+    running program's files be replaced. If the copy still fails, it says so in update_result.txt, which the app
+    shows at the next start (with the robocopy log), so an update never fails silently."""
     if windows:
-        exe = app_root.rstrip("\\/") + "\\" + f"{APP_NAME}.exe"     # always a Windows path
+        root = app_root.rstrip("\\/")
+        exe = root + "\\" + f"{APP_NAME}.exe"                        # always a Windows path
+        report, log = update_report_path(), update_log_path()
+        ps_root = root.replace("'", "''")
+        # only for the app's own folder (a PyInstaller build has _internal next to the .exe), never a shared one
+        own_folder = os.path.isdir(os.path.join(root, "_internal")) or APP_NAME.casefold() in \
+            os.path.basename(root).casefold()
+        stop_rest = ("powershell -NoProfile -ExecutionPolicy Bypass -Command \"Get-Process | Where-Object { $_.Path "
+                     f"-and $_.Path.StartsWith('{ps_root}\\', 'OrdinalIgnoreCase') }} | Stop-Process -Force "
+                     "-ErrorAction SilentlyContinue\" >nul 2>&1")
         return "\r\n".join([
             "@echo off", "chcp 65001 >nul",
-            ":wait",                                         # until the app has closed
-            f'tasklist /FI "PID eq {pid}" 2>nul | find "{pid}" >nul',
-            "if not errorlevel 1 ( ping -n 2 127.0.0.1 >nul & goto wait )",
-            f'robocopy "{new_root}" "{app_root}" /E /R:5 /W:1 /NFL /NDL /NJH /NJS /NP >nul',
-            f'if errorlevel 8 ( echo The update could not be copied into "{app_root}". > "{work}.failed.txt" )',
+            "set tries=0",
+            ":wait",                                         # until the app has closed (about 30 s at most)
+            f'tasklist /FI "PID eq {pid}" 2>nul | find " {pid} " >nul',
+            "if errorlevel 1 goto closed",
+            "set /a tries+=1",
+            "if %tries% GEQ 30 goto closed",
+            "ping -n 2 127.0.0.1 >nul",
+            "goto wait",
+            ":closed",
+            f'taskkill /PID {pid} /F >nul 2>&1',             # still there after 30 s: it's stuck, stop it
+            *([stop_rest] if own_folder else []),            # ExifTool and anything else from the program folder
+            "ping -n 2 127.0.0.1 >nul",
+            f'robocopy "{new_root}" "{root}" /E /R:10 /W:1 /NP /LOG:"{log}" >nul',
+            f'if errorlevel 8 ( echo failed {version}> "{report}" ) else ( echo installed {version}> "{report}" )',
             *([f'start "" "{exe}"'] if relaunch else []),
             f'rd /s /q "{work}"',
             '(goto) 2>nul & del "%~f0"', ""])
