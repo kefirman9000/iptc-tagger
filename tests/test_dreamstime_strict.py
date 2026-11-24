@@ -2,7 +2,7 @@
 import precheck
 import tagger_core as core
 
-PLACE = "Charlotte, North Carolina - October 12, 2026: "
+PLACE = "Tokyo, Japan - October 12, 2026: "
 
 
 def test_long_title_is_cut_back_to_its_main_phrase():

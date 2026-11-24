@@ -2548,7 +2548,7 @@ def reset_default_type(settings: dict) -> str:
 
 # ---------- is the editorial location still right?
 # The location box keeps its text from one session to the next, so a batch shot somewhere else can get last
-# week's city ("NYC, New York" on photos from Charlotte). The app remembers which capture dates you've used the
+# week's city ("Osaka, Japan" on photos taken in Tokyo). The app remembers which capture dates you've used the
 # location for, and asks before Detect writes it on photos taken on other days.
 LOCATION_DATES_KEPT = 120
 
