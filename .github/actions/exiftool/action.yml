@@ -7,14 +7,36 @@ runs:
   steps:
     - shell: pwsh
       run: |
-        $ver = (Invoke-WebRequest "https://exiftool.org/ver.txt" -UseBasicParsing).Content.Trim()
+        # exiftool.org sometimes doesn't answer: every request is retried, with a time limit, and the version
+        # number has a second source (ExifTool's own GitHub mirror), so one slow server doesn't fail a release
+        $ver = $null
+        foreach ($try in 1..4) {
+          try { $ver = (Invoke-WebRequest "https://exiftool.org/ver.txt" -UseBasicParsing -TimeoutSec 30).Content.Trim(); break }
+          catch { Write-Host "exiftool.org didn't answer (try $try): $($_.Exception.Message)"; Start-Sleep -Seconds (5 * $try) }
+        }
+        if (-not $ver) {
+          $tags = Invoke-RestMethod "https://api.github.com/repos/exiftool/exiftool/tags?per_page=20" -TimeoutSec 30
+          $ver = ($tags | ForEach-Object { $_.name } | Where-Object { $_ -match '^\d+\.\d+$' } |
+                  Sort-Object { [version]$_ } -Descending | Select-Object -First 1)
+          Write-Host "Version from ExifTool's GitHub mirror instead: $ver"
+        }
+        if (-not $ver) { throw "Couldn't find out ExifTool's current version" }
         Write-Host "ExifTool $ver"
         $urls = @("https://exiftool.org/exiftool-${ver}_64.zip",
                   "https://sourceforge.net/projects/exiftool/files/exiftool-${ver}_64.zip/download")
-        foreach ($u in $urls) {
-          try { Invoke-WebRequest $u -OutFile exiftool.zip -UseBasicParsing -UserAgent "curl/8"; break }
-          catch { Write-Host "Couldn't download from $u, trying the next source" }
+        $got = $false
+        foreach ($try in 1..3) {
+          foreach ($u in $urls) {
+            try {
+              Invoke-WebRequest $u -OutFile exiftool.zip -UseBasicParsing -UserAgent "curl/8" -TimeoutSec 120
+              $got = $true; break
+            }
+            catch { Write-Host "Couldn't download from $u (try $try): $($_.Exception.Message)" }
+          }
+          if ($got) { break }
+          Start-Sleep -Seconds (10 * $try)
         }
+        if (-not $got) { throw "Couldn't download ExifTool $ver from any source" }
         Expand-Archive exiftool.zip -DestinationPath exiftool-download
         $exe = Get-ChildItem exiftool-download -Recurse -Filter "exiftool*.exe" | Select-Object -First 1
         if (-not $exe) { throw "ExifTool's .exe wasn't found in the download" }
