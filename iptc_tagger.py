@@ -527,6 +527,7 @@ class Photo:
         self.fresh = False                            # Detect this one photo: replace its title even if kept
         self.saved_at = ""                            # the time it was last saved (shown in the list)
         self.image_hash = None                        # fingerprint of the picture (look-alike photos)
+        self.upload_sites = None                      # {site: True/False} you ticked under Which photos go where
         self.label = ""                               # colour label (red, yellow, green, blue, purple), as in Lightroom
         self.file_label = ""                          # the colour label saved in the file
         self.ai_markers: list[str] = []               # what in the file's metadata says AI (stock sites read it)
@@ -4068,6 +4069,8 @@ class MainWindow(QMainWindow):
                 e["avoid"] = ph.avoid
             if ph.label:
                 e["label"] = ph.label
+            if ph.upload_sites:
+                e["upload_sites"] = ph.upload_sites
             if ph.location:
                 e["location"] = ph.location
             if ph.type_key:
@@ -4126,6 +4129,8 @@ class MainWindow(QMainWindow):
         ph.avoid = e.get("avoid", "") or ""
         if e.get("label") in core.LABEL_NAMES:
             ph.label = e["label"]
+        if isinstance(e.get("upload_sites"), dict):
+            ph.upload_sites = {str(k): bool(v) for k, v in e["upload_sites"].items()}
         ph.location = e.get("location", "") or ""
         ph.categories = core.shutterstock_categories(e.get("categories"))
         ph.adobe_category = core.adobe_category(e.get("adobe_category")) if e.get("adobe_category") else None
@@ -5105,6 +5110,51 @@ class MainWindow(QMainWindow):
         if self.review.photo is not None:
             self.review.refresh_state()
 
+    def upload_site_names(self) -> list:
+        """The agencies you have an upload login for (in the order of the Upload window)."""
+        try:
+            import uploader
+            return [s["name"] for s in uploader.load_sites() if s.get("username") and s.get("password")
+                    and s.get("host")]
+        except Exception as e:
+            core.debug(f"upload sites: {e!r}")
+            return []
+
+    def _upload_to_menu(self, menu, photos):
+        """Right-click › Upload to: tick the agencies these photos go to (the same ticks as the Upload window's
+        Which photos go where)."""
+        import uploader
+        names = self.upload_site_names()
+        if not names or not photos:
+            return
+        sub = menu.addMenu("Upload to")
+        n = len(photos)
+        sub.addSection(f"{n} photo{'s' if n != 1 else ''}")
+        rules = self.settings.get("label_sites") or {}
+        for name in names:
+            now = [uploader.choose_sites(names, p.label, bool(self.is_editorial(p)), rules, p.upload_sites)[name][0]
+                   for p in photos]
+            a = sub.addAction(uploader.SITES[name]["label"] + ("" if all(now) or not any(now) else "  (some)"))
+            a.setCheckable(True)
+            a.setChecked(all(now))
+            a.triggered.connect(lambda on, name=name: self.set_upload_site(photos, name, on))
+        sub.addSeparator()
+        sub.addAction("Back to the defaults").triggered.connect(lambda *_: self.set_upload_site(photos, None, None))
+
+    def set_upload_site(self, photos, name, on):
+        for p in photos:
+            if name is None:
+                p.upload_sites = None
+            else:
+                p.upload_sites = dict(p.upload_sites or {}, **{name: bool(on)})
+        self._session_changed()
+        import uploader
+        label = uploader.SITES[name]["label"] if name else ""
+        n = len(photos)
+        self.status.setText(f"{n} photo{'s' if n != 1 else ''}: " + (
+            f"{'sent' if on else 'not sent'} to {label} when you upload." if name else
+            "back to the default sites (editorial photos not to Adobe Stock, your colour-label choices)."))
+
     def label_targets(self) -> list:
         """The selected photos; a checked one among them brings every checked photo along."""
         sel = self._selected_photos()
@@ -5679,6 +5729,7 @@ class MainWindow(QMainWindow):
         a.setEnabled(any(p.note.strip() for p in idle))
         a.triggered.connect(lambda *_: self.paste_notes(idle, ""))
         menu.addSeparator()
+        self._upload_to_menu(menu, self.label_targets() or idle)
         labels = menu.addMenu("Colour label")
         lab_photos = self.label_targets() or idle
         for key, name, colour, k in core.LABELS + [("", "None", "", "")]:

@@ -1,5 +1,14 @@
 # What's new
 
+## 2026.11.24.1
+
+- **Choose which photos go to which agency:** before, every photo you uploaded went to every agency you ticked. The Upload window now has **Which photos go where**, with a row for each photo and a tick box for each agency:
+  - Untick a box to keep that photo off that agency. Click an agency's name to tick or untick its whole column. Right-click photos for *Only Shutterstock*, *Every site* or *No site*.
+  - **Sensible defaults:** editorial photos aren't ticked for Adobe Stock, which only takes them as Illustrative Editorial (tick them if your account qualifies). Each cell says when a site already has the photo (*sent*) or won't take it (*won't take*, with the reason).
+  - **By Colour Label…:** choose agencies per colour label, e.g. red → Shutterstock and Adobe Stock, green → Alamy only. Photos without a label go everywhere.
+  - Each agency's *What will happen* line counts only the photos ticked for it. Your ticks are remembered for each photo, and **Reset** goes back to the defaults.
+  - You can also choose while tagging: right-click photos in the list › **Upload to ›** tick the agencies.
+
 ## 2026.11.23.3
 
 - **Updates install again:** an update could download and then do nothing at **Restart**, with the old version starting again afterwards. The updater was waiting for the app to close, but parts of it kept running, most likely the background ExifTool, which runs from the program folder and keeps its files locked so Windows wouldn't let them be replaced. Now:

@@ -41,7 +41,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.11.23.3"
+APP_VERSION = "2026.11.24.1"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 # camera RAW files: titles and keywords go into the Lightroom sidecar next to them (photo.xmp), never the RAW.
 # DNG is left out: Lightroom ignores sidecars for DNG and keeps its metadata inside the file itself.
@@ -475,6 +475,7 @@ DEFAULT_SETTINGS = {
     "brand_alternates": True, # add the other ways buyers search for a brand (bjs, coca cola) to the keywords
     "describe_companies": True,  # a company in the title: say what it really is (from companies.tsv)
     "company_notes": "",      # your own: "Name, Other Name = what it is" (wins over the built-in list)
+    "label_sites": {},        # colour label -> the upload sites its photos go to (Which photos go where)
     "brand_keep_misspelled": True,  # a keyword the AI misspelled (meta mucil) stays next to the fixed one
     "ai_description": True,   # also write a separate description (caption): Alamy, Dreamstime, Shutterstock
     "concept": True,          # titles and descriptions also say what it's for, who buys it, the theme around it
