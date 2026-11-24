@@ -18,6 +18,7 @@ import base64
 import datetime
 import hashlib
 import io
+import functools
 import json
 import os
 import re
@@ -40,7 +41,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.11.23.1"
+APP_VERSION = "2026.11.23.2"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 # camera RAW files: titles and keywords go into the Lightroom sidecar next to them (photo.xmp), never the RAW.
 # DNG is left out: Lightroom ignores sidecars for DNG and keeps its metadata inside the file itself.
@@ -472,6 +473,8 @@ DEFAULT_SETTINGS = {
     "keyword_order": True,    # the first ten keywords: the title's subject and brand, specific before general
     "brand_spellings": None,  # None = the built-in list (DEFAULT_BRAND_SPELLINGS); your own edits otherwise
     "brand_alternates": True, # add the other ways buyers search for a brand (bjs, coca cola) to the keywords
+    "describe_companies": True,  # a company in the title: say what it really is (from companies.tsv)
+    "company_notes": "",      # your own: "Name, Other Name = what it is" (wins over the built-in list)
     "brand_keep_misspelled": True,  # a keyword the AI misspelled (meta mucil) stays next to the fixed one
     "ai_description": True,   # also write a separate description (caption): Alamy, Dreamstime, Shutterstock
     "concept": True,          # titles and descriptions also say what it's for, who buys it, the theme around it
@@ -3220,10 +3223,13 @@ def drop_unproven_parents(text: str, proof_n: str) -> str:
         # "Campbell's StoveTop Stuffing": a parent company put in front of another brand, when the label was read
         # and doesn't show it (a brand on its own, "Hormel Chili", has no 's and is never touched)
         claims.append(r"(?:^|(?<=\s))(?P<p>" + any_name + r")['’]s\s+(?=[A-Z])")
+    # what a company the text names really is ("…, a Multinational Insurance Company" for AIG) isn't a parent claim
+    known_what = " ".join(_norm_words(c["what"]) for c in find_companies(text)) if about_the_company(text) else ""
     for rx in claims:
         def drop(m):
             p = m.group("p")
-            ok = _norm_words(p) in proof_n or _norm_words(p + "s") in proof_n or _norm_words(p).strip() == ""
+            ok = (_norm_words(p) in proof_n or _norm_words(p + "s") in proof_n or _norm_words(p).strip() == ""
+                  or (known_what and _norm_words(p).strip() and _norm_words(p).strip() in known_what))
             return m.group(0) if ok else ""
         text = re.sub(rx, drop, text, flags=re.I if ("an?" not in rx and "Brand|Product)" not in rx) else 0)
     text = re.sub(r"\s+([,.;:])", r"\1", " ".join(text.split()))
@@ -4290,7 +4296,8 @@ def build_reword_prompt(title: str, description: str, keywords, fields, options=
                         dateline: str = "", fixed_keywords=(), keyword_min: int = 7, keyword_max: int = 50,
                         context: str = "", photo_note: str = "", direction: str = "", copyright_free: bool = False,
                         symbols: str = "keep", never_use=None, photo_avoid: str = "",
-                        direct_titles: bool = True, style: str = "", title_length: str = "detailed") -> str:
+                        direct_titles: bool = True, style: str = "", title_length: str = "detailed",
+                        company_notes: str = "", companies: bool = True) -> str:
     """The instructions for rewording one photo's text (no image). dateline: the location / date put in front
     of the title, given only as background; the AI must leave it out of what it writes."""
     fields = [f for f, _ in REWORD_FIELDS if f in set(fields or [])]
@@ -4360,6 +4367,12 @@ def build_reword_prompt(title: str, description: str, keywords, fields, options=
     if keep:
         lines += ["", "Give the " + " and ".join(keep) + " back exactly as they are."]
     lines += ["", HOLIDAY_RULE]
+    if "title" in fields and companies and not copyright_free and about_the_company(title):
+        found = find_companies(title, photo_note, company_notes)
+        if found:
+            lines += ["", "Company facts (true): " + company_facts(found) + " Say in the title which company it is "
+                      "(its full name) and what it does, in a few words, and never call it something it isn't (a "
+                      "product, platform or business it doesn't have)."]
     lines += ["", 'Output only JSON in exactly this form: {"title": "...", "description": "...", "keywords": ["..."]}']
     return "\n".join(lines)
 
@@ -4393,7 +4406,8 @@ def reword(url: str, model: str, title: str, description: str, keywords, fields,
            photo_note: str = "", direction: str = "", copyright_free: bool = False, symbols: str = "keep",
            never_use=None, photo_avoid: str = "", opener=None, cancel: CancelToken | None = None,
            name: str = "", title_caps: str = "title", direct_titles: bool = True, style: str = "",
-           fix_common: bool = True, title_length: str = "detailed") -> dict:
+           fix_common: bool = True, title_length: str = "detailed", company_notes: str = "",
+           companies: bool = True) -> dict:
     """Reword / double-check a photo's text with the AI, text only (no image, so it's quick). Only the fields
     asked for change; anything the AI leaves empty keeps its old value. title is the bare title (without the
     location, date or text before titles) and keywords leave out fixed_keywords: the caller puts those back.
@@ -4405,7 +4419,8 @@ def reword(url: str, model: str, title: str, description: str, keywords, fields,
     prompt = build_reword_prompt(title, description, keywords, fields, options, instruction, dateline,
                                  fixed_keywords, room_min, room_max, context, photo_note, direction,
                                  copyright_free, symbols, never_use, photo_avoid, direct_titles=direct_titles,
-                                 style=style, title_length=title_length)
+                                 style=style, title_length=title_length, company_notes=company_notes,
+                                 companies=companies)
     t0 = time.monotonic()
     shorter_ok = "shorter" in set(options or [])
     least = reword_title_words(title, options, title_length)[0] if "title" in fields else 0
@@ -4473,6 +4488,13 @@ def reword(url: str, model: str, title: str, description: str, keywords, fields,
         new_title = fixed["title"] if "title" in fields else new_title
         new_desc = fixed["description"] if "description" in fields else new_desc
         new_kws = fixed["keywords"] if "keywords" in fields else new_kws
+    if "title" in fields and companies and not copyright_free and new_title and not kept_title \
+            and about_the_company(new_title):
+        # a company the reworded title names: make sure it says what the company is
+        for c in find_companies(new_title, photo_note, company_notes)[:2]:
+            if not says_what_company_is(new_title, c):
+                new_title = describe_company_fallback(new_title, c)
+                debug(f"{name}: reword: added what {c['name']} is: {new_title!r}")
     return {"title": new_title, "description": new_desc, "keywords": new_kws, "kept_title": kept_title,
             "seconds": round(time.monotonic() - t0, 1)}
 
@@ -4893,7 +4915,8 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
              read_label: bool = False, tidy: bool = False, never_use=None, never_in_title: bool = True,
              photo_avoid: str = "", description: bool = False, title_caps: str = "title",
              direct_titles: bool = True, style: str = "", checks=(), limits=None, fix_common: bool = True,
-             concept: bool = False, text_model: str = "", place_keywords: bool = True) -> dict:
+             concept: bool = False, text_model: str = "", place_keywords: bool = True,
+             companies: bool = True, company_notes: str = "") -> dict:
     """Ask the local vision model for an SEO title and keywords. text_model: another model for the steps that only
     send text (the double-check, rewrites, checks); the photo model still does everything that looks at the photo.
     With revise=True and any notes or directions given, a second (text-only) pass checks the draft
@@ -5136,6 +5159,45 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
                 break
             keywords = keywords + extra
         return keywords
+
+    # a company in the title: say what it really is (from the company list), instead of vague filler or a guess
+    if companies and title and not copyright_free and about_the_company(title):
+        found = find_companies(title, photo_note, company_notes)
+        missing = [c for c in found if not says_what_company_is(title, c)][:2]
+        if missing:
+            lo_w, hi_w = title_words(title_length)
+            ask_co = (f"This stock photo title names a company: {json.dumps(title, ensure_ascii=False)}. Rewrite it so "
+                      "it says plainly which company it is and what the company does, using these facts (they are "
+                      f"true): {company_facts(missing)} Give the company's full name, then what it is in a few words, "
+                      f"then what the photo shows; for example '{missing[0]['name']}, {_article(missing[0]['what']).title()}, "
+                      "Logo on a Smartphone Screen with a Stock Market Chart' when that is what the title describes. "
+                      "Keep every detail the title gives about what can be seen (the logo or sign, the screen or "
+                      "building it's on, the chart, the setting). Remove anything that calls the company something it "
+                      "isn't (a product, platform or business it doesn't have), and drop vague filler such as 'for "
+                      f"Business Concepts' to stay within {lo_w} to {hi_w + 4} words. "
+                      + ("Don't add a place name; it is added separately. " if (title_location or "").strip() else "")
+                      + (facts + " " if facts else "")
+                      + "Title Case, no quotation marks and no full stop at the end. "
+                      + (DIRECT_TITLE_RULE + " " if direct_titles else "")
+                      + 'Output only JSON: {"title": "..."}')
+            try:
+                better = split_leaked_keywords(str(ask(ask_co, TITLE_SCHEMA, "company", with_image=False)
+                                                   .get("title", "") or "").strip())[0]
+            except Stopped:
+                raise
+            except ApiError:
+                better = ""
+            better = style_title(drop_sizes(tidy_symbols(drop_trailing_location(better, title_location), symbols)),
+                                 direction, title_caps, direct_titles) if better else ""
+            if better and all(says_what_company_is(better, c) for c in missing):
+                debug(f"{name}: company: {title!r} -> {better!r}")
+                title = better
+            else:
+                for c in missing:                    # the AI didn't manage it: say it in brackets after the name
+                    title = describe_company_fallback(title, c)
+                debug(f"{name}: company: AI's rewrite didn't say what it is ({better!r}); added it: {title!r}")
+        if found:
+            keywords = company_keywords(found, keywords, keyword_max)
 
     if title and len(keywords) < keyword_min:
         keywords = top_up(keywords)
@@ -5550,3 +5612,191 @@ def name_the_holiday(title: str, description: str, keywords, known: str = "", ke
         keywords.insert(at, kw)
         fixes.append(f"keyword: added {kw}")
     return {"title": title, "description": description, "keywords": keywords, "fixes": fixes}
+
+
+# Companies: say what they are ------------------------------------------------------------------------------------
+# companies.tsv (built by tools/make_companies.py from the S&P 1500 and Russell 1000 lists, plus hand-written
+# lines): each company's name, its other names, and what it is. When a title names one, the AI is told what the
+# company really is, so "AIG Logo for Financial Concepts" becomes a title that says AIG is an insurance company,
+# and an invented description ("ADP Trading Platform") is replaced.
+COMPANY_FILE = os.path.join(RESOURCE_DIR, "companies.tsv")
+# words that show a name is the company, not the everyday word (Target Logo, not a target)
+COMPANY_CONTEXT = {
+    "logo", "logos", "sign", "signs", "signage", "store", "stores", "storefront", "brand", "branding", "corporation",
+    "corp", "inc", "company", "stock", "stocks", "shares", "headquarters", "hq", "office", "offices", "app",
+    "website", "building", "trademark", "screen", "smartphone", "phone", "monitor", "display", "ticker", "chart",
+    "dealership", "restaurant", "branch", "card", "truck", "trucks", "products", "product", "packaging", "shelf",
+}
+
+
+# the company itself is the subject (its logo, sign, headquarters or share price), not just a product of theirs
+COMPANY_SUBJECT = {"logo", "logos", "sign", "signs", "signage", "headquarters", "hq", "storefront", "stock", "stocks",
+                   "shares", "ticker", "trademark", "branding", "emblem", "insignia", "corporate", "chart", "charts",
+                   "screen", "monitor", "smartphone"}
+
+
+def about_the_company(title: str) -> bool:
+    """'AIG Logo on a Smartphone' is about the company; 'Hormel Chili Cans on a Shelf' is about a product."""
+    return bool({w.casefold() for w in re.findall(r"[\w']+", title or "")} & COMPANY_SUBJECT)
+
+
+@functools.lru_cache(maxsize=4)
+def _company_table(extra: str = ""):
+    """[(name, what, [(regex, needs_context)])] and an index by first word, from companies.tsv and your own lines
+    ('Name, Other Name = what it is', which win over the built-in ones)."""
+    entries = []
+    own = []
+    for line in (extra or "").splitlines():
+        if "=" in line and not line.strip().startswith("#"):
+            names, what = line.split("=", 1)
+            names = [n.strip() for n in names.split(",") if n.strip()]
+            if names and what.strip():
+                own.append((names[0], names[1:], what.strip()))
+    own_names = {n.casefold() for name, others, _ in own for n in [name] + others}
+    rows = [(name, others, what, True) for name, others, what in own]
+    try:
+        with open(COMPANY_FILE, encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("#") or not line.strip():
+                    continue
+                parts = line.rstrip("\n").split("\t")
+                if len(parts) < 3:
+                    continue
+                name, others, what = parts[0], [o for o in parts[1].split("; ") if o], parts[2]
+                if name.casefold() in own_names:
+                    continue
+                rows.append((name, others, what, False))
+    except OSError as e:
+        debug(f"companies: couldn't read {COMPANY_FILE}: {e!r}")
+    index = {}
+    for name, others, what, mine in rows:
+        pats = []
+        marked = {o.lstrip("$~") for o in others if o.startswith(("~", "$~"))}
+        # the name itself is matched plainly, unless it's an everyday word (then only its marked form below)
+        for alias in ([name] if name not in marked else []) + others:
+            context = alias.startswith("$~") or alias.startswith("~")
+            caps = alias.startswith("$")
+            word = alias.lstrip("$~")
+            if not word:
+                continue
+            if caps:
+                rx = re.compile(r"(?<![\w'])" + re.escape(word) + r"(?![\w])")
+            else:
+                rx = re.compile(_brand_pattern(word), re.IGNORECASE)
+            pats.append((rx, context and not mine, word))
+            index.setdefault(re.sub(r"[^a-z0-9]", "", word.casefold())[:2], set()).add(len(entries))
+        entries.append((name, what, pats))
+    return entries, index
+
+
+def company_count() -> int:
+    return len(_company_table("")[0])
+
+
+def find_companies(title: str, note: str = "", extra: str = "") -> list[dict]:
+    """The companies a title (or the photo note) names, in order: [{'name', 'what', 'said'}]. A name that's also
+    an everyday word (Target, Caterpillar, ARM) counts only with a word like Logo, Sign, Store or Stock right
+    after it."""
+    entries, index = _company_table(extra or "")
+    found, taken = [], []
+    for source, text in (("note", note or ""), ("title", title or "")):
+        if not text:
+            continue
+        toks = [re.sub(r"[^a-z0-9]", "", w.casefold()) for w in re.findall(r"[\w'&.-]+", text)]
+        toks = [x for x in toks if x]
+        keys = {("".join(toks[i:i + 3]))[:2] for i in range(len(toks))}      # "A. O. Smith" and "AOSmith" alike
+        cands = sorted({i for k in keys for i in index.get(k, ())})
+
+        # strong signs it's a company photo (not just "screen"): its logo, its stock chart, its shares
+        about = bool({w.casefold() for w in re.findall(r"[\w']+", text)} & (COMPANY_SUBJECT - {"screen", "monitor",
+                                                                                              "smartphone"}))
+
+        def in_context(m):
+            """An everyday-word name counts when a word like Logo, Sign, Store or Stock comes right after it
+            (Target Logo, Caterpillar Excavator Logo), or when it starts a title that's about a company on a
+            screen or chart ("AMD Radeon Graphics Card on a Monitor with Stock Charts"). The note follows the same
+            rule ("not a crane" isn't Crane Co.)."""
+            after = [w.casefold() for w in re.findall(r"[\w']+", text[m.end():])[:2]]
+            return bool(set(after) & COMPANY_CONTEXT) or (about and not text[:m.start()].strip())
+        hits = []
+        for i in cands:
+            name, what, pats = entries[i]
+            for rx, needs_context, word in pats:
+                m = rx.search(text)
+                if m and needs_context and not in_context(m):
+                    continue
+                if m:
+                    hits.append((m.start(), -(m.end() - m.start()), i, m.group(0)))
+                    break
+        for start, neg_len, i, said in sorted(hits):
+            end = start - neg_len
+            if source == "title" and any(a <= start < b for a, b in taken):
+                continue                              # inside a longer name (Apple Hospitality REIT, not Apple)
+            if source == "title":
+                taken.append((start, end))
+            name, what, _ = entries[i]
+            if name not in {f["name"] for f in found}:
+                found.append({"name": name, "what": what, "said": said})
+    return found
+
+
+def company_facts(companies) -> str:
+    """'Akamai Technologies is a cloud computing, cybersecurity and content delivery company.' for each."""
+    return " ".join(f"{c['name']}" + (f" (shown as {c['said']})" if c["said"].casefold() != c["name"].casefold()
+                                      else "") + f" is {_article(c['what'])}." for c in companies)
+
+
+def _article(phrase: str) -> str:
+    w = phrase.split()[0] if phrase.split() else ""
+    vowel = (w[:1].lower() in "aeio" or w in ("IT", "HR", "RNA", "MRI", "LED")
+             or (w[:1].lower() == "u" and not re.match(r"u(?:ni|ti|s[aeu])", w.lower())))
+    return ("an " if vowel else "a ") + phrase
+
+
+_WHAT_FILLER = {"a", "an", "the", "and", "of", "for", "company", "companies", "firm", "maker", "producer", "corporation",
+                "group", "chain", "provider", "trust", "services", "service", "real", "estate", "investment"}
+
+
+def says_what_company_is(title: str, company: dict) -> bool:
+    """Does the title name the company and say what it is (a word from its description)?"""
+    low = (title or "").casefold()
+    if company["name"].casefold() not in low and company["said"].casefold() not in low:
+        return False
+    words = [w for w in re.findall(r"[a-z]+", company["what"].casefold()) if w not in _WHAT_FILLER and len(w) > 2]
+    return any(re.search(r"\b" + re.escape(w[:max(5, len(w) - 2)]), low) for w in words)
+
+
+def company_keywords(companies, keywords, keyword_max: int = 50) -> list[str]:
+    """The company's full name and what it does as keywords (akamai technologies, cloud computing, cybersecurity),
+    right after the company's own keyword, while there's room."""
+    out, seen = list(keywords or []), {k.casefold() for k in keywords or []}
+    lower = not out or out[0] == out[0].lower()
+    for c in companies:
+        what = re.sub(r"^(?:maker|producer|operator|parent) of\s+", "", c["what"])
+        what = re.sub(r"\s+(?:company|firm|maker|producer|corporation|chain|provider|operator)$", "", what)
+        pieces = [p.strip() for p in re.split(r",\s*|\s+and\s+", what) if p.strip()]
+        add = [c["name"]] + [p for p in pieces if 1 <= len(p.split()) <= 3][:3]
+        add = [a.lower() if lower else a for a in add]
+        at = next((i + 1 for i, k in enumerate(out) if k.casefold() in (c["said"].casefold(), c["name"].casefold())),
+                  min(1, len(out)))
+        for a in add:
+            if a.casefold() not in seen and len(out) < keyword_max:
+                out.insert(at, a)
+                seen.add(a.casefold())
+                at += 1
+    return out
+
+
+def describe_company_fallback(title: str, company: dict) -> str:
+    """When the AI didn't manage it: 'AIG Logo…' -> 'AIG (American International Group, Multinational Insurance
+    Company) Logo…'."""
+    said = company["said"]
+    i = title.casefold().find(said.casefold())
+    if i < 0:
+        return title
+    small = {"a", "an", "and", "the", "of", "for", "in", "on", "at", "to", "by", "with", "or"}
+    what = " ".join(w if w.isupper() or (i and w in small) else w[:1].upper() + w[1:]
+                    for i, w in enumerate(company["what"].split()))
+    inner = (company["name"] + ", " if company["name"].casefold() != said.casefold() else "") + what
+    end = i + len(said)
+    return title[:end] + f" ({inner})" + title[end:]
