@@ -2420,6 +2420,7 @@ class MainWindow(QMainWindow):
         if self.settings.get("check_updates", True) and not os.environ.get("IPTC_TAGGER_OFFLINE"):
             self.check_updates()
         QTimer.singleShot(400, self._startup_dialogs)  # once the window is on screen
+        QTimer.singleShot(900, self._report_last_update)   # did the last update install? (say so either way)
         self.watch_timer = QTimer(self)
         self.watch_timer.setInterval(4000)
         self.watch_timer.timeout.connect(self._watch_scan)
@@ -4516,6 +4517,32 @@ class MainWindow(QMainWindow):
         return cats
 
     # ---------- update check
+    def _report_last_update(self):
+        """What the updater did last time: installed, or couldn't (say so, and how to fix it), never silently."""
+        path = core.update_report_path()
+        try:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                said = f.read().strip()
+            os.remove(path)
+        except OSError:
+            return
+        core.debug(f"update: last update: {said!r}; running {core.APP_VERSION}")
+        word, _, version = said.partition(" ")
+        if word == "installed" and (not version or version == core.APP_VERSION):
+            self.toast(f"Updated to {core.APP_NAME} {core.APP_VERSION}.", "ok", 5)
+            return
+        try:
+            with open(core.update_log_path(), encoding="utf-8", errors="replace") as f:
+                core.debug("update: copy log:\n" + f.read()[-4000:], always=True)
+        except OSError:
+            pass
+        self._update_text(
+            f"<b>The update{(' to ' + version) if version else ''} couldn't be installed</b>: some of the program's "
+            "files were still in use. Close IPTC Tagger (and anything that might be using its folder), then "
+            "<a href='retry'>check for updates</a> again, or <a href='download'>download it yourself</a> and unzip "
+            "it over this one.")
+        self.update_banner.show()
+
     def check_updates(self, on_done=None, status: dict | None = None):
         """Look for a newer release in the background (never blocks the window)."""
         run_job(self, Job("update", functools.partial(core.check_for_update, status=status), core.APP_VERSION),
@@ -4633,7 +4660,8 @@ class MainWindow(QMainWindow):
             return False
         new_root, work = self.update_ready
         try:
-            core.start_updater(core.updater_script(new_root, core.program_root(), work, os.getpid(), relaunch),
+            core.start_updater(core.updater_script(new_root, core.program_root(), work, os.getpid(), relaunch,
+                                                   version=(self.update_info or {}).get("version", "")),
                                work)
         except OSError as e:
             core.debug(f"update: couldn't start the updater: {e}", always=True)
@@ -7519,6 +7547,16 @@ class MainWindow(QMainWindow):
         core.clear_session()                          # closed properly: nothing to bring back next time
         if self.update_ready:                         # a downloaded update installs as the app closes
             self.install_update(relaunch=self.restarting_for_update)
+        # nothing may keep running once the window is gone: the updater can only replace the program's files
+        # when nothing of it is still open (Windows locks a running program's files, ExifTool's included)
+        if self.exiftool is not None:
+            try:
+                self.exiftool.close()
+            except Exception as ex:                   # (never stop the app closing)
+                core.debug(f"close: ExifTool didn't stop cleanly: {ex!r}")
+        for w in QApplication.topLevelWidgets():
+            if w is not self and w.isVisible():
+                w.close()
         e.accept()
 
 
@@ -7574,7 +7612,13 @@ def main():
     win.show()
     if len(sys.argv) > 1:   # photos/folders dropped onto the app icon or given on the command line
         win.add_paths(sys.argv[1:])
-    sys.exit(app.exec())
+    code = app.exec()
+    if getattr(win, "update_installing", False):
+        # the updater is waiting for this process to end: don't wait for background jobs (an AI request,
+        # a folder scan) to finish first, or the update can't start
+        core.debug("update: the app has closed; handing over to the updater")
+        os._exit(code)
+    sys.exit(code)
 
 
 if __name__ == "__main__":

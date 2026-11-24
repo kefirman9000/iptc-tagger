@@ -1,5 +1,12 @@
 # What's new
 
+## 2026.11.23.3
+
+- **Updates install again:** an update could download and then do nothing at **Restart**, with the old version starting again afterwards. The updater was waiting for the app to close, but parts of it kept running, most likely the background ExifTool, which runs from the program folder and keeps its files locked so Windows wouldn't let them be replaced. Now:
+  - Closing the app stops ExifTool and closes any other IPTC Tagger windows. When an update is waiting, the app exits straight away instead of waiting for background jobs.
+  - The updater waits at most about 30 seconds. Then it stops anything still running from the program folder (only that folder) and copies the new version in, retrying locked files.
+  - It never fails silently: at the next start you see *Updated to …*, or a message saying the update couldn't be installed, with links to try again or download it yourself. What the copy did is written to the debug log.
+
 ## 2026.11.23.2
 
 - **Titles say what the company is:** when a photo is about a company (its logo, sign, headquarters, or its name on a screen with a stock chart), the title now says plainly which company it is and what it does, instead of vague filler (*for Business Concepts*) or a guess:

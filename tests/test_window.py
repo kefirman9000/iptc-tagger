@@ -584,3 +584,18 @@ def test_buttons_say_which_photos_they_use(window, make_photos):
     assert win.btn_export.text() == "Export CSV: all (3)…"
     win.set_checked(win.photos[:2], True)
     assert win.btn_check.text() == "Check checked (2)" and win.btn_ss_csv.text() == "Shutterstock CSV: checked (2)"
+
+
+def test_the_next_start_says_whether_the_update_worked(window):
+    import tagger_core as core
+    _mod, win = window
+    os.makedirs(os.path.dirname(core.update_report_path()), exist_ok=True)
+    with open(core.update_report_path(), "w") as f:
+        f.write("failed 2099.1.1.1\n")
+    win._report_last_update()
+    assert not os.path.exists(core.update_report_path())
+    assert win.update_banner.isVisibleTo(win) and "couldn't be installed" in win.update_banner.text()
+    with open(core.update_report_path(), "w") as f:
+        f.write(f"installed {core.APP_VERSION}\n")
+    win._report_last_update()                                   # worked: a short "Updated to …" message
+    assert not os.path.exists(core.update_report_path())
