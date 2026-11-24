@@ -52,6 +52,7 @@ def pyinstaller_args(work: str, folder: str = HERE, windows: bool = WINDOWS, mac
             "--add-data", f"{src('arg_files')}{sep}arg_files",      # xmp2iptc.args (Shutterstock conversion)
             "--add-data", f"{src('icon.png')}{sep}.",               # window icon
             "--add-data", f"{src('icons')}{sep}icons",              # button icons (Lucide)
+            "--add-data", f"{src('companies.tsv')}{sep}.",          # what each company is (titles)
             "--add-data", f"{src('CHANGELOG.md')}{sep}.",           # "What's new"
             "--icon", src("icon.ico" if windows else "icon.png"),
             "--exclude-module", "tkinter",

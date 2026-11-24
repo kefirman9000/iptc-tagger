@@ -1105,6 +1105,22 @@ class SettingsDialog(QDialog):
         b_reset.clicked.connect(lambda *_: add_builtin())
         brow.addWidget(b_reset)
         f_brands.addLayout(brow)
+        # companies: what each one is, so titles say it ("AIG, the multinational insurance company")
+        self.describe_co = QCheckBox(f"Say what the company is when a title names one ({core.company_count():,} "
+                                     "public companies known: the S&P 1500, the Russell 1000 and more)")
+        self.describe_co.setChecked(bool(settings.get("describe_companies", True)))
+        self.describe_co.setToolTip("After Detect and Reword, a title that names a company says what it really is, "
+                                    "from the app's list\n(full name and industry), instead of a vague 'for Business "
+                                    "Concepts' or a guess like calling\na payroll company a trading platform. Its "
+                                    "full name and industry are added to the keywords too.")
+        f_brands.addWidget(self.describe_co)
+        f_brands.addWidget(QLabel("Your own companies, one per line: <b>Name, other names = what it is</b> (they win "
+                                  "over the built-in list), e.g. <code>Luna Skin = skincare brand</code>"))
+        self.company_notes = QPlainTextEdit(str(settings.get("company_notes", "") or ""))
+        self.company_notes.setPlaceholderText("Anthropic = artificial intelligence safety and research company\n"
+                                              "BJ's Wholesale Club, BJ's = warehouse club retailer")
+        self.company_notes.setFixedHeight(70)
+        f_brands.addWidget(self.company_notes)
         brands_box = QWidget()
         brands_box.setLayout(f_brands)
 
@@ -1308,6 +1324,7 @@ class SettingsDialog(QDialog):
                  shutterstock_text=self.ss_text.currentData() or "title",
                  dreamstime_csv_auto=self.dt_auto.isChecked(), shutterstock_csv_auto=self.ss_auto.isChecked(), dreamstime_tidy_csv=self.dt_tidy.isChecked(),
                  keyword_order=self.kw_order.isChecked(), brand_alternates=self.brand_alts.isChecked(),
+                 describe_companies=self.describe_co.isChecked(), company_notes=self.company_notes.toPlainText(),
                  brand_keep_misspelled=self.brand_keep.isChecked(),
                  # unchanged built-in list: stays None, so later versions' additions still arrive
                  brand_spellings=(None if self.brands.toPlainText().strip() == core.DEFAULT_BRAND_SPELLINGS.strip()
@@ -6851,6 +6868,8 @@ class MainWindow(QMainWindow):
                                              concept=bool(self.settings.get("concept", True)),
                                              text_model=self.text_model(),
                                              place_keywords=self.place_keywords_on(),
+                                             companies=bool(self.settings.get("describe_companies", True)),
+                                             company_notes=self.settings.get("company_notes", "") or "",
                                              tidy=bool(self.settings.get("tidy_keywords", True))),
                   ph.path, url, model, kmin, kmax,
                   context, old_title, old_keywords, direction, ph.note,
@@ -6996,7 +7015,8 @@ class MainWindow(QMainWindow):
             core.parse_word_list(s.get("never_use", "")), ph.avoid if s.get("avoid_on") else "",
             cancel=ph.token, name=os.path.basename(ph.path), title_caps=s.get("title_caps", "title"),
             direct_titles=bool(s.get("direct_titles", True)), style=self._ai_style(),
-            fix_common=bool(s.get("fix_common", True)), title_length=s.get("title_length", "detailed")))
+            fix_common=bool(s.get("fix_common", True)), title_length=s.get("title_length", "detailed"),
+            company_notes=s.get("company_notes", "") or "", companies=bool(s.get("describe_companies", True))))
         ph.run += 1
         ph.queued = True
         run = ph.run

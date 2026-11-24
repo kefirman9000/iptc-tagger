@@ -1,5 +1,17 @@
 # What's new
 
+## 2026.11.23.2
+
+- **Titles say what the company is:** when a photo is about a company (its logo, sign, headquarters, or its name on a screen with a stock chart), the title now says plainly which company it is and what it does, instead of vague filler (*for Business Concepts*) or a guess:
+  - *AIG Logo … for Financial Concepts* → *American International Group, a Multinational Insurance Company, Logo on a Smartphone Screen with a Stock Market Chart*
+  - *ADP Trading Platform…* → ADP is a payroll and human resources company, so the made-up *trading platform* is replaced.
+  - The app knows about **1,700 public companies**: the S&P 500, MidCap 400 and SmallCap 600, the Russell 1000, and well-known names such as Samsung, Sony, Toyota, Ambev, Affirm, ASML and Anthropic. For each, it knows the full name, the other ways it's written (*AIG*, *AsteraLabs*, *AOSmith*, *AlbeMarle*) and what it does.
+  - After Detect, the text model rewrites the title with those facts. If it doesn't manage, the app adds the description itself in brackets: *ADP (Automatic Data Processing, Payroll and Human Resources Software Company) …*. The company's full name and industry are added to the keywords too.
+  - **Reword** gets the same facts, so you can fix titles you've already made: select them and Reword.
+  - Names that are also everyday words (*Target*, *Caterpillar*, *Apple*, *Shell*, *ARM*) only count with a word like *Logo*, *Sign*, *Store* or *Stock* right after them, or at the start of a title about a company's stock chart. A caterpillar on a leaf stays a caterpillar.
+  - A product on a shelf (*Hormel Chili Cans*) isn't changed: the brand stays just the brand.
+  - In **Settings → Brands**, you can turn it off, or add your own lines (*Luna Skin = skincare brand*), which win over the built-in list.
+
 ## 2026.11.23.1
 
 - **Is the location still right?** The editorial location stays in the box from one shoot to the next, so a new batch could get last week's city. The app now remembers which days you've used the location for. When you Detect photos taken on other days, it asks first: *Yes, use it*, *Change Location…* or *Cancel*. It also says when a custom date is on, since titles will then show that date instead. Typing a new location never asks; Watch Folder doesn't stop to ask but shows a warning.
