@@ -684,6 +684,24 @@ class SettingsDialog(QDialog):
         trow.addWidget(self.tretry)
         trow.addStretch(1)
         f_ai.addRow("Time limit per photo", trow)
+        self.at_once = QSpinBox()
+        self.at_once.setRange(1, 3)
+        self.at_once.setValue(max(1, min(3, int(settings.get("photos_at_once", 1) or 1))))
+        self.at_once.setToolTip("How many photos the AI works on at the same time. 1 suits most computers.\n"
+                                "2 or 3 only help with a big graphics card (16 GB or more) and Ollama set to take\n"
+                                "requests in parallel (OLLAMA_NUM_PARALLEL); otherwise they just wait their turn.\n"
+                                "The time limit grows with the number of photos running together.")
+        self.overlap = QCheckBox("Overlap the photo model and the text model")
+        self.overlap.setChecked(bool(settings.get("overlap_models", True)))
+        self.overlap.setToolTip("With a separate text model (Instructions → Text model), the photo model starts\n"
+                                "the next photo while the text model finishes this one, so a batch goes faster.\n"
+                                "Both models have to fit in memory together; turn this off if Detect gets slower\n"
+                                "or Ollama keeps reloading the models.")
+        orow = QHBoxLayout()
+        orow.addWidget(self.at_once)
+        orow.addWidget(self.overlap)
+        orow.addStretch(1)
+        f_ai.addRow("Photos at once", orow)
         self.preload = QCheckBox("Load the model when the app starts")
         self.preload.setChecked(bool(settings.get("preload_model", True)))
         self.preload.setToolTip("The model is loaded into memory in the background as soon as the app opens,\n"
@@ -1307,6 +1325,7 @@ class SettingsDialog(QDialog):
                  xmp2iptc_on_save=self.x2i.isChecked(), xmp2iptc_args=self.x2i_path.text().strip(),
                  meta_fields=[k for k, cb in self.field_boxes.items() if cb.isChecked()],
                  ai_time_limit=self.tlimit.value(), ai_retries=int(self.tretry.currentData() or 0),
+                 photos_at_once=self.at_once.value(), overlap_models=self.overlap.isChecked(),
                  debug_log=self.debug.isChecked(), symbols=self.symbols.currentData() or "convert",
                  title_length=self.title_len.currentData() or "detailed",
                  title_caps=self.title_caps.currentData() or "title", direct_titles=self.direct_titles.isChecked(),
@@ -2358,7 +2377,7 @@ class MainWindow(QMainWindow):
         self.rows: dict[str, int] = {}
         self.jobs: set[Job] = set()
         self.ai_pool = QThreadPool(self)
-        self.ai_pool.setMaxThreadCount(1)   # a local model works on one photo at a time
+        self.ai_pool.setMaxThreadCount(1)   # one photo at a time, unless Photos at once / Overlap say more (below)
         self.io_pool = QThreadPool(self)
         self.io_pool.setMaxThreadCount(4)
         self.cancel = threading.Event()        # stop switch for the most recent group of jobs
@@ -2617,6 +2636,19 @@ class MainWindow(QMainWindow):
         models.addWidget(self.model_pick, 0, 1)
         models.addWidget(QLabel("Text model"), 1, 0)
         models.addWidget(self.text_pick, 1, 1)
+        self.speed_pick = NoWheelComboBox()
+        self.speed_pick.addItem("Thorough", "thorough")
+        self.speed_pick.addItem("Fast", "fast")
+        self.speed_pick.setCurrentIndex(max(0, self.speed_pick.findData(self.settings.get("detect_speed",
+                                                                                          "thorough"))))
+        self.speed_pick.setToolTip(
+            "Thorough: the AI reads the label first, writes the title and keywords, double-checks them against\n"
+            "your instructions, then looks at the photo again for the description. Best for your best shots.\n\n"
+            "Fast: one look at the photo gives the title, keywords, description and categories together, with no\n"
+            "separate label-reading or double-check step. Roughly half the time per photo; good for big batches.\n\n"
+            "Either way the app's own fixes (brands, stores, keyword order, companies, Christmas…) still run.")
+        self.speed_pick.activated.connect(lambda *_: self._speed_picked())
+
         ai_row.addLayout(models)
         pages["ai"].addLayout(ai_row)
         self.lead = QLineEdit(self.settings.get("lead_keywords", ""))
@@ -2851,6 +2883,9 @@ class MainWindow(QMainWindow):
         style_row.addWidget(QLabel("<b>Every Detect:</b>"))
         style_row.addWidget(self.style_label, 1)
         style_row.addWidget(self.btn_style)
+        style_row.addSpacing(16)
+        style_row.addWidget(QLabel("<b>Detect:</b>"))
+        style_row.addWidget(self.speed_pick)
         pages["ai"].addLayout(style_row)
         # the profile switches everything at once, so it sits beside the tabs, in view from every tab
         corner = QWidget()
@@ -3312,6 +3347,25 @@ class MainWindow(QMainWindow):
         self.model_pick.blockSignals(False)
         fill_text_models(self.text_pick, info.get("all") or vision, self.settings.get("text_model", ""))
 
+    def _speed_picked(self):
+        self.settings["detect_speed"] = self.speed_pick.currentData() or "thorough"
+        core.save_settings(self.settings)
+        self.status.setText("Detect: " + ("Fast: one look at the photo for everything." if
+                                          self.settings["detect_speed"] == "fast" else
+                                          "Thorough: label, draft, double-check and description, step by step."))
+
+    def ai_threads(self) -> int:
+        """How many photos the AI works on at once: your Photos at once setting, or 2 when you use a separate text
+        model and Overlap is on (the photo model starts the next photo while the text model finishes this one)."""
+        n = max(1, min(3, int(self.settings.get("photos_at_once", 1) or 1)))
+        if self.settings.get("overlap_models", True) and self.text_model():
+            n = max(n, 2)
+        return n
+
+    def _apply_ai_threads(self):
+        if hasattr(self, "ai_pool"):
+            self.ai_pool.setMaxThreadCount(self.ai_threads())
+
     def _models_picked(self):
         model = self.model_pick.currentData() or self.settings["model"]
         text = self.text_pick.currentData() or ""
@@ -3321,12 +3375,14 @@ class MainWindow(QMainWindow):
         core.save_settings(self.settings)
         self.models_loaded = False                   # the first photo with a new model may take longer (loading)
         self.status.setText(f"Using {model} for the photos" + (f" and {text} for the text steps." if text else "."))
+        self._apply_ai_threads()
         self._update_instr_summary()
         self._check_ai()
         if hasattr(self, "model_timer"):
             self._poll_model()
 
     def _ai_checked(self, _key, info):
+        QTimer.singleShot(0, self._apply_ai_threads)   # (whether the text model is downloaded decides Overlap)
         if info["version"] is not None:
             self.ollama_wait = 0
         self.ai = info
@@ -3728,7 +3784,7 @@ class MainWindow(QMainWindow):
 
     # ---------- profiles
     PROFILE_KEYS = ("context", "detect_style", "default_type", "lead_keywords", "title_prefix", "editorial_on",
-                    "title_location", "editorial_pos", "editorial_keywords", "location_for_ai")
+                    "title_location", "editorial_pos", "editorial_keywords", "location_for_ai", "detect_speed")
     NO_PROFILE = "No profile"
 
     def _profile_values(self, save: bool = True) -> dict:
@@ -4743,6 +4799,7 @@ class MainWindow(QMainWindow):
             symbols_before = self.settings.get("symbols", "convert")
             appearance_before = self.settings.get("appearance", "system")
             self.settings = dlg.values()
+            self._apply_ai_threads()
             if self.settings.get("appearance", "system") != appearance_before:
                 theme.apply(QApplication.instance(), self.settings["appearance"])
                 self.apply_theme()
@@ -6946,6 +7003,7 @@ class MainWindow(QMainWindow):
                                              fix_common=bool(self.settings.get("fix_common", True)),
                                              concept=bool(self.settings.get("concept", True)),
                                              text_model=self.text_model(),
+                                             fast=self.settings.get("detect_speed", "thorough") == "fast",
                                              place_keywords=self.place_keywords_on(),
                                              companies=bool(self.settings.get("describe_companies", True)),
                                              company_notes=self.settings.get("company_notes", "") or "",
@@ -7239,10 +7297,12 @@ class MainWindow(QMainWindow):
             self.ai_timer.stop()
             return
         limit = int(self.settings.get("ai_time_limit", 30) or 0)
+        # photos worked on together share the computer: each may take that many times longer
+        together = max(1, sum(1 for p in working if p.ai_started))
         for ph in working:
             if ph.ai_started:
                 secs = int(time.monotonic() - ph.ai_started)
-                allowed = limit + (0 if self.models_loaded else self.MODEL_LOAD_EXTRA)
+                allowed = limit * together + (0 if self.models_loaded else self.MODEL_LOAD_EXTRA)
                 if limit and secs > allowed and not ph.timed_out and ph.token is not None and not ph.token.is_set():
                     ph.timed_out = True                # over the time limit: stop it (and maybe retry)
                     core.debug(f"{os.path.basename(ph.path)}: TIME LIMIT: {secs} s > {allowed} s allowed, stopping it")

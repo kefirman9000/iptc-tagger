@@ -1,5 +1,15 @@
 # What's new
 
+## 2026.11.24.2
+
+- **Detect: Fast or Thorough** (Instructions, next to *Every Detect*):
+  - **Fast:** one look at the photo gives the title, keywords, description and categories together, reading the label in the same request, with no separate double-check. Roughly half the time per photo, for big batches.
+  - **Thorough:** the step-by-step way, as before: read the label, write the draft, double-check it against your instructions, then look again for the description. For your best shots.
+  - Either way the app's own fixes still run: brands, stores, keyword order, companies and Christmas. The choice is saved with profiles.
+- **Quicker retries:** fixing a short title and topping up keywords now try the text model first, without sending the photo again. Thorough looks at the photo once more only if that isn't enough.
+- **Overlap the two models:** with a separate text model, the photo model starts the next photo while the text model finishes the current one, so batches finish sooner. It's on by default; turn it off in Settings → AI if both models don't fit in memory together.
+- **Photos at once** (Settings → AI): 1, 2 or 3 photos worked on together, for big graphics cards with Ollama set to take requests in parallel. The time limit grows with the number of photos running together, so they aren't stopped for sharing the computer.
+
 ## 2026.11.24.1
 
 - **Choose which photos go to which agency:** before, every photo you uploaded went to every agency you ticked. The Upload window now has **Which photos go where**, with a row for each photo and a tick box for each agency:

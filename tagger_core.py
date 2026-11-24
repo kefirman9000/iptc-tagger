@@ -41,7 +41,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.11.24.1"
+APP_VERSION = "2026.11.24.2"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 # camera RAW files: titles and keywords go into the Lightroom sidecar next to them (photo.xmp), never the RAW.
 # DNG is left out: Lightroom ignores sidecars for DNG and keeps its metadata inside the file itself.
@@ -476,6 +476,9 @@ DEFAULT_SETTINGS = {
     "describe_companies": True,  # a company in the title: say what it really is (from companies.tsv)
     "company_notes": "",      # your own: "Name, Other Name = what it is" (wins over the built-in list)
     "label_sites": {},        # colour label -> the upload sites its photos go to (Which photos go where)
+    "detect_speed": "thorough",  # "fast": one look at the photo for title, keywords, description and categories
+    "photos_at_once": 1,      # photos the AI works on together (more only helps a big graphics card)
+    "overlap_models": True,   # with a separate text model: start the next photo while this one's text is finished
     "brand_keep_misspelled": True,  # a keyword the AI misspelled (meta mucil) stays next to the fixed one
     "ai_description": True,   # also write a separate description (caption): Alamy, Dreamstime, Shutterstock
     "concept": True,          # titles and descriptions also say what it's for, who buys it, the theme around it
@@ -3033,6 +3036,13 @@ DESCRIPTION_SCHEMA = {
                                                                   15, 16, 17, 18, 19, 20, 21]}},
     "required": ["description", "categories", "adobe_category"],
 }
+# Detect: Fast asks for everything in one look at the photo
+FAST_SCHEMA = {
+    "type": "object",
+    "properties": {"title": {"type": "string"}, "keywords": {"type": "array", "items": {"type": "string"}},
+                   **DESCRIPTION_SCHEMA["properties"]},
+    "required": ["title", "keywords", "description", "categories", "adobe_category"],
+}
 DESCRIPTION_MAX = 200       # the description's length: Alamy and Dreamstime take this, and it reads well everywhere
 SHUTTERSTOCK_TEXT_MAX = 1024   # Shutterstock's one text field (shown as the title): 200 until late 2026, now 1024
 
@@ -3530,6 +3540,28 @@ def fix_common_problems(title: str, description: str, keywords, categories=(), k
     if categories and cats != shutterstock_categories(list(categories)):
         fixes.append("categories: " + ", ".join(cats))
     return {"title": title, "description": description, "keywords": kept, "categories": cats, "fixes": fixes}
+
+
+def description_rules(concept: bool = False, title_location: str = "", in_draft: bool = False) -> str:
+    """What a description (caption) is, and the categories: for Fast's one-request draft."""
+    lines = [("Also write the description (caption): " if in_draft else "The description is ")
+             + "one or two complete, plain sentences of " + ("20 to 35" if concept else "12 to 30")
+             + f" words (never more than {DESCRIPTION_MAX - 20} characters) that say what the photo shows: the "
+             "subject, what is happening, the setting and the most useful visible details, adding what the title "
+             "doesn't say instead of repeating it. Normal sentence capitalisation with a full stop at the end, no "
+             "keyword lists, no hashtags, no hype words such as stunning or beautiful."]
+    if concept:
+        lines.append(CONCEPT_DESCRIPTION_RULE)
+    if (title_location or "").strip():
+        lines.append("Don't put the place or date in the description; they're added separately.")
+    lines.append("Choose the one or two Shutterstock categories that fit best (the main subject first), exactly as "
+                 "written: " + "; ".join(SHUTTERSTOCK_CATEGORIES) + ". A product on a store shelf is Objects or Food "
+                 "and drink. Only People when a person is clearly in the photo. And the one Adobe Stock category, as "
+                 "its number: " + "; ".join(f"{n} {name}" for n, name in ADOBE_CATEGORIES.items()) + ". Food is 7, "
+                 "drinks 4, tools and building supplies 10, other shops and products 3.")
+    if in_draft:
+        lines.append('Output JSON with "title", "keywords", "description", "categories" and "adobe_category".')
+    return " ".join(lines)
 
 
 def build_description_prompt(title: str, keywords, context: str = "", photo_note: str = "",
@@ -4950,8 +4982,10 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
              photo_avoid: str = "", description: bool = False, title_caps: str = "title",
              direct_titles: bool = True, style: str = "", checks=(), limits=None, fix_common: bool = True,
              concept: bool = False, text_model: str = "", place_keywords: bool = True,
-             companies: bool = True, company_notes: str = "") -> dict:
-    """Ask the local vision model for an SEO title and keywords. text_model: another model for the steps that only
+             companies: bool = True, company_notes: str = "", fast: bool = False) -> dict:
+    """Ask the local vision model for an SEO title and keywords. fast=True (Detect: Fast): one look at the photo
+    gives the title, keywords, description and categories together, with no separate label-reading or
+    double-check step and text-only retries; Thorough (the default) takes those extra steps. text_model: another model for the steps that only
     send text (the double-check, rewrites, checks); the photo model still does everything that looks at the photo.
     With revise=True and any notes or directions given, a second (text-only) pass checks the draft
     against them. With description=True a description (caption) is also written, once the title is
@@ -5040,6 +5074,14 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
     started = time.monotonic()
     own_context = context                            # (the label text below doesn't by itself need a double-check)
     read = ""
+    want_desc_in_draft = fast and description
+    if fast:
+        if read_label and not copyright_free:      # no separate look at the label: the same request reads it
+            prompt += ("\n\nRead any text on the product, packaging or sign carefully first and use its exact "
+                       "spellings for the brand, product, variety or flavour in the title and keywords.")
+        if want_desc_in_draft:
+            prompt += "\n\n" + description_rules(concept, title_location, in_draft=True)
+        read_label = False
     if read_label and not copyright_free:
         # first, only read the text on the product or sign; the title is then written from exact spellings
         try:
@@ -5056,7 +5098,8 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
             context = ((context or "").strip() + "\nText on the product or sign: " + read).strip()
     facts = rewrite_facts(context, photo_note, direction, copyright_free)   # kept by every later rewrite
     # a redo is asked a little more freely, so it doesn't come back with the same words
-    draft = ask(prompt, OUTPUT_SCHEMA, "draft", temperature=0.5 if (feedback or "").strip() else 0.2)
+    draft = ask(prompt, FAST_SCHEMA if want_desc_in_draft else OUTPUT_SCHEMA, "draft",
+                temperature=0.5 if (feedback or "").strip() else 0.2)
     raw_title = str(draft.get("title", "") or "").strip()
     raw_keywords = _as_list(draft.get("keywords", []))
     raw_title, leaked = split_leaked_keywords(raw_title)
@@ -5065,7 +5108,7 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
         raw_keywords = list(raw_keywords) + [k for k in leaked if k not in raw_keywords]
 
     revised = False
-    if revise and raw_title and (copyright_free or any((t or "").strip()
+    if revise and not fast and raw_title and (copyright_free or any((t or "").strip()
                                                        for t in (direction, own_context, photo_note, feedback))):
         # second pass: make the draft follow your notes and directions (fast: text only, no image)
         try:
@@ -5105,10 +5148,15 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
                   + "Title Case, no quotation marks and no full stop at the end. "
                   + (DIRECT_TITLE_RULE + " " if direct_titles else "")
                   + 'Output only JSON: {"title": "..."}')
-        # small models often come back still short: a second try, a little more freely, saying how short it was
-        for attempt, temperature in ((1, 0.2), (2, 0.5)):
+        if raw_keywords:                            # what the photo shows, for the text-only try
+            expand += ("\n\nWhat the photo shows (its keywords): " + ", ".join(map(str, raw_keywords[:25])) + ".")
+        # first a quick text-only try (the text model); small models often come back still short, so Thorough
+        # then tries once more looking at the photo, a little more freely, saying how short it was
+        tries = ((1, 0.2, False),) if fast else ((1, 0.2, False), (2, 0.5, True))
+        for attempt, temperature, look in tries:
             try:
-                longer = split_leaked_keywords(str(ask(expand, TITLE_SCHEMA, "longer title", temperature=temperature)
+                longer = split_leaked_keywords(str(ask(expand, TITLE_SCHEMA, "longer title", temperature=temperature,
+                                                       with_image=look)
                                                    .get("title", "") or "").strip())[0]
             except Stopped:
                 raise
@@ -5162,17 +5210,29 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
     def top_up(keywords: list) -> list:
         """Ask for more keywords until the photo has the minimum: up to three rounds (the extras are filtered, and
         a small model often gives fewer than asked), stopping early when a round adds nothing."""
-        for _round in range(3):
+        for _round in range(1 if fast else 3):
             if len(keywords) >= keyword_min:
                 break
             want = keyword_max - len(keywords)
-            more_prompt = (prompt + "\n\nYou have already chosen these keywords: " + ", ".join(keywords)
-                           + f".\nGive {want} MORE keywords for the same photo, following the same rules and the "
-                           "photographer's directions, none of them repeating or rewording the ones above. Only "
-                           "words for what can be seen in the photo or is in the notes: no guesses, codes or numbers. "
-                           "Output only JSON: {\"keywords\": [\"...\"]}")
+            look = _round > 0                        # the first round is text only (quick, the text model)
+            if look:
+                more_prompt = (prompt + "\n\nYou have already chosen these keywords: " + ", ".join(keywords)
+                               + f".\nGive {want} MORE keywords for the same photo, following the same rules and the "
+                               "photographer's directions, none of them repeating or rewording the ones above. Only "
+                               "words for what can be seen in the photo or is in the notes: no guesses, codes or "
+                               "numbers. Output only JSON: {\"keywords\": [\"...\"]}")
+            else:
+                more_prompt = (f"A stock photo is titled {json.dumps(title, ensure_ascii=False)} and has these "
+                               "keywords: " + ", ".join(keywords) + f".\nGive {want} MORE keywords (single words or "
+                               "short phrases) that buyers would search for to find it: other names for the subject, its "
+                               "kind and category, what it's used for, related ideas and themes. None repeating or "
+                               "rewording the ones above, nothing the title and keywords don't support (no colours, "
+                               "objects or places they don't mention), no codes or numbers, lowercase. "
+                               + (facts + " " if facts else "")
+                               + "Output only JSON: {\"keywords\": [\"...\"]}")
             try:
-                more = ask(more_prompt, MORE_KEYWORDS_SCHEMA, "more keywords", temperature=0.2 + 0.2 * _round)
+                more = ask(more_prompt, MORE_KEYWORDS_SCHEMA, "more keywords", temperature=0.2 + 0.2 * _round,
+                           with_image=look)
             except Stopped:
                 raise
             except ApiError:
@@ -5240,7 +5300,15 @@ def identify(path: str, url: str, model: str, keyword_min: int, keyword_max: int
         debug(f"{name}: FAILED: no title or keywords after {time.monotonic() - started:.1f} s")
         raise ApiError(EMPTY_REPLY)
     desc, cats, adobe = "", [], None
-    if description and title:
+    if want_desc_in_draft and title:
+        # Fast: the description and categories came with the draft (one look at the photo)
+        desc = clean_description(str(draft.get("description", "") or ""), symbols, never_use)
+        cats = shutterstock_categories(draft.get("categories"))
+        adobe = adobe_category(draft.get("adobe_category"))
+        if len(desc.split()) < 5 or desc.rstrip(".").casefold() == title.casefold():
+            desc = ""
+        debug(f"{name}: description (from the draft): {desc!r}")
+    elif description and title:
         # the description (caption) Alamy, Dreamstime and Shutterstock want: written from the finished title,
         # looking at the photo again so it can add what the title leaves out
         try:

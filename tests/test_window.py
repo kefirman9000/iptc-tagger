@@ -599,3 +599,49 @@ def test_the_next_start_says_whether_the_update_worked(window):
         f.write(f"installed {core.APP_VERSION}\n")
     win._report_last_update()                                   # worked: a short "Updated to …" message
     assert not os.path.exists(core.update_report_path())
+
+
+def test_photos_at_once(window):
+    _mod, win = window
+    win.settings.update(photos_at_once=1, overlap_models=True)
+    win.text_model = lambda: ""
+    assert win.ai_threads() == 1
+    win.text_model = lambda: "small-text"                        # a separate text model: overlap the two
+    assert win.ai_threads() == 2
+    win.settings["overlap_models"] = False
+    assert win.ai_threads() == 1
+    win.settings["photos_at_once"] = 3
+    win._apply_ai_threads()
+    assert win.ai_pool.maxThreadCount() == 3
+
+
+def test_two_photos_at_once_really_overlap(window, make_photos, monkeypatch):
+    """With Photos at once = 2, two photos are worked on at the same time, each finishes properly, and the
+    time limit allows for them sharing the computer."""
+    import threading
+    import time as _time
+    import tagger_core as core
+    _mod, win = window
+    add(win, make_photos(4))
+    state = {"now": 0, "most": 0, "fast": []}
+    lock = threading.Lock()
+
+    def fake_identify(path, *a, **kw):
+        with lock:
+            state["now"] += 1
+            state["most"] = max(state["most"], state["now"])
+            state["fast"].append(kw.get("fast"))
+        _time.sleep(0.4)
+        with lock:
+            state["now"] -= 1
+        return {"title": "Honey Jars on a Wooden Shelf in a Farm Market Stall", "description": "",
+                "keywords": [f"k{i}" for i in range(12)], "categories": ["Food and drink"], "seconds": 0.4}
+    monkeypatch.setattr(core, "identify", fake_identify)
+    monkeypatch.setattr(core, "ai_ready", lambda url, opener=None: {"version": "1", "names": [win.settings["model"]]})
+    win.settings.update(photos_at_once=2, detect_speed="fast")
+    win._apply_ai_threads()
+    win.identify_photos(list(win.photos))
+    wait(lambda: all(not p.busy for p in win.photos), what="detect", timeout=30)
+    assert state["most"] == 2                                    # two at a time, never more
+    assert all(p.title.startswith("Honey Jars") for p in win.photos)
+    assert state["fast"] == [True] * 4                           # Fast went to every photo
