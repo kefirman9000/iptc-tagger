@@ -13,8 +13,8 @@ HEADER = ["Filename", "Image Name", "Description", "Category 1", "Category 2", "
 
 def _rows():
     return [{"file": "20261111-_DSC8043.jpg", "folder": "", "editorial": True,
-             "title": "Apex, North Carolina - November 11, 2026: Pepperidge Farm Sausalito Cookies on Grocery Shelf",
-             "description": "Apex, North Carolina - November 11, 2026: A close-up of Pepperidge Farm cookies on a shelf.",
+             "title": "Tokyo, Japan - November 11, 2026: Pepperidge Farm Sausalito Cookies on Grocery Shelf",
+             "description": "Tokyo, Japan - November 11, 2026: A close-up of Pepperidge Farm cookies on a shelf.",
              "keywords": ["pepperidge farm", "cookies", "grocery"]}]
 
 

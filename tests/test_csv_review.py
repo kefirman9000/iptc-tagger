@@ -69,8 +69,8 @@ def test_a_location_is_asked_about_for_new_days_only():
     assert core.unconfirmed_dates("NYC,  new york", rec, ["2026-11-20", "2026-11-18", "2026-11-19"]) == \
         ["2026-11-19", "2026-11-20"]
     # a location just typed is meant for these photos: nothing to ask, and it starts its own record
-    assert core.unconfirmed_dates("Charlotte, North Carolina", rec, ["2026-11-20"]) == []
-    assert core.confirm_location("Charlotte, North Carolina", rec, ["2026-11-20"])["dates"] == ["2026-11-20"]
+    assert core.unconfirmed_dates("Tokyo, Japan", rec, ["2026-11-20"]) == []
+    assert core.confirm_location("Tokyo, Japan", rec, ["2026-11-20"])["dates"] == ["2026-11-20"]
     # no location, no dates: nothing to ask
     assert core.unconfirmed_dates("", rec, ["2026-11-20"]) == []
     assert core.unconfirmed_dates("NYC, New York", rec, ["", "not a date"]) == []
