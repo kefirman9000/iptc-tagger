@@ -750,10 +750,13 @@ class Uploader:
     time; pause(), stop() take effect part-way through a photo."""
 
     def __init__(self, paths, sites, encrypted_only: bool = False, skip_sent: bool = True, connect_fn=None,
-                 opts: dict | None = None):
+                 opts: dict | None = None, per_site: dict | None = None):
         """opts: the Upload window's choices (see upload_prep.DEFAULT_OPTS): each site's photo rules, adjusted
-        copies, Send anyway and the shuffled order. Without opts, the photos go exactly as they are, in order."""
+        copies, Send anyway and the shuffled order. Without opts, the photos go exactly as they are, in order.
+        per_site: {site name: [paths]} when each site gets its own photos (Which photos go where); a site that
+        isn't in it gets all of `paths`."""
         self.paths = list(paths)
+        self.per_site = {k: list(v) for k, v in (per_site or {}).items()}
         self.opts = opts
         self.sites = list(sites)
         self.encrypted_only = encrypted_only
@@ -837,7 +840,7 @@ class Uploader:
             self.running = True
             self.progress = {}
             for s in self.sites:
-                p = plan(self.paths, s["name"], history, theirs, self.opts)
+                p = plan(self.per_site.get(s["name"], self.paths), s["name"], history, theirs, self.opts)
                 todo = p["send"] if self.skip_sent else p["send"] + [x for x, _ in p["sent"]]
                 self._todo[s["name"]] = todo
                 self._fixes[s["name"]] = p["fixes"]
@@ -1013,3 +1016,29 @@ class Uploader:
         core.debug(f"upload {name}: finished, {pr['done']} of {pr['total']} sent to {site['host']} folder "
                    f"{site.get('remote_dir') or '/'}, {len(pr['errors'])} error(s), {pr['skipped']} sent before",
                    always=True)
+
+
+# Which photos go where -------------------------------------------------------------------------------------------
+# By default every photo goes to every ticked site, except:
+#  - editorial photos don't go to Adobe Stock (it only takes Illustrative Editorial, from accounts with 100+
+#    downloads, and you mark that on its upload page);
+#  - a colour label can have its own sites (Settings: "label_sites", e.g. red → Shutterstock and Adobe Stock);
+#  - and what you tick or untick for a photo yourself always wins.
+EDITORIAL_SKIP = {"adobe"}
+
+
+def choose_sites(site_names, label: str = "", editorial: bool = False, label_sites: dict | None = None,
+                 manual: dict | None = None) -> dict:
+    """{site name: (send?, why)} for one photo. why says where the choice came from, for the tooltip."""
+    out = {}
+    rule = (label_sites or {}).get(label) if label else None
+    for name in site_names:
+        if manual and name in manual:
+            out[name] = (bool(manual[name]), "your choice for this photo")
+        elif rule is not None:
+            out[name] = (name in rule, f"{label} label: " + ("sent here" if name in rule else "not sent here"))
+        elif editorial and name in EDITORIAL_SKIP:
+            out[name] = (False, "editorial: Adobe Stock only takes it as Illustrative Editorial (tick to send)")
+        else:
+            out[name] = (True, "")
+    return out

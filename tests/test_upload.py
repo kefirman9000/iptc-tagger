@@ -387,3 +387,73 @@ def test_photos_sent_to_alamys_top_level_go_again():
     assert up.sent_before("shutterstock", "abc", old, {}) == "2026-11-12"
     new = {"alamy": {"abc": {"date": "2026-11-14", "file": "a.jpg", "dir": "Stock"}}}
     assert up.sent_before("alamy", "abc", new, {}) == "2026-11-14"
+
+
+def test_which_photos_go_where_rules():
+    names = ["shutterstock", "adobe", "alamy"]
+    on = lambda d: [n for n, (s, _w) in d.items() if s]
+    assert on(up.choose_sites(names)) == names                                    # default: everywhere
+    assert on(up.choose_sites(names, editorial=True)) == ["shutterstock", "alamy"]   # editorial: not Adobe
+    rules = {"red": ["shutterstock", "adobe"], "green": ["alamy"]}
+    assert on(up.choose_sites(names, "red", True, rules)) == ["shutterstock", "adobe"]   # the label's choice wins
+    assert on(up.choose_sites(names, "green", False, rules)) == ["alamy"]
+    assert on(up.choose_sites(names, "blue", False, rules)) == names                 # a label with no choice
+    assert on(up.choose_sites(names, "green", False, rules, {"shutterstock": True})) == ["shutterstock", "alamy"]
+
+
+def test_each_photo_goes_only_where_it_is_ticked(window, make_photos, servers, monkeypatch):
+    from test_window import add, wait as wait_ui
+    app, win = window
+    paths = make_photos(2)
+    add(win, paths)
+    a, b = win.photos
+    ss, al = servers("ss2"), servers("al2")
+    sites = []
+    for name, srv in (("shutterstock", ss), ("alamy", al)):
+        s = site(srv, name)
+        s["source"] = "IPTC Tagger"
+        sites.append(s)
+    monkeypatch.setattr(up, "load_sites", lambda: [dict(x) for x in sites])
+    w = win.open_upload([a, b], check=False)
+    wait_ui(lambda: bool(w.plans), what="plans")
+    assert w.where.rowCount() == 2 and w.where_sites == ["shutterstock", "alamy"]
+    w.anyway.setChecked(True)                                    # (the test photos are tiny)
+    wait_ui(lambda: len(w.plans["alamy"]["send"]) == 2, what="plans")
+    w.where.item(1, 1).setCheckState(app_qt().Unchecked)         # b: not to Shutterstock
+    assert b.upload_sites == {"shutterstock": False} and w.assigned("shutterstock") == {a.path}
+    assert "<b>1</b> to send" in w.rows["shutterstock"]["what"].text()
+    assert "<b>2</b> to send" in w.rows["alamy"]["what"].text()
+    w._toggle_column(2)                                          # Alamy's column: all off
+    assert w.assigned("alamy") == set()
+    w._toggle_column(2)                                          # and on again
+    assert w.assigned("alamy") == {a.path, b.path}
+    w.start()
+    wait_ui(lambda: not w.uploader.status()["running"], what="upload", timeout=60)
+    assert sorted(os.listdir(ss.root)) == [up.safe_name(os.path.basename(a.path))]
+    assert sorted(os.listdir(al.root)) == sorted(os.path.basename(p) for p in paths)
+    w.close()
+    # the choice is kept for next time, and Reset forgets it
+    w = win.open_upload([a, b], check=False)
+    assert w.where.item(1, 1).checkState() == app_qt().Unchecked
+    w._reset_where()
+    assert b.upload_sites is None and w.where.item(1, 1).checkState() == app_qt().Checked
+    w.close()
+
+
+def app_qt():
+    from PySide6.QtCore import Qt
+    return Qt.CheckState
+
+
+def test_right_click_upload_to(window, make_photos, monkeypatch):
+    from test_window import add
+    app, win = window
+    add(win, make_photos(2))
+    a, b = win.photos
+    monkeypatch.setattr(win, "upload_site_names", lambda: ["shutterstock", "alamy"])
+    win.set_upload_site([a, b], "alamy", False)
+    assert a.upload_sites == b.upload_sites == {"alamy": False}
+    win.set_upload_site([a], "shutterstock", False)
+    assert a.upload_sites == {"alamy": False, "shutterstock": False}
+    win.set_upload_site([a, b], None, None)
+    assert a.upload_sites is None and b.upload_sites is None

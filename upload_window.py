@@ -4,10 +4,11 @@ import os
 import threading
 
 from PySide6.QtCore import Qt, QTimer, QUrl
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
-    QPlainTextEdit, QProgressBar, QPushButton, QSpinBox, QTextBrowser, QVBoxLayout, QWidget,
+    QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QGridLayout, QHBoxLayout, QHeaderView,
+    QLabel, QLineEdit, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QSpinBox, QTableWidget,
+    QTableWidgetItem, QTextBrowser, QVBoxLayout, QWidget,
 )
 
 import tagger_core as core
@@ -175,6 +176,50 @@ class LoginsDialog(QDialog):
         self.accept()
 
 
+class LabelSitesDialog(QDialog):
+    """Which sites each colour label goes to: a tick per label and site."""
+
+    def __init__(self, parent, site_names, rules: dict):
+        super().__init__(parent)
+        self.setWindowTitle("Sites by colour label")
+        self.site_names = site_names
+        lay = QVBoxLayout(self)
+        intro = QLabel("Choose where photos with each colour label go. A label with <b>Every ticked site</b> on "
+                       "(or no label at all) goes everywhere you upload. The ticks you change for a single photo "
+                       "under Which photos go where always win.")
+        intro.setWordWrap(True)
+        lay.addWidget(intro)
+        g = QGridLayout()
+        g.addWidget(QLabel("<b>Label</b>"), 0, 0)
+        g.addWidget(QLabel("<b>Every ticked site</b>"), 0, 1)
+        for c, n in enumerate(site_names, start=2):
+            g.addWidget(QLabel(f"<b>{up.SITES[n]['label']}</b>"), 0, c)
+        self.boxes = {}
+        for r, (key, name, colour, _k) in enumerate(core.LABELS, start=1):
+            g.addWidget(QLabel(f"<span style='color:{colour}'>●</span> {name}"), r, 0)
+            every = QCheckBox()
+            every.setChecked(key not in rules)
+            g.addWidget(every, r, 1)
+            ticks = {}
+            for c, n in enumerate(site_names, start=2):
+                cb = QCheckBox()
+                cb.setChecked(n in rules.get(key, site_names))
+                cb.setEnabled(key in rules)
+                g.addWidget(cb, r, c)
+                ticks[n] = cb
+            every.toggled.connect(lambda on, ticks=ticks: [cb.setEnabled(not on) for cb in ticks.values()])
+            self.boxes[key] = (every, ticks)
+        lay.addLayout(g)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        lay.addWidget(bb)
+
+    def rules(self) -> dict:
+        return {key: [n for n, cb in ticks.items() if cb.isChecked()]
+                for key, (every, ticks) in self.boxes.items() if not every.isChecked()}
+
+
 class UploadWindow(QDialog):
     """Pick the sites, see what will be sent, then upload with Pause / Resume / Stop."""
 
@@ -215,6 +260,39 @@ class UploadWindow(QDialog):
             self.grid.addWidget(QLabel(f"<b>{h}</b>"), 0, c)
         self.rows = {}
         lay.addLayout(self.grid)
+
+        # which photos go where: a tick for each photo and site (not every photo to every site)
+        where_head = QHBoxLayout()
+        self.where_title = QLabel("<b>Which photos go where</b>")
+        where_head.addWidget(self.where_title)
+        hint = QLabel("Untick a box to keep that photo off that site. Click a site's name to tick or untick its "
+                      "whole column; right-click a photo for quick choices.")
+        hint.setStyleSheet(f"color:{GREY}")
+        hint.setWordWrap(True)
+        where_head.addWidget(hint, 1)
+        self.btn_by_label = QPushButton("By Colour Label…")
+        self.btn_by_label.setToolTip("Choose the sites for each colour label (e.g. red → Shutterstock and Adobe Stock,\n"
+                                     "green → Alamy only). Photos without a label, or with a label that has no\n"
+                                     "choice, go to every ticked site. Ticks you change yourself always win.")
+        self.btn_by_label.clicked.connect(lambda *_: self._label_rules())
+        self.btn_reset_where = QPushButton("Reset")
+        self.btn_reset_where.setToolTip("Forget the ticks you changed by hand and go back to the defaults (editorial "
+                                        "photos not to Adobe Stock, your colour-label choices, else every site)")
+        self.btn_reset_where.clicked.connect(lambda *_: self._reset_where())
+        where_head.addWidget(self.btn_by_label)
+        where_head.addWidget(self.btn_reset_where)
+        lay.addLayout(where_head)
+        self.where = QTableWidget(0, 1)
+        self.where.verticalHeader().setVisible(False)
+        self.where.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.where.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.where.setAlternatingRowColors(True)
+        self.where.setMinimumHeight(150)
+        self.where.horizontalHeader().sectionClicked.connect(self._toggle_column)
+        self.where.itemChanged.connect(self._where_changed)
+        self.where.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.where.customContextMenuRequested.connect(self._where_menu)
+        lay.addWidget(self.where, 1)
         self._fill_sites()
 
         st = self.win.settings
@@ -386,11 +464,169 @@ class UploadWindow(QDialog):
             self.rows[name] = {"cb": cb, "login": login, "what": what, "bar": bar, "site": s}
         self.grid.setColumnStretch(2, 2)
         self.grid.setColumnStretch(3, 1)
+        if hasattr(self, "where"):
+            self._fill_where()
 
     def _remember_sites(self):
         self.win.settings["upload_sites"] = [n for n, r in self.rows.items() if r["cb"].isChecked()]
         core.save_settings(self.win.settings)
+        self._fill_where()
+        self._show_plans()
         self._refresh_buttons()
+
+    # ---- which photos go where
+    def _chosen_sites(self) -> list[str]:
+        return [n for n, r in self.rows.items() if r["cb"].isChecked()]
+
+    def _photo_sites(self, ph) -> dict:
+        """{site: (send?, why)} for one photo, from your ticks, the colour-label rules and editorial."""
+        return up.choose_sites(list(self.rows), getattr(ph, "label", "") or "", bool(self.win.is_editorial(ph)),
+                               self.win.settings.get("label_sites") or {}, getattr(ph, "upload_sites", None))
+
+    def assigned(self, name: str) -> set:
+        """The photos (paths) that go to this site."""
+        return {ph.path for ph in self.photos if self._photo_sites(ph).get(name, (True, ""))[0]}
+
+    def _fill_where(self):
+        """One row per photo, one column per ticked site."""
+        sites = self._chosen_sites()
+        self._filling = True
+        self.where.clear()
+        self.where.setColumnCount(1 + len(sites))
+        self.where.setHorizontalHeaderLabels(["Photo"] + [up.SITES[n]["label"] for n in sites])
+        for c, n in enumerate(sites, start=1):
+            self.where.horizontalHeaderItem(c).setToolTip(f"Click to tick or untick every photo for "
+                                                          f"{up.SITES[n]['label']}")
+        self.where.setRowCount(len(self.photos))
+        self.where_sites = sites
+        for r, ph in enumerate(self.photos):
+            name = QTableWidgetItem(os.path.basename(ph.path))
+            row = self.win.rows.get(ph.path)
+            thumb = self.win.table.item(row, 1) if row is not None else None
+            if thumb is not None and not thumb.icon().isNull():
+                name.setIcon(thumb.icon())
+            bits = []
+            if getattr(ph, "label", ""):
+                bits.append(f"{core.LABEL_NAMES.get(ph.label, ph.label)} label")
+            if self.win.is_editorial(ph):
+                bits.append("editorial")
+            name.setToolTip((ph.title or os.path.basename(ph.path)) + ("\n" + ", ".join(bits) if bits else ""))
+            if bits:
+                name.setText(name.text() + "  ·  " + ", ".join(bits))
+            name.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+            self.where.setItem(r, 0, name)
+            choice = self._photo_sites(ph)
+            for c, n in enumerate(sites, start=1):
+                on, why = choice.get(n, (True, ""))
+                cell = QTableWidgetItem()
+                cell.setFlags(Qt.ItemIsEnabled | Qt.ItemIsUserCheckable | Qt.ItemIsSelectable)
+                cell.setCheckState(Qt.Checked if on else Qt.Unchecked)
+                cell.setToolTip(why)
+                self.where.setItem(r, c, cell)
+        hh = self.where.horizontalHeader()
+        hh.setSectionResizeMode(0, QHeaderView.Stretch)
+        for c in range(1, len(sites) + 1):
+            hh.setSectionResizeMode(c, QHeaderView.ResizeToContents)
+        self.where.setIconSize(self.win.table.iconSize() / 2 if hasattr(self.win.table, "iconSize") else
+                               self.where.iconSize())
+        self.where.verticalHeader().setDefaultSectionSize(max(28, self.where.iconSize().height() + 6))
+        self._filling = False
+        self._show_where_notes()
+
+    def _show_where_notes(self):
+        """Cells for photos a site already has, or won't take: say so in the cell."""
+        if not getattr(self, "where_sites", None):
+            return
+        self._filling = True
+        for c, n in enumerate(self.where_sites, start=1):
+            p = self.plans.get(n) or {}
+            sent = {x: when for x, when in p.get("sent", [])}
+            refused = dict(p.get("refused", []))
+            for r, ph in enumerate(self.photos):
+                cell = self.where.item(r, c)
+                if cell is None:
+                    continue
+                note = ""
+                again = hasattr(self, "again") and self.again.isChecked()
+                anyway = hasattr(self, "anyway") and self.anyway.isChecked()
+                if ph.path in sent and not again:
+                    note = "sent"
+                    cell.setToolTip(f"Already sent to {up.SITES[n]['label']} ({sent[ph.path]}): skipped")
+                elif ph.path in refused and not anyway:
+                    note = "won't take"
+                    cell.setToolTip(f"{up.SITES[n]['label']} won't take it: {refused[ph.path]}")
+                cell.setText(note)
+                cell.setForeground(QColor(GREY))
+        self._filling = False
+
+    def _where_changed(self, item):
+        if getattr(self, "_filling", False) or item.column() == 0:
+            return
+        ph = self.photos[item.row()]
+        name = self.where_sites[item.column() - 1]
+        on = item.checkState() == Qt.Checked
+        manual = dict(getattr(ph, "upload_sites", None) or {})
+        manual[name] = on
+        ph.upload_sites = manual
+        self.win._session_changed()
+        self._show_plans()
+
+    def _set_cells(self, cells, on: bool):
+        """Tick or untick several cells at once, remembering each as your choice."""
+        self._filling = True
+        for r, c in cells:
+            cell = self.where.item(r, c)
+            if cell is None:
+                continue
+            cell.setCheckState(Qt.Checked if on else Qt.Unchecked)
+            ph = self.photos[r]
+            manual = dict(getattr(ph, "upload_sites", None) or {})
+            manual[self.where_sites[c - 1]] = on
+            ph.upload_sites = manual
+        self._filling = False
+        self.win._session_changed()
+        self._show_plans()
+
+    def _toggle_column(self, c):
+        if c == 0 or self.uploader is not None and self.uploader.status()["running"]:
+            return
+        rows = range(self.where.rowCount())
+        on = not all(self.where.item(r, c).checkState() == Qt.Checked for r in rows)
+        self._set_cells([(r, c) for r in rows], on)
+
+    def _where_menu(self, pos):
+        rows = sorted({i.row() for i in self.where.selectedItems()} or
+                      ({self.where.rowAt(pos.y())} if self.where.rowAt(pos.y()) >= 0 else set()))
+        if not rows:
+            return
+        n = len(rows)
+        cols = range(1, len(self.where_sites) + 1)
+        menu = QMenu(self)
+        menu.addSection(f"{n} photo{'s' if n != 1 else ''}")
+        for c, name in zip(cols, self.where_sites):
+            menu.addAction(f"Only {up.SITES[name]['label']}").triggered.connect(
+                lambda *_, c=c: (self._set_cells([(r, x) for r in rows for x in cols], False),
+                                 self._set_cells([(r, c) for r in rows], True)))
+        menu.addSeparator()
+        menu.addAction("Every site").triggered.connect(lambda *_: self._set_cells([(r, x) for r in rows for x in cols], True))
+        menu.addAction("No site (leave out)").triggered.connect(
+            lambda *_: self._set_cells([(r, x) for r in rows for x in cols], False))
+        menu.exec(self.where.viewport().mapToGlobal(pos))
+
+    def _reset_where(self):
+        for ph in self.photos:
+            ph.upload_sites = None
+        self.win._session_changed()
+        self._fill_where()
+        self._show_plans()
+
+    def _label_rules(self):
+        dlg = LabelSitesDialog(self, list(self.rows), self.win.settings.get("label_sites") or {})
+        if dlg.exec() == QDialog.Accepted:
+            self.win.settings["label_sites"] = dlg.rules()
+            core.save_settings(self.win.settings)
+            self._fill_where()
+            self._show_plans()
 
     def _work_out_plans(self):
         """Which photos each site would get (in the background: it reads every file to recognise ones sent
@@ -414,10 +650,17 @@ class UploadWindow(QDialog):
         self._show_plans()
 
     def _show_plans(self):
+        self._show_where_notes()
         for name, r in self.rows.items():
             p = self.plans.get(name)
             if not p or not (r["site"]["username"] and r["site"]["password"]):
                 continue
+            mine = self.assigned(name)                     # only the photos ticked for this site
+            p = {"send": [x for x in p["send"] if x in mine], "sent": [s for s in p["sent"] if s[0] in mine],
+                 "left_out": [s for s in p["left_out"] if s[0] in mine],
+                 "refused": [s for s in p.get("refused", []) if s[0] in mine],
+                 "fixes": {k: v for k, v in p.get("fixes", {}).items() if k in mine},
+                 "warn": [s for s in p.get("warn", []) if s[0] in mine]}
             send = len(p["send"]) + (len(p["sent"]) if self.again.isChecked() else 0)
             bits = [f"<b>{send}</b> to send"]
             if p["sent"] and not self.again.isChecked():
@@ -463,7 +706,13 @@ class UploadWindow(QDialog):
         sites = [r["site"] for r in self.rows.values() if r["cb"].isChecked()]
         if not sites or self._unsaved():
             return
-        total = {n: len(self.plans[n]["send"]) + (len(self.plans[n]["sent"]) if self.again.isChecked() else 0)
+        per_site = {s["name"]: [x for x in self.paths if x in self.assigned(s["name"])] for s in sites}
+        sites = [s for s in sites if per_site[s["name"]]]             # a site with no photos ticked: nothing to do
+        if not sites:
+            QMessageBox.information(self, "Upload", "No photo is ticked for any site under Which photos go where.")
+            return
+        total = {n: len([x for x in self.plans[n]["send"] if x in per_site[n]])
+                 + (len([x for x, _w in self.plans[n]["sent"] if x in per_site[n]]) if self.again.isChecked() else 0)
                  for n in (s["name"] for s in sites) if n in self.plans}
         lines = "\n".join(f"  {up.SITES[n]['label']}: {c} photo{'s' if c != 1 else ''}" for n, c in total.items())
         marked = [p for p in self.photos if getattr(p, "ai_markers", None)]
@@ -477,7 +726,7 @@ class UploadWindow(QDialog):
             return
         self.uploader = up.Uploader(self.paths, sites,
                                     encrypted_only=bool(self.win.settings.get("upload_encrypted_only", False)),
-                                    skip_sent=not self.again.isChecked(), opts=self.opts())
+                                    skip_sent=not self.again.isChecked(), opts=self.opts(), per_site=per_site)
         self.uploader.start()
         self._seen_log = 0
         self.log.clear()
