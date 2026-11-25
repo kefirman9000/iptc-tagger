@@ -1,5 +1,14 @@
 # What's new
 
+## 2026.11.25.1
+
+- **Make Pond5 CSV:** a new button next to Shutterstock and Dreamstime makes the Pond5 metadata CSV for the checked photos (or all of them) in one click, saved next to the photos as *pond5_<date>_<time>.csv*.
+  - It uses the exact columns of Pond5's own metadata template: file name, title, description, keywords, city, region, country, releases, copyright, price, large price and editorial.
+  - Titles fit Pond5's 80 characters, cut back to their main phrase; the place and date stay in the description and the location columns. Keywords are capped at Pond5's 50, the most important ones first.
+  - **Price:** Settings → Stock sites has a price for the CSV. Leave it at *Set on Pond5* to price the photos on the site.
+  - **After uploading to Pond5,** the CSV is made by itself, with only the photos ticked for Pond5. The Upload window says what to do next. You can turn this off in Settings → Stock sites.
+  - **On Pond5:** upload the photos first, then go to Uploads › Apply CSV and choose the file.
+
 ## 2026.11.24.2
 
 - **Detect: Fast or Thorough** (Instructions, next to *Every Detect*):

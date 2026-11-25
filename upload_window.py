@@ -782,6 +782,12 @@ class UploadWindow(QDialog):
             auto_ss = self.win.make_shutterstock_csv(self.photos, auto=True)
             if auto_ss:
                 self.log.appendPlainText(f"Made the Shutterstock CSV: {auto_ss}")
+        auto_p5 = ""
+        if "pond5" in sent and self.win.settings.get("pond5_csv_auto", True):
+            p5_photos = [p for p in self.photos if p.path in self.assigned("pond5")]
+            auto_p5 = self.win.make_pond5_csv(p5_photos, auto=True) if p5_photos else ""
+            if auto_p5:
+                self.log.appendPlainText(f"Made the Pond5 CSV: {auto_p5}")
 
         def after(n):
             if n == "dreamstime" and auto_dt:
@@ -791,6 +797,10 @@ class UploadWindow(QDialog):
                 return (f"The CSV is made: <b>{os.path.basename(auto_ss)}</b>, next to the photos. Wait until the "
                         "photos show up on Shutterstock's Submit page (a few minutes), then click CSV there and "
                         "choose it. That's how Shutterstock gets your categories and the editorial flag.")
+            if n == "pond5" and auto_p5:
+                return (f"The CSV is made: <b>{os.path.basename(auto_p5)}</b>, next to the photos. Once the photos "
+                        "show up in your Pond5 uploads, go to Uploads › Apply CSV and choose it: it fills in their "
+                        "titles, descriptions, keywords, location and editorial.")
             return up.SITES[n]["after"]
         steps = "".join(f"<li><b>{up.SITES[n]['label']}:</b> {after(n)}</li>" for n in sent)
         self.next_steps.setText("<b>What's left on the sites</b><ul style='margin-top:2px'>" + steps + "</ul>")
@@ -883,7 +893,8 @@ class UploadWindow(QDialog):
         try:
             files = site_files.write_site_csvs(folder, self.win._csv_rows(self.photos), self.csv_sites,
                                                ss_text=self.win.settings.get("shutterstock_text", "title"),
-                                               dt_tidy=bool(self.win.settings.get("dreamstime_tidy_csv", True)))
+                                               dt_tidy=bool(self.win.settings.get("dreamstime_tidy_csv", True)),
+                                               pond5_price=self.win.pond5_price())
         except OSError as e:
             QMessageBox.warning(self, "Make site CSVs", f"The CSVs couldn't be made: {e}")
             return

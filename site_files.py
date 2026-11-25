@@ -412,8 +412,11 @@ def _write(path: str, header, rows):
         w.writerows(rows)
 
 
+POND5_KEYWORDS_MAX = 50       # Pond5 refuses more
+
+
 def write_site_csvs(folder: str, rows: list[dict], sites, day: str = "", ss_text: str = "title",
-                    dt_tidy: bool = True) -> list[str]:
+                    dt_tidy: bool = True, pond5_price: str = "") -> list[str]:
     """Write one CSV per site into folder. rows: dicts with file, folder, title, description, keywords, editorial,
     and optionally categories (the AI's Shutterstock choice), adobe_category, city, region, plus the 'full' extras.
     Every photo gets each site's categories. Returns the files written.
@@ -460,9 +463,10 @@ def write_site_csvs(folder: str, rows: list[dict], sites, day: str = "", ss_text
             _write(path, ["originalfilename", "title", "description", "keywords", "city", "region", "country",
                           "specifysource", "modelreleased", "propertyreleased", "release", "copyright", "price",
                           "pricelarge", "editorial"],
-                   [[r["file"], plain(core.pond5_title(r["title"], r.get("bare_title"))), desc(r), kw(r),
-                     r.get("city", ""), r.get("region", ""), r.get("country", ""), "", "", "", "", "", "", "",
-                     "yes" if r.get("editorial") else "no"] for r in picked])
+                   [[r["file"], plain(core.pond5_title(r["title"], r.get("bare_title"))), desc(r),
+                     ",".join(kw(r).split(",")[:POND5_KEYWORDS_MAX]),            # Pond5 takes at most 50
+                     r.get("city", ""), r.get("region", ""), r.get("country", ""), "", "", "", "", "",
+                     pond5_price or "", "", "yes" if r.get("editorial") else "no"] for r in picked])
         else:
             continue
         out.append(path)

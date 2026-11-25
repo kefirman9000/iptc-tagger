@@ -1066,6 +1066,24 @@ class SettingsDialog(QDialog):
                                 "photos straight away, as is (no offer to fix problems first). Then, once the photos\n"
                                 "show up on Shutterstock's Submit page, click CSV there and choose it.")
         f_sites.addRow("", self.ss_auto)
+        self.p5_auto = QCheckBox("After uploading to Pond5, make its CSV by itself")
+        self.p5_auto.setChecked(bool(settings.get("pond5_csv_auto", True)))
+        self.p5_auto.setToolTip("When an upload to Pond5 finishes, the Pond5 CSV is saved next to the photos straight\n"
+                                "away. Then on Pond5: Uploads › Apply CSV, and choose it.")
+        self.p5_price = QSpinBox()
+        self.p5_price.setRange(0, 9999)
+        self.p5_price.setPrefix("$")
+        self.p5_price.setSpecialValueText("Set on Pond5")
+        self.p5_price.setValue(int(settings.get("pond5_price", 0) or 0))
+        self.p5_price.setToolTip("The price the Pond5 CSV gives every photo (whole US dollars). Leave it at\n"
+                                 "\"Set on Pond5\" to keep the price column empty and price them on the site.")
+        p5row = QHBoxLayout()
+        p5row.addWidget(self.p5_auto)
+        p5row.addSpacing(12)
+        p5row.addWidget(QLabel("Price in the CSV"))
+        p5row.addWidget(self.p5_price)
+        p5row.addStretch(1)
+        f_sites.addRow("", p5row)
         self.dt_tidy = QCheckBox("Tidy the text for Dreamstime in its CSV only (the photos keep the full text)")
         self.dt_tidy.setChecked(bool(settings.get("dreamstime_tidy_csv", True)))
         self.dt_tidy.setToolTip("Dreamstime is stricter than Shutterstock. Ticked, the Dreamstime CSV gets long titles cut "
@@ -1342,7 +1360,8 @@ class SettingsDialog(QDialog):
                  stock_sites=[k for k, cb in self.site_boxes.items() if cb.isChecked()],
                  stock_sites_from_stockup=self.sites_from_su.isChecked(),
                  shutterstock_text=self.ss_text.currentData() or "title",
-                 dreamstime_csv_auto=self.dt_auto.isChecked(), shutterstock_csv_auto=self.ss_auto.isChecked(), dreamstime_tidy_csv=self.dt_tidy.isChecked(),
+                 dreamstime_csv_auto=self.dt_auto.isChecked(), shutterstock_csv_auto=self.ss_auto.isChecked(),
+                 pond5_csv_auto=self.p5_auto.isChecked(), pond5_price=self.p5_price.value(), dreamstime_tidy_csv=self.dt_tidy.isChecked(),
                  keyword_order=self.kw_order.isChecked(), brand_alternates=self.brand_alts.isChecked(),
                  describe_companies=self.describe_co.isChecked(), company_notes=self.company_notes.toPlainText(),
                  brand_keep_misspelled=self.brand_keep.isChecked(),
@@ -2506,6 +2525,12 @@ class MainWindow(QMainWindow):
         self.btn_stockup.setMenu(self.stockup_menu)
         self.btn_ss_csv = button("Make Shutterstock CSV", lambda: self.make_shutterstock_csv(), "file-check")
         self.btn_dt_csv = button("Send Dreamstime CSV", lambda: self.send_dreamstime_csv_for(), "file-spreadsheet")
+        self.btn_p5_csv = button("Make Pond5 CSV", lambda: self.make_pond5_csv(), "file-spreadsheet")
+        self.btn_p5_csv.setToolTip("One click: the Pond5 metadata CSV for the checked photos (or all of them), saved next\n"
+                                   "to the photos as pond5_<date>_<time>.csv, in the columns of Pond5's own template:\n"
+                                   "titles (cut to Pond5's 80 characters), descriptions, up to 50 keywords, city,\n"
+                                   "state, country, editorial and your Pond5 price (Settings → Stock sites).\n"
+                                   "Upload the photos to Pond5 first, then on Pond5: Uploads › Apply CSV.")
         self.btn_dt_csv.setToolTip("Makes the Dreamstime CSV for the checked photos (or all of them) and puts it in your\n"
                                    "Dreamstime FTP folder, the only place Dreamstime reads it from. Click it once the\n"
                                    "photos show up in Dreamstime's Unfinished section: it fills in their titles,\n"
@@ -3114,7 +3139,7 @@ class MainWindow(QMainWindow):
         # (wraps onto two lines on a laptop, now that the buttons say which photos they use)
         actions_box = QWidget()
         actions = FlowLayout(actions_box, right=True)
-        for b in (self.btn_check, self.btn_ss_csv, self.btn_dt_csv, self.btn_stockup, self.btn_upload):
+        for b in (self.btn_check, self.btn_ss_csv, self.btn_dt_csv, self.btn_p5_csv, self.btn_stockup, self.btn_upload):
             actions.addWidget(b)
         sp = actions_box.sizePolicy()
         sp.setHeightForWidth(True)
@@ -4299,7 +4324,8 @@ class MainWindow(QMainWindow):
         try:
             files = site_files.write_site_csvs(folder, rows, sites,
                                                ss_text=self.settings.get("shutterstock_text", "title"),
-                                               dt_tidy=bool(self.settings.get("dreamstime_tidy_csv", True)))
+                                               dt_tidy=bool(self.settings.get("dreamstime_tidy_csv", True)),
+                                               pond5_price=self.pond5_price())
         except OSError as e:
             QMessageBox.warning(self, "Export CSV", f"The CSVs couldn't be saved:\n{e}")
             return
@@ -4532,6 +4558,71 @@ class MainWindow(QMainWindow):
                               "Upload the photos to Shutterstock first. Then, on the Submit page, click CSV and "
                               "choose this file: it sets the titles, keywords, categories and editorial."
                               + "".join("\n\n• " + w for w in self.last_csv_warnings), parent=self)
+            show = box.addButton("Show in Folder", QMessageBox.ActionRole)
+            box.addButton(QMessageBox.Ok)
+            box.exec()
+            if box.clickedButton() is show:
+                QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
+        return path
+
+    def pond5_price(self) -> str:
+        """Your Pond5 price for the CSV's price column ('' = set it on Pond5)."""
+        p = self.settings.get("pond5_price") or 0
+        try:
+            return str(int(p)) if int(p) > 0 else ""
+        except (TypeError, ValueError):
+            return ""
+
+    def make_pond5_csv(self, photos=None, auto: bool = False) -> str:
+        """One click: the Pond5 metadata CSV for the checked photos (or all of them), saved next to the photos as
+        pond5_<date>_<time>.csv in the columns of Pond5's own template. Returns its path ('' if nothing was made).
+        auto: made by itself after an upload to Pond5 (no offer to fix first, no message box)."""
+        import site_files
+        if photos is None:
+            photos = self.checked_photos() or list(self.photos)
+        photos = [p for p in photos if not p.busy and (p.title.strip() or p.keywords)]
+        if not photos:
+            self.status.setText("No photos with a title or keywords to put in a Pond5 CSV yet.")
+            return ""
+        if not auto and not self._check_before_csv(photos):
+            return ""
+        folder = os.path.dirname(photos[0].path)
+        rows = self._csv_rows(photos)
+        self.last_csv_warnings = site_files.csv_warnings(rows, ["pond5"])
+        try:
+            files = site_files.write_site_csvs(folder, rows, ["pond5"], day=core.csv_stamp(),
+                                               pond5_price=self.pond5_price())
+        except OSError as e:
+            core.debug(f"Pond5 CSV: couldn't save it: {e}", always=True)
+            if not auto:
+                QMessageBox.warning(self, "Pond5 CSV", f"The CSV couldn't be saved:\n{e}")
+            return ""
+        if not files:
+            return ""
+        path, n = files[0], len(photos)
+        cut = sum(1 for r in rows if len(r["title"]) > core.POND5_TITLE_MAX)
+        many = sum(1 for r in rows if len(r["keywords"]) > site_files.POND5_KEYWORDS_MAX)
+        self.status.setText(f"Saved {os.path.basename(path)} with {n} photo{'s' if n != 1 else ''} in {folder}. "
+                            "On Pond5: Uploads › Apply CSV.")
+        core.debug(f"Pond5 CSV: {n} photo(s) -> {path}")
+        if not auto and not os.environ.get("IPTC_TAGGER_OFFLINE"):
+            notes = []
+            if cut:
+                notes.append(f"{cut} title{'s were' if cut != 1 else ' was'} longer than Pond5's 80 characters: "
+                             "the CSV has them cut back to their main phrase (the place and date stay in the "
+                             "description and the city, state and country columns). The photos keep the full text.")
+            if many:
+                notes.append(f"{many} photo{'s have' if many != 1 else ' has'} more than 50 keywords: the CSV has "
+                             "the first 50, the most important ones.")
+            if not self.pond5_price():
+                notes.append("The price column is empty: set prices on Pond5, or set a price for the CSV in "
+                             "Settings → Stock sites.")
+            box = QMessageBox(QMessageBox.Information, "Pond5 CSV",
+                              f"Saved {os.path.basename(path)} with {n} photo{'s' if n != 1 else ''} in:\n{folder}\n\n"
+                              "Upload the photos to Pond5 first. Then on Pond5 go to Uploads › Apply CSV, choose "
+                              "this file and apply it: it fills in the titles, descriptions, keywords, location "
+                              "and editorial of the photos with the same file names."
+                              + "".join("\n\n• " + w for w in notes + self.last_csv_warnings), parent=self)
             show = box.addButton("Show in Folder", QMessageBox.ActionRole)
             box.addButton(QMessageBox.Ok)
             box.exec()
@@ -6600,6 +6691,8 @@ class MainWindow(QMainWindow):
         self.btn_ss_csv.setText(f"Shutterstock CSV: {csv_scope} ({n_csv})" if n_csv else "Make Shutterstock CSV")
         self.btn_dt_csv.setEnabled(n_csv > 0)
         self.btn_dt_csv.setText(f"Dreamstime CSV: {csv_scope} ({n_csv})" if n_csv else "Send Dreamstime CSV")
+        self.btn_p5_csv.setEnabled(n_csv > 0)
+        self.btn_p5_csv.setText(f"Pond5 CSV: {csv_scope} ({n_csv})" if n_csv else "Make Pond5 CSV")
         self.btn_stockup.setEnabled(n_all > 0)
         self.act_stockup_all.setEnabled(n_all > 0)
         self.act_stockup_all.setText(f"All {n_all} photo{'s' if n_all != 1 else ''} in the list" if n_all
