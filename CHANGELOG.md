@@ -1,5 +1,13 @@
 # What's new
 
+## 2026.11.25.2
+
+- **Pond5 CSV, following Pond5's own guide:**
+  - Descriptions fit Pond5's 200 characters: whole sentences when they fit, else cut at a word. The photos keep the full text.
+  - **Let Pond5 set my price** (Settings → Stock sites) adds Pond5's *setpriceforme* column, so its curators price the photos.
+  - After making the CSV, the app warns you about photos with fewer than the 10 keywords Pond5's CSV asks for.
+  - The image type (Photo or Illustration) isn't part of Pond5's CSV, so it's still set on Pond5.
+
 ## 2026.11.25.1
 
 - **Make Pond5 CSV:** a new button next to Shutterstock and Dreamstime makes the Pond5 metadata CSV for the checked photos (or all of them) in one click, saved next to the photos as *pond5_<date>_<time>.csv*.

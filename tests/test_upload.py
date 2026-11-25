@@ -488,3 +488,24 @@ def test_pond5_csv_matches_its_template(window, make_photos, tmp_path):
     assert path2 != path                                          # never replaces the earlier one
     with open(path2, encoding="utf-8") as f:
         assert list(_csv.reader(f))[1][12] == ""                 # no price: set on Pond5
+
+
+
+def test_pond5_csv_limits_from_its_guide(window, make_photos):
+    """Pond5's guide: descriptions at most 200 characters, and Let Pond5 set my price (setpriceforme = 1)."""
+    import csv as _csv
+    from test_window import add
+    import site_files as sf
+    app, win = window
+    add(win, make_photos(1))
+    a = win.photos[0]
+    a.title, a.keywords = "Honey Jars on a Shelf", [f"k{i}" for i in range(12)]
+    a.description = ("Glass jars of golden honey stand in neat rows on a rustic wooden shelf at a farm market. "
+                     "Handwritten labels show the flavours, and dried flowers hang beside them in the warm morning "
+                     "light, ready for shoppers looking for local produce.")
+    win.settings.update(pond5_price_by_pond5=True, pond5_price=25)
+    with open(win.make_pond5_csv([a]), encoding="utf-8") as f:
+        rows = list(_csv.reader(f))
+    assert rows[0][-1] == "setpriceforme" and rows[1][-1] == "1" and rows[1][12] == ""
+    assert len(rows[1][2]) <= sf.POND5_DESCRIPTION_MAX and rows[1][2].endswith(".")
+    assert rows[1][2].startswith("Glass jars of golden honey stand in neat rows")
