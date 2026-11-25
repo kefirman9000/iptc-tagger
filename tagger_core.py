@@ -41,7 +41,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.11.25.1"
+APP_VERSION = "2026.11.25.2"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 # camera RAW files: titles and keywords go into the Lightroom sidecar next to them (photo.xmp), never the RAW.
 # DNG is left out: Lightroom ignores sidecars for DNG and keeps its metadata inside the file itself.
@@ -480,6 +480,7 @@ DEFAULT_SETTINGS = {
     "photos_at_once": 1,      # photos the AI works on together (more only helps a big graphics card)
     "pond5_csv_auto": True,   # after uploading to Pond5, make its metadata CSV by itself
     "pond5_price": 0,         # the price the Pond5 CSV gives each photo (0 = leave it empty, set it on Pond5)
+    "pond5_price_by_pond5": False,   # Pond5's setpriceforme column: its curators price the photos
     "overlap_models": True,   # with a separate text model: start the next photo while this one's text is finished
     "brand_keep_misspelled": True,  # a keyword the AI misspelled (meta mucil) stays next to the fixed one
     "ai_description": True,   # also write a separate description (caption): Alamy, Dreamstime, Shutterstock

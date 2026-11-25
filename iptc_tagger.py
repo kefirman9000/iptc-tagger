@@ -1082,6 +1082,13 @@ class SettingsDialog(QDialog):
         p5row.addSpacing(12)
         p5row.addWidget(QLabel("Price in the CSV"))
         p5row.addWidget(self.p5_price)
+        self.p5_by_pond5 = QCheckBox("Let Pond5 set my price")
+        self.p5_by_pond5.setChecked(bool(settings.get("pond5_price_by_pond5", False)))
+        self.p5_by_pond5.setToolTip("Adds Pond5's setpriceforme column (1) to the CSV, so Pond5's curators price each "
+                                    "photo\ninstead of you; the price column is then left empty.")
+        self.p5_by_pond5.toggled.connect(lambda on: self.p5_price.setEnabled(not on))
+        self.p5_price.setEnabled(not self.p5_by_pond5.isChecked())
+        p5row.addWidget(self.p5_by_pond5)
         p5row.addStretch(1)
         f_sites.addRow("", p5row)
         self.dt_tidy = QCheckBox("Tidy the text for Dreamstime in its CSV only (the photos keep the full text)")
@@ -1361,7 +1368,8 @@ class SettingsDialog(QDialog):
                  stock_sites_from_stockup=self.sites_from_su.isChecked(),
                  shutterstock_text=self.ss_text.currentData() or "title",
                  dreamstime_csv_auto=self.dt_auto.isChecked(), shutterstock_csv_auto=self.ss_auto.isChecked(),
-                 pond5_csv_auto=self.p5_auto.isChecked(), pond5_price=self.p5_price.value(), dreamstime_tidy_csv=self.dt_tidy.isChecked(),
+                 pond5_csv_auto=self.p5_auto.isChecked(), pond5_price=self.p5_price.value(),
+                 pond5_price_by_pond5=self.p5_by_pond5.isChecked(), dreamstime_tidy_csv=self.dt_tidy.isChecked(),
                  keyword_order=self.kw_order.isChecked(), brand_alternates=self.brand_alts.isChecked(),
                  describe_companies=self.describe_co.isChecked(), company_notes=self.company_notes.toPlainText(),
                  brand_keep_misspelled=self.brand_keep.isChecked(),
@@ -4566,7 +4574,9 @@ class MainWindow(QMainWindow):
         return path
 
     def pond5_price(self) -> str:
-        """Your Pond5 price for the CSV's price column ('' = set it on Pond5)."""
+        """Your Pond5 price for the CSV's price column ('' = set it on Pond5; 'pond5' = let Pond5 set it)."""
+        if self.settings.get("pond5_price_by_pond5"):
+            return "pond5"
         p = self.settings.get("pond5_price") or 0
         try:
             return str(int(p)) if int(p) > 0 else ""
@@ -4602,6 +4612,8 @@ class MainWindow(QMainWindow):
         path, n = files[0], len(photos)
         cut = sum(1 for r in rows if len(r["title"]) > core.POND5_TITLE_MAX)
         many = sum(1 for r in rows if len(r["keywords"]) > site_files.POND5_KEYWORDS_MAX)
+        few = [os.path.basename(r["file"]) for r in rows if len(r["keywords"]) < site_files.POND5_KEYWORDS_MIN]
+        long_desc = sum(1 for r in rows if len(r.get("description") or r["title"]) > site_files.POND5_DESCRIPTION_MAX)
         self.status.setText(f"Saved {os.path.basename(path)} with {n} photo{'s' if n != 1 else ''} in {folder}. "
                             "On Pond5: Uploads › Apply CSV.")
         core.debug(f"Pond5 CSV: {n} photo(s) -> {path}")
@@ -4614,6 +4626,13 @@ class MainWindow(QMainWindow):
             if many:
                 notes.append(f"{many} photo{'s have' if many != 1 else ' has'} more than 50 keywords: the CSV has "
                              "the first 50, the most important ones.")
+            if long_desc:
+                notes.append(f"{long_desc} description{'s were' if long_desc != 1 else ' was'} longer than Pond5's "
+                             "200 characters: the CSV has the first sentences that fit.")
+            if few:
+                notes.append(f"Pond5's CSV wants at least 10 keywords; {len(few)} photo{'s have' if len(few) != 1 else ' has'}"
+                             " fewer (" + ", ".join(few[:4]) + ("…" if len(few) > 4 else "") + "). Add some before "
+                             "applying it, or Pond5 may refuse those rows.")
             if not self.pond5_price():
                 notes.append("The price column is empty: set prices on Pond5, or set a price for the CSV in "
                              "Settings → Stock sites.")

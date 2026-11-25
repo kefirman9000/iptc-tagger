@@ -413,6 +413,25 @@ def _write(path: str, header, rows):
 
 
 POND5_KEYWORDS_MAX = 50       # Pond5 refuses more
+POND5_KEYWORDS_MIN = 10       # its CSV wants at least this many
+POND5_DESCRIPTION_MAX = 200   # and descriptions of at most 200 characters
+
+
+def fit_text(text: str, limit: int) -> str:
+    """At most `limit` characters: whole sentences if they fit, else cut at a word with a full stop."""
+    text = (text or "").strip()
+    if len(text) <= limit:
+        return text
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    out = ""
+    for s in sentences:
+        if len((out + " " + s).strip()) > limit:
+            break
+        out = (out + " " + s).strip()
+    if out:
+        return out
+    cut = text[:limit - 1].rsplit(" ", 1)[0].rstrip(" ,;:-–")
+    return cut + "."
 
 
 def write_site_csvs(folder: str, rows: list[dict], sites, day: str = "", ss_text: str = "title",
@@ -462,11 +481,13 @@ def write_site_csvs(folder: str, rows: list[dict], sites, day: str = "", ss_text
             # for you to set on Pond5)
             _write(path, ["originalfilename", "title", "description", "keywords", "city", "region", "country",
                           "specifysource", "modelreleased", "propertyreleased", "release", "copyright", "price",
-                          "pricelarge", "editorial"],
-                   [[r["file"], plain(core.pond5_title(r["title"], r.get("bare_title"))), desc(r),
+                          "pricelarge", "editorial"] + (["setpriceforme"] if pond5_price == "pond5" else []),
+                   [[r["file"], plain(core.pond5_title(r["title"], r.get("bare_title"))),
+                     fit_text(desc(r), POND5_DESCRIPTION_MAX),
                      ",".join(kw(r).split(",")[:POND5_KEYWORDS_MAX]),            # Pond5 takes at most 50
                      r.get("city", ""), r.get("region", ""), r.get("country", ""), "", "", "", "", "",
-                     pond5_price or "", "", "yes" if r.get("editorial") else "no"] for r in picked])
+                     pond5_price if pond5_price not in ("", "pond5") else "", "", "yes" if r.get("editorial") else "no"]
+                    + (["1"] if pond5_price == "pond5" else []) for r in picked])
         else:
             continue
         out.append(path)
