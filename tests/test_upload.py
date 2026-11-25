@@ -457,3 +457,34 @@ def test_right_click_upload_to(window, make_photos, monkeypatch):
     assert a.upload_sites == {"alamy": False, "shutterstock": False}
     win.set_upload_site([a, b], None, None)
     assert a.upload_sites is None and b.upload_sites is None
+
+
+def test_pond5_csv_matches_its_template(window, make_photos, tmp_path):
+    """The columns of Pond5's own metadata template, titles within 80 characters, at most 50 keywords."""
+    import csv as _csv
+    from test_window import add
+    import site_files as sf
+    app, win = window
+    add(win, make_photos(2))
+    a, b = win.photos
+    a.title = ("Tokyo, Japan - November 9, 2026: Glass Jars of Honey on a Wooden Market Stall Shelf, Local Produce for "
+               "Healthy Breakfasts")
+    a.keywords = [f"honey{i}" for i in range(60)]
+    b.title, b.keywords = "Red Barn in Snow", ["barn", "snow", "winter", "farm", "rural"]
+    win.settings["pond5_price"] = 25
+    path = win.make_pond5_csv([a, b])
+    assert os.path.basename(path).startswith("pond5_") and path.endswith(".csv")
+    with open(path, encoding="utf-8") as f:
+        rows = list(_csv.reader(f))
+    assert rows[0] == ["originalfilename", "title", "description", "keywords", "city", "region", "country",
+                       "specifysource", "modelreleased", "propertyreleased", "release", "copyright", "price",
+                       "pricelarge", "editorial"]
+    ra, rb = rows[1], rows[2]
+    assert ra[0] == os.path.basename(a.path) and len(ra[1]) <= 80
+    assert len(ra[3].split(",")) == sf.POND5_KEYWORDS_MAX and ra[3].startswith("honey0,honey1")
+    assert ra[12] == "25" and rb[1] == "Red Barn in Snow"
+    win.settings["pond5_price"] = 0
+    path2 = win.make_pond5_csv([b])
+    assert path2 != path                                          # never replaces the earlier one
+    with open(path2, encoding="utf-8") as f:
+        assert list(_csv.reader(f))[1][12] == ""                 # no price: set on Pond5
