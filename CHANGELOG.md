@@ -1,5 +1,9 @@
 # What's new
 
+## 2026.11.26.1
+
+- **Pond5 CSV titles no longer have the place and date.** Every title in the Pond5 CSV is now just the subject (*Box of Cereal on a Supermarket Shelf*), even when the full one would fit in 80 characters. The place and date are still in the description and the city, region and country columns, and the editorial column still marks editorial photos. Your photos and the other sites keep the full title.
+
 ## 2026.11.25.2
 
 - **Pond5 CSV, following Pond5's own guide:**

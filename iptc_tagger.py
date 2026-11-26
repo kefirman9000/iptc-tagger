@@ -4610,7 +4610,8 @@ class MainWindow(QMainWindow):
         if not files:
             return ""
         path, n = files[0], len(photos)
-        cut = sum(1 for r in rows if len(r["title"]) > core.POND5_TITLE_MAX)
+        cut = sum(1 for r in rows if len(core.pond5_title(r["title"], r.get("bare_title"))) < len(
+            core.dreamstime_title(r["title"], r.get("bare_title"), 10_000)))
         many = sum(1 for r in rows if len(r["keywords"]) > site_files.POND5_KEYWORDS_MAX)
         few = [os.path.basename(r["file"]) for r in rows if len(r["keywords"]) < site_files.POND5_KEYWORDS_MIN]
         long_desc = sum(1 for r in rows if len(r.get("description") or r["title"]) > site_files.POND5_DESCRIPTION_MAX)
@@ -4621,8 +4622,7 @@ class MainWindow(QMainWindow):
             notes = []
             if cut:
                 notes.append(f"{cut} title{'s were' if cut != 1 else ' was'} longer than Pond5's 80 characters: "
-                             "the CSV has them cut back to their main phrase (the place and date stay in the "
-                             "description and the city, state and country columns). The photos keep the full text.")
+                             "the CSV has them cut back to their main phrase. The photos keep the full text.")
             if many:
                 notes.append(f"{many} photo{'s have' if many != 1 else ' has'} more than 50 keywords: the CSV has "
                              "the first 50, the most important ones.")

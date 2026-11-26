@@ -146,7 +146,9 @@ def test_pond5_csv_titles_fit_80_characters(tmp_path):
     assert got[2].startswith("Tokyo, Japan - November 11, 2026") and got[-1] == "yes" and len(got) == 15
     short = "Tokyo, JP - Nov 1, 2026: Box of Cereal on a Supermarket Shelf, Honey Oat Flavor for Breakfast"
     import tagger_core as core
-    assert core.pond5_title(short) == "Tokyo, JP - Nov 1, 2026: Box of Cereal on a Supermarket Shelf, Honey Oat Flavor"
+    assert core.pond5_title(short) == "Box of Cereal on a Supermarket Shelf, Honey Oat Flavor for Breakfast"
+    assert core.pond5_title("Tokyo, JP - Nov 1, 2026: Box of Cereal") == "Box of Cereal"   # short ones too
+    assert core.pond5_title("Box of Cereal on a Shelf") == "Box of Cereal on a Shelf"
 
 
 def test_shutterstock_csv_text_never_over_its_limit(tmp_path):

@@ -41,7 +41,7 @@ APP_NAME = "IPTC Tagger"
 FROZEN = bool(getattr(sys, "frozen", False))
 RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 APP_DIR = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
-APP_VERSION = "2026.11.25.2"
+APP_VERSION = "2026.11.26.1"
 JPEG_EXTS = {".jpg", ".jpeg", ".jpe", ".jfif"}
 # camera RAW files: titles and keywords go into the Lightroom sidecar next to them (photo.xmp), never the RAW.
 # DNG is left out: Lightroom ignores sidecars for DNG and keeps its metadata inside the file itself.
@@ -1935,22 +1935,10 @@ POND5_TITLE_MAX = 80
 
 
 def pond5_title(title: str, bare: str | None = None) -> str:
-    """The title the Pond5 CSV gets. Pond5 refuses titles over 80 characters: a title that fits is kept as it
-    is; a longer one keeps the editorial place and date in front only when the subject, cut back to its main
-    phrase, still fits after them. Otherwise it's the subject alone (the description, the city / region /
-    country columns and the editorial column keep the place and date)."""
-    title = title or ""
-    if len(title) <= POND5_TITLE_MAX:
-        return title
-    head, body = _dateline_split(title)
-    if head:
-        cut = shorten_title(title, POND5_TITLE_MAX)
-        rest = body[len(cut) - len(head):] if cut.startswith(head) and body.startswith(cut[len(head):]) else ""
-        # kept only when the subject ends at a whole phrase, never half-way through one ("…Happy")
-        if rest and re.match(r",\s|\s+(?:for|with|featuring|perfect for|ideal for|great for|on|in|at|from|near|"
-                             r"inside|by)\s", rest):
-            return cut
-    return dreamstime_title(title, bare, POND5_TITLE_MAX)
+    """The title the Pond5 CSV gets: always without the editorial place and date (the description, the city /
+    region / country columns and the editorial column keep those), cut to Pond5's 80 characters at its main
+    phrase. A title with no place and date in front is only cut if it's too long."""
+    return dreamstime_title(title or "", bare, POND5_TITLE_MAX)
 
 
 def dreamstime_fix(title: str, description: str, keywords) -> dict:
